@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sheet to Anki</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="panel">
+      <div class="header">
+        <div>
+          <p class="eyebrow">Everything To Memory</p>
+          <h1>Sheet to Anki</h1>
+        </div>
+        <div class="status" id="status">等待文件</div>
+      </div>
+
+      <label class="dropzone" id="dropzone">
+        <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xls,.csv,.txt">
+        <span class="drop-icon">+</span>
+        <span class="drop-title">拖拽 Excel / CSV / TXT 到这里</span>
+        <span class="drop-subtitle">或点击选择文件</span>
+      </label>
+
+      <form class="controls" id="controls">
+        <label class="field sheet-field" id="frontSheetField">
+          <span>正面 Sheet</span>
+          <select id="frontSheetSelect"></select>
+        </label>
+        <label class="field">
+          <span>正面列</span>
+          <select id="frontSelect"></select>
+        </label>
+        <label class="field sheet-field" id="backSheetField">
+          <span>背面 Sheet</span>
+          <select id="backSheetSelect"></select>
+        </label>
+        <label class="field">
+          <span>背面列</span>
+          <select id="backSelect"></select>
+        </label>
+        <button class="primary" id="generateButton" type="submit" disabled>生成 Anki TXT</button>
+      </form>
+
+      <div class="message" id="message"></div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
