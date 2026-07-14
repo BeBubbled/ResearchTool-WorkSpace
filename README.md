@@ -12,6 +12,7 @@ Start the local web panel:
 .\run_web_panel.ps1
 ```
 
+<<<<<<< Updated upstream
 If your PowerShell policy requires signed scripts, use the companion launcher
 instead; it bypasses the policy only for this one child process and does not
 change your system policy:
@@ -20,6 +21,22 @@ change your system policy:
 .\run_web_panel.cmd
 ```
 
+=======
+On macOS, double-click `run_web_panel.command` in Finder, or run it from
+Terminal:
+
+```bash
+chmod +x run_web_panel.command
+./run_web_panel.command
+```
+
+The macOS launcher creates and reuses the same project-local `.venv`, installs
+dependencies from `requirements.txt` when needed, and opens the panel in the
+default browser. If Python 3.10+ is missing, it installs Python 3.12 through
+Homebrew when Homebrew is available. You can pass `--no-browser`, `--no-pause`,
+or `--port 8765` to the macOS launcher.
+
+>>>>>>> Stashed changes
 The launcher opens the local web panel automatically when it is ready. If port
 `8765` is unavailable on Windows, it chooses another local port and prints the
 actual URL in the PowerShell window.

@@ -221,6 +221,7 @@ def positive_int(value: Any, name: str, default: int, minimum: int = 1, maximum:
     if value in (None, ""):
         return default
     try:
+<<<<<<< Updated upstream
         result = int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be an integer.") from exc
@@ -451,6 +452,15 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
         upload.save(target)
         if needs_ordered_copies:
             shutil.copyfile(target, ordered_dir / target.name)
+=======
+        workbook = pd.ExcelFile(path, engine=engine)
+    except ImportError as exc:
+        raise SheetToAnkiError(
+            f"Reading {suffix} files requires {engine}. Install dependencies with: "
+            "run_web_panel.ps1 on Windows or run_web_panel.command on macOS."
+        ) from exc
+    return workbook.sheet_names
+>>>>>>> Stashed changes
 
 
 @app.get("/")
