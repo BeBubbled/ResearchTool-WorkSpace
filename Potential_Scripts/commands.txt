@@ -1,0 +1,17 @@
+
+
+## v拼接
+python stack_cli.py videos -i "./videos" --rows 4 --cols 1 -m v --rowcap-band-px 0 --colcap-band-px 300 -o out.mp4
+
+
+
+## h拼接
+
+python stack_cli.py videos -i "./videos_2" --rows 1 --cols 4 -m h --rowcap-band-p 200 --colcap-band-px 300 -o 14_136.mp4
+
+## 拼接图片
+python sort_images_ppt.py --images "Images" --rows 3 --cols 5 --cell-size-cm 5 --gap-px 4 --margin-cm 1 --cell-aspect 1:1 --fit fit --sort numeric --out grid_2x5_5cm.pptx
+
+
+## 批量生成Bibtex
+python get_

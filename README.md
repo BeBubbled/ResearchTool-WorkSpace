@@ -4,7 +4,7 @@ This repository contains automation scripts and utilities for converting learnin
 
 This project is developed entirely through ViveCoding. The code is provided as-is, mainly for personal automation, experimentation, and learning purposes. No guarantee is made regarding correctness, stability, maintainability, or compatibility. Users should review, test, and modify the code before using it in their own workflows.
 
-## Sheet to Anki
+## Local toolbox
 
 Start the local web panel:
 
@@ -12,11 +12,30 @@ Start the local web panel:
 .\run_web_panel.ps1
 ```
 
+If your PowerShell policy requires signed scripts, use the companion launcher
+instead; it bypasses the policy only for this one child process and does not
+change your system policy:
+
+```powershell
+.\run_web_panel.cmd
+```
+
 The launcher opens the local web panel automatically when it is ready. If port
 `8765` is unavailable on Windows, it chooses another local port and prints the
-actual URL in the PowerShell window. Drag in an Excel (`.xlsx`, `.xlsm`, `.xls`),
-CSV, or TXT file, choose separate front/back sheets and columns when needed, and generate an Anki-ready TXT
-file.
+actual URL in the PowerShell window.
+
+The panel includes Sheet-to-Anki plus the image, video, PowerPoint and BibTeX
+tools in `Potential_Scripts`. Select a tool, drag in files or folders, optionally
+reorder and rename their task-only working names, then submit a local background
+job. Results are downloaded from the panel; original files are never renamed.
+
+The launcher installs all Python dependencies into the project `.venv` on its
+first run. It also detects missing `ffmpeg`/`ffprobe` and installs the
+user-scoped `Gyan.FFmpeg.Shared` package through `winget`; no system-wide Python
+packages are changed. BibTeX lookup uses the network through Google Scholar and
+can be rate limited.
+
+## Sheet to Anki command line
 
 Use the PowerShell launcher on Windows:
 

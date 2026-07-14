@@ -30,6 +30,76 @@ function Test-BootstrapPythonModule {
     return $LASTEXITCODE -eq 0
 }
 
+function Test-BootstrapCommand {
+    param([string]$Name)
+
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Add-BootstrapFfmpegToPath {
+    # winget's portable links are not always added to the PATH of the current
+    # PowerShell process. Locate the installed binary and expose it to the
+    # launcher and its Python child process without changing the user's PATH.
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"),
+        (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages")
+    )
+
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) {
+            continue
+        }
+
+        $binary = Get-ChildItem -LiteralPath $root -Filter "ffmpeg.exe" -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($binary) {
+            $binaryDir = $binary.Directory.FullName
+            if (-not (($env:Path -split ';') -contains $binaryDir)) {
+                $env:Path = "$binaryDir;$env:Path"
+            }
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Ensure-BootstrapFfmpeg {
+    param([string]$Prefix = "ffmpeg")
+
+    if ((Test-BootstrapCommand "ffmpeg") -and (Test-BootstrapCommand "ffprobe")) {
+        Write-BootstrapStep $Prefix "FFmpeg and FFprobe are available."
+        return
+    }
+
+    $winget = Get-Command "winget" -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        throw "FFmpeg and FFprobe are required by video tools. winget is unavailable; install FFmpeg manually, add its bin folder to PATH, and rerun this launcher."
+    }
+
+    Write-BootstrapStep $Prefix "FFmpeg/FFprobe not found. Installing the user-scoped Gyan.FFmpeg.Shared package with winget."
+    Invoke-BootstrapChecked $winget.Source @(
+        "install",
+        "--id",
+        "Gyan.FFmpeg.Shared",
+        "--exact",
+        "--source",
+        "winget",
+        "--accept-package-agreements",
+        "--accept-source-agreements"
+    )
+
+    if (-not (Test-BootstrapCommand "ffmpeg")) {
+        Add-BootstrapFfmpegToPath | Out-Null
+    }
+
+    if (-not ((Test-BootstrapCommand "ffmpeg") -and (Test-BootstrapCommand "ffprobe"))) {
+        throw "FFmpeg was installed but is not available in this PowerShell session. Close this window, open a new one, and rerun the launcher."
+    }
+
+    Write-BootstrapStep $Prefix "FFmpeg and FFprobe are ready."
+}
+
 function Ensure-BootstrapPip {
     param(
         [string]$VenvPython,

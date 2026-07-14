@@ -18,20 +18,21 @@ try {
     $ProjectRoot = $PSScriptRoot
     . (Join-Path $ProjectRoot "scripts\python_env.ps1")
 
-    $VenvPython = Initialize-ProjectPythonEnvironment -ProjectRoot $ProjectRoot -Prefix "web-panel"
+    $VenvPython = Initialize-ProjectPythonEnvironment -ProjectRoot $ProjectRoot -Prefix "toolbox"
+    Ensure-BootstrapFfmpeg -Prefix "toolbox"
     $MainScript = Join-Path $ProjectRoot "web_panel.py"
 
     $env:WEB_PANEL_PORT = [string]$Port
     $env:WEB_PANEL_OPEN_BROWSER = if ($NoBrowser) { "0" } else { "1" }
 
-    Write-BootstrapStep "web-panel" "Starting local web panel on 127.0.0.1."
-    Write-BootstrapStep "web-panel" "Your browser will open automatically when the panel is ready."
+    Write-BootstrapStep "toolbox" "Starting local multi-tool panel on 127.0.0.1."
+    Write-BootstrapStep "toolbox" "Your browser will open automatically when the panel is ready."
 
     Invoke-BootstrapChecked $VenvPython @($MainScript)
 }
 catch {
     Write-Host ""
-    Write-Host "[web-panel] Failed to start:" -ForegroundColor Red
+    Write-Host "[toolbox] Failed to start:" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Pause-BeforeExit "Press Enter to close this window."
     exit 1

@@ -3,50 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sheet to Anki</title>
+  <title>Everything To Memory · 工具箱</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <main class="shell">
-    <section class="panel">
-      <div class="header">
-        <div>
-          <p class="eyebrow">Everything To Memory</p>
-          <h1>Sheet to Anki</h1>
-        </div>
-        <div class="status" id="status">等待文件</div>
-      </div>
-
-      <label class="dropzone" id="dropzone">
-        <input id="fileInput" type="file" accept=".xlsx,.xlsm,.xls,.csv,.txt">
-        <span class="drop-icon">+</span>
-        <span class="drop-title">拖拽 Excel / CSV / TXT 到这里</span>
-        <span class="drop-subtitle">或点击选择文件</span>
-      </label>
-
-      <form class="controls" id="controls">
-        <label class="field sheet-field" id="frontSheetField">
-          <span>正面 Sheet</span>
-          <select id="frontSheetSelect"></select>
-        </label>
-        <label class="field">
-          <span>正面列</span>
-          <select id="frontSelect"></select>
-        </label>
-        <label class="field sheet-field" id="backSheetField">
-          <span>背面 Sheet</span>
-          <select id="backSheetSelect"></select>
-        </label>
-        <label class="field">
-          <span>背面列</span>
-          <select id="backSelect"></select>
-        </label>
-        <button class="primary" id="generateButton" type="submit" disabled>生成 Anki TXT</button>
-      </form>
-
-      <div class="message" id="message"></div>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <p class="eyebrow">Everything To Memory</p>
+      <h1>本地工具箱</h1>
+      <p class="side-copy">所有文件仅在此电脑的本地任务目录中处理。</p>
+      <nav id="toolNav" class="tool-nav" aria-label="工具列表"></nav>
+    </aside>
+    <section class="workspace">
+      <header class="workspace-header">
+        <div><p id="toolCategory" class="eyebrow"></p><h2 id="toolTitle">加载工具中…</h2><p id="toolDescription"></p></div>
+        <span id="availability" class="badge"></span>
+      </header>
+      <div id="toolForm" class="tool-form"></div>
+      <section class="task-panel">
+        <div class="section-heading"><h3>任务状态</h3><span id="taskStatus" class="badge">尚未提交</span></div>
+        <pre id="taskLog" class="task-log">选择一个工具、添加文件并提交任务。</pre>
+        <a id="downloadLink" class="download hidden" href="#">下载结果</a>
+      </section>
     </section>
   </main>
+  <template id="uploadTemplate">
+    <section class="upload-section">
+      <div class="section-heading"><h3>输入文件</h3><span class="hint">可拖拽文件或文件夹；文件仅复制到任务工作区</span></div>
+      <div class="dropzone" data-dropzone>
+        <input data-file-input type="file" multiple>
+        <input data-folder-input type="file" multiple webkitdirectory directory>
+        <strong>拖拽文件 / 文件夹到这里</strong><span>或选择文件、选择文件夹</span>
+        <div class="upload-actions"><button type="button" data-pick-files>选择文件</button><button type="button" data-pick-folder>选择文件夹</button></div>
+      </div>
+      <p class="hint">可拖动条目排序，并编辑任务工作名。不会改动你的原文件。</p>
+      <ul data-file-list class="file-list"></ul>
+    </section>
+  </template>
   <script src="/static/app.js"></script>
 </body>
 </html>

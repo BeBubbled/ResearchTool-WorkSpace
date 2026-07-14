@@ -1,0 +1,20 @@
+SimpleQuestions: A New Dataset for Question Answering over Knowledge Bases
+SimpleQuestions Nearly Solved: A New Upperbound and Baseline Approach
+Character-level Question Answering with Attention
+Neural Enquirer: Learning to Query Tables with Natural Language
+
+GRAFT-Net: Combining Text and Knowledge Graphs for Open-Domain Question Answering
+PullNet: Open Domain Question Answering with Iterative Retrieval on Knowledge Bases and Text
+EmbedKGQA: Embedding Knowledge Graphs for Plain-Text Question Answering
+UNIQORN: Unified Question Answering over RDF Knowledge Graphs
+
+ENT-GPT: Entity Recognition and Linking with Large Language Models
+A Benchmarking Study of Table-to-KG Entity Linking with LLM Tools
+BLINK: Better Entity Linking via Neural Bi-Encoders
+
+GraphRAG: Retrieval-Augmented Generation over Knowledge Graphs
+GraphRAG: A Survey of Graph-based Retrieval-Augmented Generation
+
+Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks
+Pretrained Transformers for Text Ranking: BERT and Beyond
+ColBERT: Efficient and Effective Passage Search via Contextualized Late Interaction over BERT
