@@ -1,4 +1,4 @@
-const state = { tools: [], active: null, files: [], anki: null, captions: { titles: [], captions: [] }, poller: null };
+const state = { tools: [], active: null, files: [], anki: null, captions: { titles: [], captions: [] }, poller: null, currentJob: null, translationSource: "", llmPreset: "" };
 const nav = document.querySelector("#toolNav");
 const form = document.querySelector("#toolForm");
 const title = document.querySelector("#toolTitle");
@@ -25,19 +25,21 @@ function renderNav() {
   const groups = new Map();
   state.tools.forEach(tool => { if (!groups.has(tool.category)) groups.set(tool.category, []); groups.get(tool.category).push(tool); });
   nav.innerHTML = [...groups].map(([group, tools]) => `<div class="nav-category">${group}</div>${tools.map(tool => `<button class="tool-card ${tool.id === state.active.id ? "active" : ""} ${tool.available ? "" : "unavailable"}" data-tool="${tool.id}" title="${escapeHtml(tool.unavailableReason || "")}">${escapeHtml(tool.title)}<small>${escapeHtml(tool.description)}</small></button>`).join("")}`).join("");
-  nav.querySelectorAll("[data-tool]").forEach(button => button.addEventListener("click", () => { state.active = state.tools.find(tool => tool.id === button.dataset.tool); state.files = []; state.anki = null; state.captions = { titles: [], captions: [] }; stopPolling(); renderNav(); renderTool(); }));
+  nav.querySelectorAll("[data-tool]").forEach(button => button.addEventListener("click", () => { state.active = state.tools.find(tool => tool.id === button.dataset.tool); state.files = []; state.anki = null; state.captions = { titles: [], captions: [] }; state.currentJob = null; state.translationSource = ""; state.llmPreset = ""; stopPolling(); renderNav(); renderTool(); }));
 }
 
 function renderTool() {
   const tool = state.active;
+  downloadLink.classList.add("hidden");
   title.textContent = tool.title; category.textContent = tool.category; description.textContent = tool.description;
-  availability.textContent = tool.available ? "环境就绪" : "缺少依赖"; availability.className = `badge ${tool.available ? "ok" : "bad"}`;
+  availability.textContent = tool.available ? "环境就绪" : "需配置或依赖"; availability.className = `badge ${tool.available ? "ok" : "bad"}`;
   const upload = document.querySelector("#uploadTemplate").content.cloneNode(true);
   form.innerHTML = ""; form.append(upload);
   if (!tool.available) form.insertAdjacentHTML("afterbegin", `<p class="message">${escapeHtml(tool.unavailableReason)}</p>`);
   if (tool.id === "bibtex") form.insertAdjacentHTML("beforeend", `<div class="info-box">此工具会通过 scholarly 查询 Google Scholar。查询可能受网络或来源限流影响。</div><div class="field wide"><label>或直接粘贴论文标题（每行一个；没有选择 TXT 时将自动生成任务文件）</label><textarea id="bibtexText" placeholder="Paper title one\nPaper title two"></textarea></div>`);
   form.insertAdjacentHTML("beforeend", optionsHtml(tool.id));
   form.insertAdjacentHTML("beforeend", `<div class="submit-row"><button type="button" class="primary" id="submitJob" ${tool.available ? "" : "disabled"}>加入处理队列</button></div>`);
+  if (tool.id === "pdf_ocr_translate") form.insertAdjacentHTML("beforeend", `<section id="ocrArtifacts" class="ocr-artifacts hidden"></section>`);
   bindUpload(); bindDynamicOptions(); renderFileList();
   document.querySelector("#submitJob").addEventListener("click", submitJob);
 }
@@ -51,7 +53,16 @@ function optionsHtml(id) {
   if (id === "image_ppt" || id === "video_ppt") fields = optionField("rows", "行数", 3) + optionField("cols", "列数", 5) + optionField("cellSize", "单元格尺寸 (cm)", 5) + optionField("gap", "间距 (px)", 4) + optionField("margin", "边距 (cm)", 1) + selectField("fit", "图片适配", "fit", [["fit","完整显示"],["fill","裁切填满"]]) + (id === "video_ppt" ? `<div class="field wide"><label>每个视频提取的帧序号（逗号或空格分隔）</label><input data-option="frameIndexes" value="0" placeholder="0, 3, 5, 7"></div>` : "");
   if (id === "stack_images") fields = selectField("direction", "排列方向", "horizontal", [["horizontal","横向"],["vertical","纵向"]]) + optionField("gap", "间距 (px)", 5) + optionField("border", "边框 (pt)", 1);
   if (id === "stack_videos") fields = optionField("rows", "行数", 1) + optionField("cols", "列数", 1) + selectField("mode", "标题布局", "h", [["h","按行说明"],["v","按列说明"]]) + `<div class="field wide"><label>标题与说明</label><div id="captionFields" class="caption-grid"></div></div><details class="advanced wide"><summary>高级设置</summary><div class="options">${optionField("gap", "间距 (px)", 5)}${optionField("outerBorder", "外边距 (px)", 5)}${optionField("titleBand", "标题带高度 (px)", 40)}${optionField("captionBand", "说明带高度 (px)", 150)}${optionField("titleFont", "标题字号", 26)}${optionField("captionFont", "说明字号", 30)}${selectField("audio", "保留音频", "first", [["first","第一条视频"],["none","不保留"]])}</div></details>`;
+  if (id === "document_translate") fields = llmConfigurationHtml();
+  if (id === "pdf_ocr_translate") fields = `<div class="field wide"><label>原始 PDF 本地绝对路径</label><input data-option="localSourcePath" type="text" required placeholder="/Users/name/Documents/paper.pdf"><p class="hint">浏览器不会提供上传文件的绝对路径。填入与所选 PDF 相同的本地路径后，系统会在该 PDF 同级新建同名文件夹，先复制 PDF，再自动保存所有 OCR 与翻译结果。</p></div><div class="field wide"><label>OCR 导出格式</label><div class="format-options"><label><input type="checkbox" data-ocr-format="docx" checked> DOCX</label><label><input type="checkbox" data-ocr-format="md" checked> Markdown</label><label><input type="checkbox" data-ocr-format="html" checked> HTML</label><label><input type="checkbox" data-ocr-format="tex.zip" checked> LaTeX ZIP</label></div><p class="hint">MMD 与 lines.json 会始终导出。第一版可翻译 MMD、Markdown、HTML。</p></div>`;
   return `${gridStart}${fields}</div></section>`;
+}
+
+function llmConfigurationHtml() {
+  const presets = state.active.llmPresets || [];
+  if (!state.llmPreset || !presets.some(item => item.id === state.llmPreset)) state.llmPreset = presets[0]?.id || "custom";
+  const options = `${presets.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.llmPreset ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.model)} · ${escapeHtml(item.baseUrl)}</option>`).join("")}<option value="custom" ${state.llmPreset === "custom" ? "selected" : ""}>手动添加 OpenAI-compatible 配置</option>`;
+  return `<div class="field wide"><label>LLM 配置</label><select id="llmPreset">${options}</select><p class="hint">预设只从本地 .env 读取密钥。手动配置仅保存在本次任务内存中，不写入 .env、日志或结果文件。</p></div><div id="customLlmFields" class="custom-llm-fields wide" ${state.llmPreset === "custom" ? "" : "hidden"}><div class="field"><label>配置名称</label><input id="customLlmName" placeholder="例如：公司代理"></div><div class="field"><label>Base URL</label><input id="customLlmBaseUrl" placeholder="https://api.example.com/v1"></div><div class="field"><label>API Key</label><input id="customLlmApiKey" type="password" autocomplete="off" placeholder="仅用于本次翻译"></div><div class="field"><label>Model ID</label><input id="customLlmModel" placeholder="模型名称"></div></div>`;
 }
 
 function bindUpload() {
@@ -96,6 +107,7 @@ function renderFileList() {
 
 function bindDynamicOptions() {
   if (state.active.id === "anki") return;
+  if (state.active.id === "document_translate") form.querySelector("#llmPreset")?.addEventListener("change", event => { state.llmPreset = event.target.value; form.querySelector("#customLlmFields")?.toggleAttribute("hidden", state.llmPreset !== "custom"); });
   form.querySelectorAll('[data-option="rows"],[data-option="cols"],[data-option="mode"]').forEach(input => input.addEventListener("change", renderCaptions));
   if (state.active.id === "stack_videos") renderCaptions();
 }
@@ -129,7 +141,15 @@ function collectOptions() {
   const options = {}; form.querySelectorAll("[data-option]").forEach(element => { options[element.dataset.option] = element.value; });
   if (state.active.id === "anki") Object.assign(options, { frontSheet:form.querySelector("#frontSheet").value, backSheet:form.querySelector("#backSheet").value, front:form.querySelector("#frontColumn").value, back:form.querySelector("#backColumn").value });
   if (state.active.id === "stack_videos") Object.assign(options, { cellTitles:state.captions.titles, captions:state.captions.captions });
+  if (state.active.id === "pdf_ocr_translate") options.ocrFormats = [...form.querySelectorAll("[data-ocr-format]")].filter(input => input.checked).map(input => input.dataset.ocrFormat);
+  if (state.active.id === "document_translate") options.llm = selectedLlmConfiguration();
   return options;
+}
+
+function selectedLlmConfiguration() {
+  const presetId = form.querySelector("#llmPreset")?.value;
+  if (presetId === "custom") return { mode:"custom", name:form.querySelector("#customLlmName")?.value.trim(), baseUrl:form.querySelector("#customLlmBaseUrl")?.value.trim(), apiKey:form.querySelector("#customLlmApiKey")?.value.trim(), model:form.querySelector("#customLlmModel")?.value.trim() };
+  return { mode:"preset", presetId };
 }
 
 async function submitJob() {
@@ -137,14 +157,54 @@ async function submitJob() {
   if (state.active.id === "bibtex" && !files.length) { const text = form.querySelector("#bibtexText")?.value.trim(); if (text) files = [{ file:new File([text], "paper_titles.txt", { type:"text/plain" }), relativePath:"paper_titles.txt", workName:"paper_titles" }]; }
   if (!files.length) return setTask("需要先添加文件。", "bad");
   if (state.active.id === "anki" && !state.anki) return setTask("请等待表格列读取完成。", "bad");
+  if (state.active.id === "pdf_ocr_translate" && !form.querySelector('[data-option="localSourcePath"]')?.value.trim()) return setTask("请填写原始 PDF 的本地绝对路径。", "bad");
+  if (state.active.id === "document_translate") {
+    const llm = selectedLlmConfiguration();
+    if (llm.mode === "custom" && (!llm.name || !llm.baseUrl || !llm.apiKey || !llm.model)) return setTask("请完整填写手动 LLM 配置。", "bad");
+  }
   const body = new FormData(); body.append("tool", state.active.id); body.append("options", JSON.stringify(collectOptions())); body.append("manifest", JSON.stringify(files.map(item => ({ relativePath:item.relativePath, workName:item.workName })))); files.forEach(item => body.append("files", item.file, item.file.name));
   document.querySelector("#submitJob").disabled = true; setTask("正在提交任务…", ""); downloadLink.classList.add("hidden");
-  try { const response = await fetch("/api/jobs", { method:"POST", body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "提交失败"); setTask("任务已排队", ""); taskLog.textContent = "任务已提交，等待本地工作线程。"; startPolling(data.id); }
+  try { const response = await fetch("/api/jobs", { method:"POST", body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "提交失败"); state.currentJob = data.id; state.translationSource = ""; setTask("任务已排队", ""); taskLog.textContent = "任务已提交，等待本地工作线程。"; startPolling(data.id); }
   catch (error) { setTask(error.message, "bad"); } finally { document.querySelector("#submitJob").disabled = false; }
 }
 
 function setTask(text, kind) { taskStatus.textContent = text; taskStatus.className = `badge ${kind}`; }
 function stopPolling() { if (state.poller) { clearInterval(state.poller); state.poller = null; } }
-function startPolling(jobId) { stopPolling(); const poll = async () => { try { const response = await fetch(`/api/jobs/${jobId}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); setTask(({queued:"排队中",running:"处理中",completed:"已完成",failed:"失败"}[data.status] || data.status), data.status === "completed" ? "ok" : data.status === "failed" ? "bad" : ""); taskLog.textContent = data.logs.join("\n"); taskLog.scrollTop = taskLog.scrollHeight; if (data.downloadReady) { downloadLink.href = `/api/jobs/${jobId}/download`; downloadLink.textContent = `下载 ${data.downloadName}`; downloadLink.classList.remove("hidden"); } if (["completed","failed"].includes(data.status)) stopPolling(); } catch (error) { setTask(error.message, "bad"); stopPolling(); } }; poll(); state.poller = setInterval(poll, 1000); }
+function renderOcrArtifacts(data) {
+  if (state.active?.id !== "pdf_ocr_translate") return;
+  const target = form.querySelector("#ocrArtifacts"); if (!target) return;
+  const artifacts = data.artifacts || [];
+  if (!artifacts.length) { target.classList.add("hidden"); return; }
+  target.classList.remove("hidden");
+  const ready = ["completed", "completed_with_warnings"].includes(data.status) && ["ocr_complete", "translation_complete"].includes(data.phase);
+  const sourcePriority = item => item.name.toLowerCase().endsWith(".md") ? 0 : 1;
+  const sources = artifacts.filter(item => item.kind === "ocr" && item.translationSupported).sort((left, right) => sourcePriority(left) - sourcePriority(right));
+  if (!state.translationSource || !sources.some(item => item.id === state.translationSource)) state.translationSource = sources[0]?.id || "";
+  const presets = state.active.llmPresets || [];
+  if (!state.llmPreset || !presets.some(item => item.id === state.llmPreset)) state.llmPreset = presets[0]?.id || "custom";
+  const llmOptions = `${presets.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.llmPreset ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.model)} · ${escapeHtml(item.baseUrl)}</option>`).join("")}<option value="custom" ${state.llmPreset === "custom" ? "selected" : ""}>手动添加 OpenAI-compatible 配置</option>`;
+  const customHidden = state.llmPreset === "custom" ? "" : "hidden";
+  target.innerHTML = `<div class="section-heading"><h3>OCR 输出</h3><span class="hint">下载或选择可翻译文件</span></div><div class="artifact-list">${artifacts.map(item => `<div class="artifact-row"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.format)}${item.translationSupported ? " · 可翻译" : " · 仅下载"}</small></div><a class="artifact-download" href="${escapeHtml(item.downloadUrl)}">下载</a></div>`).join("")}</div>${ready ? `<div class="translation-box"><label>翻译源文件<select id="translationSource">${sources.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.translationSource ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label>LLM 配置<select id="llmPreset">${llmOptions}</select></label><div id="customLlmFields" class="custom-llm-fields" ${customHidden}><div class="field"><label>配置名称</label><input id="customLlmName" placeholder="例如：公司代理"></div><div class="field"><label>Base URL</label><input id="customLlmBaseUrl" placeholder="https://api.example.com/v1"></div><div class="field"><label>API Key</label><input id="customLlmApiKey" type="password" autocomplete="off" placeholder="仅用于本次翻译"></div><div class="field"><label>Model ID</label><input id="customLlmModel" placeholder="模型名称"></div></div><p class="hint">预设从本地 .env 读取，密钥不会发送到浏览器。手动配置仅保存在当前翻译任务的内存中，不写入 .env、日志或结果文件。</p><button type="button" class="primary" id="startTranslation" ${sources.length ? "" : "disabled"}>翻译所选文件</button></div>` : `<p class="hint">OCR 完成后可在这里下载或选择文本格式进行翻译。</p>`}`;
+  const select = target.querySelector("#translationSource"); if (select) select.addEventListener("change", () => { state.translationSource = select.value; });
+  const llmSelect = target.querySelector("#llmPreset"); if (llmSelect) llmSelect.addEventListener("change", () => { state.llmPreset = llmSelect.value; target.querySelector("#customLlmFields")?.classList.toggle("hidden", state.llmPreset !== "custom"); });
+  target.querySelector("#startTranslation")?.addEventListener("click", () => submitTranslation(data.id));
+}
+
+async function submitTranslation(jobId) {
+  if (!state.translationSource) return setTask("没有可翻译的 OCR 文件。", "bad");
+  const presetId = form.querySelector("#llmPreset")?.value;
+  let llm;
+  if (presetId === "custom") {
+    llm = { mode:"custom", name:form.querySelector("#customLlmName")?.value.trim(), baseUrl:form.querySelector("#customLlmBaseUrl")?.value.trim(), apiKey:form.querySelector("#customLlmApiKey")?.value.trim(), model:form.querySelector("#customLlmModel")?.value.trim() };
+    if (!llm.name || !llm.baseUrl || !llm.apiKey || !llm.model) return setTask("请完整填写手动 LLM 配置。", "bad");
+  } else {
+    llm = { mode:"preset", presetId };
+  }
+  const button = form.querySelector("#startTranslation"); if (button) button.disabled = true;
+  try { const response = await fetch(`/api/jobs/${jobId}/translations`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ artifactId:state.translationSource, llm }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "翻译提交失败"); setTask("翻译已排队", ""); startPolling(data.id); }
+  catch (error) { setTask(error.message, "bad"); if (button) button.disabled = false; }
+}
+
+function startPolling(jobId) { stopPolling(); const poll = async () => { try { const response = await fetch(`/api/jobs/${jobId}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); const labels = {queued:"排队中",running:"处理中",completed:"已完成",completed_with_warnings:"完成（有警告）",failed:"失败"}; const progress = data.translationProgress; const progressText = progress ? ` · 翻译 ${progress.completed}/${progress.total}` : ""; const failedPartial = data.status === "failed" && data.phase === "translation_partial"; const statusText = failedPartial ? `翻译失败，已保留 ${progress?.completed || 0}/${progress?.total || 0}` : `${labels[data.status] || data.status}${progressText}`; setTask(statusText, data.status === "completed" ? "ok" : data.status === "completed_with_warnings" ? "warn" : data.status === "failed" ? "bad" : ""); taskLog.textContent = data.logs.join("\n"); taskLog.scrollTop = taskLog.scrollHeight; if (data.downloadReady) { downloadLink.href = `/api/jobs/${jobId}/download`; downloadLink.textContent = `下载 ${data.downloadName}`; downloadLink.classList.remove("hidden"); } renderOcrArtifacts(data); if (["completed","completed_with_warnings","failed"].includes(data.status)) stopPolling(); } catch (error) { setTask(error.message, "bad"); stopPolling(); } }; poll(); state.poller = setInterval(poll, 1000); }
 
 init().catch(error => { title.textContent = "无法加载工具"; description.textContent = error.message; });

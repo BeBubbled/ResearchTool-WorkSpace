@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+from html import unescape as html_unescape
 import io
 import json
 import os
@@ -18,18 +20,28 @@ import uuid
 import webbrowser
 import zipfile
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup, Comment
+from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
+
+try:
+    from openai import OpenAI
+except ImportError:  # Dependency checks keep the rest of the panel usable.
+    OpenAI = None  # type: ignore[assignment,misc]
 
 from sheet_to_anki import SheetToAnkiError, clean_cell, read_table, require_columns
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
 JOBS_DIR = RUNTIME_DIR / "jobs"
@@ -37,6 +49,13 @@ SCRIPTS_DIR = PROJECT_ROOT / "Potential_Scripts"
 ALLOWED_TABLE_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+PDF_SUFFIXES = {".pdf"}
+MATHPIX_BASE_URL = "https://api.mathpix.com/v3"
+OCR_OPTIONAL_FORMATS = ("docx", "md", "html", "tex.zip")
+MMD_BUNDLE_FORMAT = "mmd.zip"
+TRANSLATABLE_SUFFIXES = {".mmd", ".md", ".html"}
+MAX_OCR_WAIT_SECONDS = 20 * 60
+POLL_INTERVAL_SECONDS = 5
 
 app = Flask(__name__)
 
@@ -65,6 +84,8 @@ TOOLS = (
     ToolSpec("stack_images", "图片线性拼接 PPT", "PPT", "将图片横向或纵向拼接为 PowerPoint。", IMAGE_SUFFIXES, ("PIL", "pptx")),
     ToolSpec("stack_videos", "视频网格拼接", "视频", "按行列、标题和说明拼接视频为 MP4。", VIDEO_SUFFIXES, ("PIL", "pptx"), True),
     ToolSpec("bibtex", "论文标题转 BibTeX", "研究", "上传标题 TXT 或输入标题，联网查询 BibTeX。", {".txt"}, ("scholarly",), max_files=1),
+    ToolSpec("document_translate", "文档翻译", "研究", "将 MMD、Markdown 或 HTML 翻译为简体中文；支持文件和文件夹，保留文件夹结构。", TRANSLATABLE_SUFFIXES, ("openai", "bs4")),
+    ToolSpec("pdf_ocr_translate", "PDF OCR", "研究", "用 Mathpix 导出多种 OCR 格式；可在“文档翻译”中继续翻译 MMD、Markdown 或 HTML。", PDF_SUFFIXES, ("requests", "dotenv"), max_files=1),
 )
 TOOL_BY_ID = {tool.id: tool for tool in TOOLS}
 
@@ -81,6 +102,15 @@ class Job:
     finished_at: float | None = None
     download_path: Path | None = None
     download_name: str | None = None
+    phase: str = "processing"
+    operation: str = "default"
+    source_stem: str = "document"
+    local_save_dir: Path | None = None
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    pending_artifact_id: str | None = None
+    translation_config: dict[str, str] | None = None
+    translation_progress: dict[str, int] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def log(self, message: str) -> None:
@@ -97,6 +127,16 @@ class Job:
                 "logs": self.logs,
                 "downloadReady": self.download_path is not None,
                 "downloadName": self.download_name,
+                "phase": self.phase,
+                "warnings": self.warnings,
+                "translationProgress": self.translation_progress.copy() if self.translation_progress else None,
+                "artifacts": [
+                    {
+                        **artifact,
+                        "downloadUrl": f"/api/jobs/{self.id}/artifacts/{artifact['id']}",
+                    }
+                    for artifact in self.artifacts
+                ],
             }
 
 
@@ -177,10 +217,106 @@ def has_module(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
 
+def missing_environment(*names: str) -> list[str]:
+    return [name for name in names if not os.environ.get(name, "").strip()]
+
+
+def mathpix_config_error() -> str | None:
+    missing = missing_environment("MATHPIX_APP_ID", "MATHPIX_APP_KEY")
+    if missing:
+        return f"Mathpix is not configured. Add {', '.join(missing)} to the project .env file and restart the panel."
+    return None
+
+
+def llm_config_error() -> str | None:
+    missing = missing_environment("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    if missing:
+        return f"LLM translation is not configured. Add {', '.join(missing)} to the project .env file and restart the panel."
+    return None
+
+
+def llm_presets() -> list[dict[str, str]]:
+    """Return safe public metadata plus in-memory credentials for .env presets."""
+    presets: list[dict[str, str]] = []
+    legacy_error = llm_config_error()
+    if not legacy_error:
+        presets.append(
+            {
+                "id": "default",
+                "name": os.environ.get("LLM_NAME", "默认 LLM").strip() or "默认 LLM",
+                "baseUrl": os.environ["LLM_BASE_URL"],
+                "model": os.environ["LLM_MODEL"],
+                "apiKey": os.environ["LLM_API_KEY"],
+            }
+        )
+    raw_ids = re.split(r"[\s,]+", os.environ.get("LLM_PRESETS", "").strip())
+    for raw_id in filter(None, raw_ids):
+        key = raw_id.upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", key):
+            continue
+        prefix = f"LLM_PRESET_{key}_"
+        base_url = os.environ.get(f"{prefix}BASE_URL", "").strip()
+        api_key = os.environ.get(f"{prefix}API_KEY", "").strip()
+        model = os.environ.get(f"{prefix}MODEL", "").strip()
+        if not base_url or not api_key or not model:
+            continue
+        presets.append(
+            {
+                "id": key.lower(),
+                "name": os.environ.get(f"{prefix}NAME", raw_id).strip() or raw_id,
+                "baseUrl": base_url,
+                "model": model,
+                "apiKey": api_key,
+            }
+        )
+    return presets
+
+
+def public_llm_presets() -> list[dict[str, str]]:
+    return [{key: preset[key] for key in ("id", "name", "baseUrl", "model")} for preset in llm_presets()]
+
+
+def validate_llm_fields(name: Any, base_url: Any, api_key: Any, model: Any) -> dict[str, str]:
+    values = {
+        "name": str(name or "").strip(),
+        "baseUrl": str(base_url or "").strip(),
+        "apiKey": str(api_key or "").strip(),
+        "model": str(model or "").strip(),
+    }
+    if not values["name"] or len(values["name"]) > 100 or any(ord(char) < 32 for char in values["name"]):
+        raise ValueError("LLM configuration name is required and must be at most 100 characters.")
+    if not values["baseUrl"].startswith(("https://", "http://")) or len(values["baseUrl"]) > 500:
+        raise ValueError("LLM base URL must be a valid http(s) URL.")
+    if not values["apiKey"] or len(values["apiKey"]) > 1000:
+        raise ValueError("LLM API key is required.")
+    if not values["model"] or len(values["model"]) > 200:
+        raise ValueError("LLM model ID is required.")
+    return values
+
+
+def translation_config_from_request(data: dict[str, Any]) -> dict[str, str]:
+    config = data.get("llm")
+    if not isinstance(config, dict):
+        raise ValueError("Choose an LLM preset or enter a custom OpenAI-compatible configuration.")
+    mode = str(config.get("mode", "")).strip()
+    if mode == "preset":
+        requested_id = str(config.get("presetId", "")).strip()
+        for preset in llm_presets():
+            if preset["id"] == requested_id:
+                return validate_llm_fields(preset["name"], preset["baseUrl"], preset["apiKey"], preset["model"])
+        raise ValueError("The selected LLM preset is unavailable. Check .env and restart the panel.")
+    if mode == "custom":
+        return validate_llm_fields(config.get("name"), config.get("baseUrl"), config.get("apiKey"), config.get("model"))
+    raise ValueError("Invalid LLM configuration mode.")
+
+
 def dependency_error(tool: ToolSpec) -> str | None:
     missing = [name for name in tool.dependencies if not has_module(name)]
     if missing:
-        return f"Missing Python dependency: {', '.join(missing)}. Run .\\run_web_panel.ps1 to install project dependencies."
+        return (
+            f"Missing Python dependency: {', '.join(missing)}. "
+            "Run run_web_panel.ps1 on Windows or run_web_panel.command on macOS."
+        )
     if tool.needs_ffmpeg:
         missing_bins = [binary for binary in ("ffmpeg", "ffprobe") if shutil.which(binary) is None]
         if missing_bins:
@@ -190,6 +326,9 @@ def dependency_error(tool: ToolSpec) -> str | None:
 
 def tool_public(tool: ToolSpec) -> dict[str, Any]:
     error = dependency_error(tool)
+    ocr_error = mathpix_config_error() if tool.id == "pdf_ocr_translate" else None
+    if not error and ocr_error:
+        error = ocr_error
     return {
         "id": tool.id,
         "title": tool.title,
@@ -200,6 +339,12 @@ def tool_public(tool: ToolSpec) -> dict[str, Any]:
         "maxFiles": tool.max_files,
         "available": error is None,
         "unavailableReason": error,
+        "translationAvailable": tool.id != "pdf_ocr_translate" or error is None,
+        "translationUnavailableReason": None,
+        # Both document translation and the follow-up translation step in PDF OCR
+        # use the same local .env presets. Keep credentials server-side; only the
+        # safe display fields are returned to the browser.
+        "llmPresets": public_llm_presets() if tool.id in {"document_translate", "pdf_ocr_translate"} else [],
     }
 
 
@@ -217,11 +362,28 @@ def safe_work_name(value: str, suffix: str) -> str:
     return f"{cleaned}{suffix.lower()}"
 
 
+def safe_output_stem(value: str) -> str:
+    raw = Path(value).stem if value else "document"
+    cleaned = re.sub(r'[\\/:*?"<>|#%\x00-\x1f]', "_", raw).strip(". ")
+    return cleaned[:180] or "document"
+
+
+def local_pdf_source_path(options: dict[str, Any]) -> Path:
+    value = str(options.get("localSourcePath", "")).strip()
+    if not value:
+        raise ValueError("Enter the original PDF's absolute local path so outputs can be saved beside it.")
+    if len(value) > 4096:
+        raise ValueError("The local PDF path is too long.")
+    source = Path(value).expanduser().resolve()
+    if source.suffix.lower() != ".pdf" or not source.is_file():
+        raise ValueError("The local source path must point to an existing PDF file.")
+    return source
+
+
 def positive_int(value: Any, name: str, default: int, minimum: int = 1, maximum: int = 10000) -> int:
     if value in (None, ""):
         return default
     try:
-<<<<<<< Updated upstream
         result = int(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be an integer.") from exc
@@ -305,6 +467,710 @@ def create_stack_readme(work_dir: Path, options: dict[str, Any], rows: int, cols
     cap_values = [str(item).replace("\n", " ").strip() for item in captions[:cap_count]]
     cap_values += [""] * (cap_count - len(cap_values))
     (work_dir / "readme.txt").write_text("\n".join(values + ["", ""] + cap_values) + "\n", encoding="utf-8")
+
+
+def add_artifact(job: Job, path: Path, kind: str, format_name: str) -> None:
+    artifact_id = path.name
+    translation_supported = kind == "ocr" and path.suffix.lower() in TRANSLATABLE_SUFFIXES
+    with job.lock:
+        job.artifacts = [item for item in job.artifacts if item["id"] != artifact_id]
+        job.artifacts.append(
+            {
+                "id": artifact_id,
+                "name": path.name,
+                "kind": kind,
+                "format": format_name,
+                "translationSupported": translation_supported,
+            }
+        )
+
+
+def artifact_for_id(job: Job, artifact_id: str) -> tuple[dict[str, Any], Path] | None:
+    for artifact in job.artifacts:
+        if artifact["id"] == artifact_id:
+            path = (job.root / "output" / artifact["name"]).resolve()
+            output_dir = (job.root / "output").resolve()
+            if path.parent == output_dir and path.is_file():
+                return artifact, path
+    return None
+
+
+def package_pdf_artifacts(job: Job) -> tuple[Path, str]:
+    output_dir = job.root / "output"
+    files = sorted(path for path in output_dir.rglob("*") if path.is_file())
+    if not files:
+        raise RuntimeError("OCR completed but no output files were downloaded.")
+    archive = job.root / "output.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for file in files:
+            bundle.write(file, file.relative_to(output_dir))
+    return archive, f"{job.source_stem}_ocr_results.zip"
+
+
+def save_local_artifact(job: Job, path: Path) -> None:
+    save_local_artifact_with_log(job, path)
+
+
+def save_local_artifact_with_log(job: Job, path: Path, *, log: bool = True) -> None:
+    if not job.local_save_dir:
+        return
+    destination = job.local_save_dir / path.name
+    shutil.copy2(path, destination)
+    if log:
+        job.log(f"[LOCAL] Saved {destination.name} beside the original PDF.")
+
+
+def save_local_directory(job: Job, directory: Path) -> None:
+    if not job.local_save_dir:
+        return
+    destination = job.local_save_dir / directory.name
+    shutil.copytree(directory, destination, dirs_exist_ok=True)
+    job.log(f"[LOCAL] Saved {destination.name} beside the original PDF.")
+
+
+def prepare_local_pdf_folder(job: Job) -> None:
+    source = local_pdf_source_path(job.options)
+    destination = source.parent / source.stem
+    if destination.exists():
+        raise FileExistsError(f"The output folder already exists: {destination}. Rename the source PDF or move/remove that folder before retrying.")
+    input_files = [path for path in (job.root / "input").iterdir() if path.is_file()]
+    if len(input_files) != 1:
+        raise RuntimeError("The uploaded PDF could not be prepared for local saving.")
+    if safe_output_stem(input_files[0].name) != safe_output_stem(source.name):
+        raise ValueError("The selected upload and the local PDF path must have the same file name.")
+    destination.mkdir()
+    try:
+        shutil.copy2(input_files[0], destination / source.name)
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    job.source_stem = safe_output_stem(source.name)
+    job.local_save_dir = destination
+    job.log(f"[LOCAL] Created {destination} and copied {source.name}.")
+
+
+def mathpix_headers() -> dict[str, str]:
+    error = mathpix_config_error()
+    if error:
+        raise RuntimeError(error)
+    return {
+        "app_id": os.environ["MATHPIX_APP_ID"],
+        "app_key": os.environ["MATHPIX_APP_KEY"],
+    }
+
+
+def response_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip()[:500] or response.reason
+    if isinstance(payload, dict):
+        return str(payload.get("error") or payload.get("error_info") or payload)
+    return str(payload)
+
+
+def checked_ocr_formats(options: dict[str, Any]) -> list[str]:
+    selected = options.get("ocrFormats", list(OCR_OPTIONAL_FORMATS))
+    if not isinstance(selected, list):
+        raise ValueError("OCR format selection is invalid.")
+    invalid = [value for value in selected if value not in OCR_OPTIONAL_FORMATS]
+    if invalid:
+        raise ValueError(f"Unsupported OCR format: {', '.join(map(str, invalid))}.")
+    return [value for value in OCR_OPTIONAL_FORMATS if value in selected]
+
+
+def wait_for_mathpix_status(job: Job, pdf_id: str) -> None:
+    deadline = time.monotonic() + MAX_OCR_WAIT_SECONDS
+    last_status = ""
+    while time.monotonic() < deadline:
+        response = requests.get(f"{MATHPIX_BASE_URL}/pdf/{pdf_id}", headers=mathpix_headers(), timeout=30)
+        if not response.ok:
+            raise RuntimeError(f"Mathpix status request failed: {response_error(response)}")
+        payload = response.json()
+        status = str(payload.get("status", "unknown"))
+        if status != last_status:
+            progress = payload.get("percent_done")
+            progress_text = f" ({progress}% complete)" if progress is not None else ""
+            job.log(f"[OCR] Mathpix status: {status}{progress_text}")
+            last_status = status
+        if status == "completed":
+            return
+        if status == "error":
+            raise RuntimeError(f"Mathpix OCR failed: {payload.get('error') or payload}")
+        time.sleep(POLL_INTERVAL_SECONDS)
+    raise RuntimeError("Mathpix OCR timed out after 20 minutes.")
+
+
+def wait_for_conversion_status(job: Job, pdf_id: str, formats: list[str]) -> set[str]:
+    if not formats:
+        return set()
+    deadline = time.monotonic() + MAX_OCR_WAIT_SECONDS
+    last_states: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        response = requests.get(f"{MATHPIX_BASE_URL}/converter/{pdf_id}", headers=mathpix_headers(), timeout=30)
+        if not response.ok:
+            raise RuntimeError(f"Mathpix conversion status request failed: {response_error(response)}")
+        payload = response.json()
+        status_map = payload.get("conversion_status") or {}
+        completed: set[str] = set()
+        unresolved = False
+        for extension in formats:
+            state = str((status_map.get(extension) or {}).get("status", "pending"))
+            if state != last_states.get(extension):
+                job.log(f"[OCR] {extension} conversion: {state}")
+                last_states[extension] = state
+            if state == "completed":
+                completed.add(extension)
+            elif state == "error":
+                warning = f"Mathpix could not convert {extension}."
+                if warning not in job.warnings:
+                    job.warnings.append(warning)
+                    job.log(f"[WARNING] {warning}")
+            else:
+                unresolved = True
+        if not unresolved:
+            return completed
+        time.sleep(POLL_INTERVAL_SECONDS)
+    raise RuntimeError("Mathpix format conversion timed out after 20 minutes.")
+
+
+MARKDOWN_IMAGE_PATTERN = re.compile(r"(!\[[^\]]*\]\()\s*(<?)([^)\s>]+)(>?)([^)]*\))")
+LATEX_IMAGE_PATTERN = re.compile(r"(\\includegraphics(?:\[[^\]]*\])?\{)([^}]+)(\})")
+MATHPIX_CROPPED_URL_PATTERN = re.compile(r"https?://cdn\.mathpix\.com/cropped/[^\s\"'<>(){}]+")
+
+
+def safe_bundle_path(name: str) -> PurePosixPath:
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise RuntimeError(f"Mathpix ZIP contains an unsafe path: {name}")
+    return path
+
+
+@dataclass
+class LocalAssetStore:
+    directory: Path
+    url_paths: dict[str, str | None] = field(default_factory=dict)
+    asset_paths: set[str] = field(default_factory=set)
+
+    @property
+    def reference_prefix(self) -> str:
+        return self.directory.name
+
+
+def canonical_mathpix_url(url: str) -> str:
+    parsed = urlsplit(html_unescape(unquote(url)))
+    return urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True))), ""))
+
+
+def mathpix_asset_filename(url: str) -> str:
+    parsed = urlsplit(html_unescape(unquote(url)))
+    source_name = PurePosixPath(parsed.path).name
+    stem, suffix = os.path.splitext(source_name)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    crop_keys = ("height", "width", "top_left_y", "top_left_x")
+    if stem and suffix and all(params.get(key) for key in crop_keys):
+        return secure_filename(f"{stem}_{'_'.join(params[key] for key in crop_keys)}{suffix}")
+    digest = hashlib.sha256(canonical_mathpix_url(url).encode("utf-8")).hexdigest()[:16]
+    return secure_filename(f"{stem or 'mathpix-image'}-{digest}{suffix or '.img'}")
+
+
+def relative_asset_reference(target: str, assets: LocalAssetStore) -> str | None:
+    decoded = unquote(target)
+    normalized = decoded[2:] if decoded.startswith("./") else decoded
+    if normalized.startswith("images/"):
+        relative = normalized.removeprefix("images/")
+        if relative in assets.asset_paths:
+            return f"{assets.reference_prefix}/{relative}"
+    return None
+
+
+def warn_asset_download_failure(job: Job, url: str, detail: str) -> None:
+    warning = f"Could not localize Mathpix image {url}: {detail}"
+    if warning not in job.warnings:
+        job.warnings.append(warning)
+        job.log(f"[WARNING] {warning}")
+
+
+def ensure_mathpix_asset(job: Job, url: str, assets: LocalAssetStore) -> str | None:
+    canonical = canonical_mathpix_url(url)
+    if canonical in assets.url_paths:
+        return assets.url_paths[canonical]
+    filename = mathpix_asset_filename(url)
+    if filename in assets.asset_paths or (assets.directory / filename).is_file():
+        assets.asset_paths.add(filename)
+        assets.url_paths[canonical] = filename
+        return filename
+    try:
+        response = requests.get(html_unescape(url), timeout=120)
+    except requests.RequestException as exc:
+        warn_asset_download_failure(job, url, str(exc))
+        assets.url_paths[canonical] = None
+        return None
+    if not response.ok:
+        warn_asset_download_failure(job, url, response_error(response))
+        assets.url_paths[canonical] = None
+        return None
+    destination = assets.directory / filename
+    destination.write_bytes(response.content)
+    assets.asset_paths.add(filename)
+    assets.url_paths[canonical] = filename
+    job.log(f"[OCR] Downloaded image {filename}.")
+    return filename
+
+
+def rewrite_text_asset_references(job: Job, text: str, assets: LocalAssetStore) -> str:
+    def replace_url(match: re.Match[str]) -> str:
+        filename = ensure_mathpix_asset(job, match.group(0), assets)
+        return f"{assets.reference_prefix}/{filename}" if filename else match.group(0)
+
+    text = MATHPIX_CROPPED_URL_PATTERN.sub(replace_url, text)
+
+    def replace_markdown(match: re.Match[str]) -> str:
+        reference = relative_asset_reference(match.group(3), assets)
+        return f"{match.group(1)}{match.group(2)}{reference or match.group(3)}{match.group(4)}{match.group(5)}"
+
+    def replace_latex(match: re.Match[str]) -> str:
+        reference = relative_asset_reference(match.group(2), assets)
+        return f"{match.group(1)}{reference or match.group(2)}{match.group(3)}"
+
+    return LATEX_IMAGE_PATTERN.sub(replace_latex, MARKDOWN_IMAGE_PATTERN.sub(replace_markdown, text))
+
+
+def extract_mmd_bundle(job: Job, bundle: bytes, output: Path) -> tuple[str, LocalAssetStore]:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(bundle))
+    except zipfile.BadZipFile as exc:
+        raise RuntimeError("Mathpix mmd.zip is not a valid ZIP archive.") from exc
+    with archive:
+        files = [info for info in archive.infolist() if not info.is_dir()]
+        paths = {info.filename: safe_bundle_path(info.filename) for info in files}
+        documents = [info for info in files if paths[info.filename].suffix.lower() == ".mmd"]
+        if len(documents) != 1:
+            raise RuntimeError("Mathpix mmd.zip must contain exactly one .mmd file.")
+        document = documents[0]
+        assets_dir = output.with_name(f"{output.stem}.assets")
+        assets_dir.mkdir(exist_ok=True)
+        assets = LocalAssetStore(assets_dir)
+        for info in files:
+            bundled_path = paths[info.filename]
+            if bundled_path.parts[0] != "images":
+                continue
+            relative = PurePosixPath(*bundled_path.parts[1:])
+            if not relative.parts:
+                continue
+            destination = assets_dir.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as source, destination.open("wb") as target:
+                shutil.copyfileobj(source, target)
+            assets.asset_paths.add(relative.as_posix())
+        text = archive.read(document).decode("utf-8")
+    return text, assets
+
+
+def write_ocr_text_artifact(job: Job, output: Path, extension: str, text: str, assets: LocalAssetStore) -> None:
+    output.write_text(rewrite_text_asset_references(job, text, assets), encoding="utf-8")
+    save_local_artifact(job, output)
+    labels = {"mmd": "Mathpix Markdown", "md": "Markdown"}
+    labels.update({"html": "HTML", "lines.json": "Lines JSON"})
+    add_artifact(job, output, "ocr", labels.get(extension, extension))
+    job.log(f"[OCR] Downloaded {output.name}.")
+
+
+def download_mmd_bundle(job: Job, pdf_id: str, output: Path) -> tuple[str, LocalAssetStore]:
+    response = requests.get(f"{MATHPIX_BASE_URL}/pdf/{pdf_id}.{MMD_BUNDLE_FORMAT}", headers=mathpix_headers(), timeout=120)
+    if not response.ok:
+        raise RuntimeError(f"Could not download {MMD_BUNDLE_FORMAT}: {response_error(response)}")
+    return extract_mmd_bundle(job, response.content, output)
+
+
+def download_mathpix_text_artifact(job: Job, pdf_id: str, extension: str, output: Path, assets: LocalAssetStore) -> None:
+    response = requests.get(f"{MATHPIX_BASE_URL}/pdf/{pdf_id}.{extension}", headers=mathpix_headers(), timeout=120)
+    if not response.ok:
+        raise RuntimeError(f"Could not download {extension}: {response_error(response)}")
+    try:
+        text = response.content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"Mathpix {extension} output is not UTF-8 text.") from exc
+    write_ocr_text_artifact(job, output, extension, text, assets)
+
+
+def download_mathpix_artifact(job: Job, pdf_id: str, extension: str, output: Path, kind: str = "ocr") -> None:
+    response = requests.get(f"{MATHPIX_BASE_URL}/pdf/{pdf_id}.{extension}", headers=mathpix_headers(), timeout=120)
+    if not response.ok:
+        raise RuntimeError(f"Could not download {extension}: {response_error(response)}")
+    output.write_bytes(response.content)
+    save_local_artifact(job, output)
+    labels = {
+        "mmd": "Mathpix Markdown",
+        "md": "Markdown",
+        "html": "HTML",
+        "docx": "DOCX",
+        "tex.zip": "LaTeX ZIP",
+        "lines.json": "Lines JSON",
+    }
+    add_artifact(job, output, kind, labels.get(extension, extension))
+    job.log(f"[OCR] Downloaded {output.name}.")
+
+
+def run_pdf_ocr(job: Job, files: list[Path]) -> None:
+    if len(files) != 1:
+        raise ValueError("PDF OCR requires exactly one PDF.")
+    selected_formats = checked_ocr_formats(job.options)
+    requested_formats = [*selected_formats, MMD_BUNDLE_FORMAT]
+    source = files[0]
+    output_dir = job.root / "output"
+    output_dir.mkdir(exist_ok=True)
+    job.phase = "ocr"
+    job.log("[OCR] Uploading PDF to Mathpix.")
+    with source.open("rb") as handle:
+        response = requests.post(
+            f"{MATHPIX_BASE_URL}/pdf",
+            headers=mathpix_headers(),
+            files={"file": handle},
+            data={"options_json": json.dumps({"conversion_formats": {item: True for item in requested_formats}})},
+            timeout=120,
+        )
+    if not response.ok:
+        raise RuntimeError(f"Mathpix upload failed: {response_error(response)}")
+    payload = response.json()
+    pdf_id = str(payload.get("pdf_id", ""))
+    if not pdf_id:
+        raise RuntimeError(f"Mathpix did not return a PDF ID: {payload}")
+    job.log("[OCR] Upload accepted; waiting for OCR.")
+    wait_for_mathpix_status(job, pdf_id)
+    completed_formats = wait_for_conversion_status(job, pdf_id, requested_formats)
+    if MMD_BUNDLE_FORMAT not in completed_formats:
+        raise RuntimeError("Mathpix could not create the required self-contained MMD bundle.")
+    mmd_output = output_dir / f"{job.source_stem}.mmd"
+    mmd_text, assets = download_mmd_bundle(job, pdf_id, mmd_output)
+    write_ocr_text_artifact(job, mmd_output, "mmd", mmd_text, assets)
+    save_local_directory(job, assets.directory)
+    lines_output = output_dir / f"{job.source_stem}.lines.json"
+    download_mathpix_text_artifact(job, pdf_id, "lines.json", lines_output, assets)
+    for extension in completed_formats:
+        if extension == MMD_BUNDLE_FORMAT:
+            continue
+        output = output_dir / f"{job.source_stem}.{extension}"
+        if extension in {"md", "html"}:
+            download_mathpix_text_artifact(job, pdf_id, extension, output, assets)
+        else:
+            download_mathpix_artifact(job, pdf_id, extension, output)
+    save_local_directory(job, assets.directory)
+    job.log(f"[OCR] Saved {len(assets.asset_paths)} image(s) to {assets.reference_prefix}.")
+    job.download_path, job.download_name = package_pdf_artifacts(job)
+    job.phase = "ocr_complete"
+
+
+PLACEHOLDER_PATTERN = re.compile(r"\[\[\[KEEP_\d{4}\]\]\]")
+PROTECTED_MARKDOWN_PATTERNS = (
+    re.compile(r"```.*?```", re.DOTALL),
+    re.compile(r"\\\[.*?\\\]", re.DOTALL),
+    re.compile(r"\\\(.*?\\\)", re.DOTALL),
+    re.compile(r"(?<!\\)`[^`\n]+`"),
+    re.compile(r"\\(?:label|ref|eqref|cite\w*|begin|end|includegraphics)\{[^{}]*\}"),
+    re.compile(r"(?<=\]\()[^)]*(?=\))"),
+    re.compile(r"https?://[^\s)>]+"),
+    re.compile(r"(?<!\\)\$[^$\n]+\$"),
+)
+
+
+def protect_literals(text: str) -> tuple[str, dict[str, str]]:
+    protected: dict[str, str] = {}
+
+    def replace(match: re.Match[str]) -> str:
+        key = f"[[[KEEP_{len(protected):04d}]]]"
+        protected[key] = match.group(0)
+        return key
+
+    result = text
+    for pattern in PROTECTED_MARKDOWN_PATTERNS:
+        result = pattern.sub(replace, result)
+    return result, protected
+
+
+def restore_literals(text: str, protected: dict[str, str]) -> str:
+    expected = sorted(protected)
+    actual = sorted(PLACEHOLDER_PATTERN.findall(text))
+    if actual != expected:
+        raise RuntimeError("Translation changed protected formulas, code, links, or citations.")
+    for key, value in protected.items():
+        text = text.replace(key, value)
+    return text
+
+
+def text_chunks(text: str, maximum: int = 6000) -> list[str]:
+    parts = re.split(r"(\n\s*\n)", text)
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        if current and len(current) + len(part) > maximum:
+            chunks.append(current)
+            current = ""
+        if len(part) > maximum:
+            index = 0
+            while index < len(part):
+                end = min(index + maximum, len(part))
+                # Never split a protection marker across two API requests.
+                marker = PLACEHOLDER_PATTERN.search(part, max(index, end - 15), end + 15)
+                if marker and marker.start() < end < marker.end():
+                    end = marker.start()
+                if end == index:
+                    end = marker.end() if marker else min(index + maximum, len(part))
+                chunks.append(part[index:end])
+                index = end
+        else:
+            current += part
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def llm_translate(job: Job, text: str) -> str:
+    if OpenAI is None:
+        raise RuntimeError("The OpenAI Python SDK is not installed.")
+    if not job or not job.translation_config:
+        raise RuntimeError("No LLM configuration was selected for this translation.")
+    config = job.translation_config
+    client = OpenAI(api_key=config["apiKey"], base_url=config["baseUrl"])
+    response = client.chat.completions.create(
+        model=config["model"],
+        temperature=0.1,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional academic translator. Translate into Simplified Chinese only. "
+                    "Preserve Markdown or HTML structure, every [[[KEEP_0000]]] placeholder, numbers, and punctuation. "
+                    "Return only the translated content with no explanation."
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+    )
+    result = response.choices[0].message.content if response.choices else None
+    if not result or not result.strip():
+        raise RuntimeError("Translation API returned empty content.")
+    return result
+
+
+def translation_unit_count(text: str) -> int:
+    protected_text, _protected = protect_literals(text)
+    return len(text_chunks(protected_text))
+
+
+def translate_text_block(
+    job: Job | None,
+    text: str,
+    on_chunk: Callable[[str], None] | None = None,
+) -> str:
+    protected_text, protected = protect_literals(text)
+
+    def translate_without_markers(chunk: str) -> str:
+        # The fallback keeps protected literals local. This is used only for a
+        # chunk whose first translation changed a marker.
+        pieces = re.split(f"({PLACEHOLDER_PATTERN.pattern})", chunk)
+        return "".join(
+            piece
+            if PLACEHOLDER_PATTERN.fullmatch(piece)
+            else "".join(
+                llm_translate(job, prose) if re.search(r"[A-Za-z]", prose) else prose
+                for prose in text_chunks(piece)
+            )
+            for piece in pieces
+        )
+
+    translated_chunks: list[str] = []
+    for chunk in text_chunks(protected_text):
+        translated_chunk = llm_translate(job, chunk) if re.search(r"[A-Za-z]", chunk) else chunk
+        expected = sorted(PLACEHOLDER_PATTERN.findall(chunk))
+        actual = sorted(PLACEHOLDER_PATTERN.findall(translated_chunk))
+        if actual != expected:
+            if job is not None:
+                job.log("[TRANSLATION] Retrying a section without protected literals.")
+            translated_chunk = translate_without_markers(chunk)
+        chunk_literals = {key: protected[key] for key in expected}
+        translated_chunk = restore_literals(translated_chunk, chunk_literals)
+        translated_chunks.append(translated_chunk)
+        if on_chunk:
+            on_chunk(translated_chunk)
+    return "".join(translated_chunks)
+
+
+def set_translation_progress(job: Job | None, total: int, completed: int = 0) -> None:
+    if job is None:
+        return
+    with job.lock:
+        job.translation_progress = {"completed": completed, "total": total}
+
+
+def checkpoint_partial_translation(job: Job | None, output: Path, completed: int, total: int) -> None:
+    if job is None:
+        return
+    add_artifact(job, output, "translation_partial", "Partial Simplified Chinese translation")
+    save_local_artifact_with_log(job, output, log=False)
+    set_translation_progress(job, total, completed)
+    if completed == total or completed % 5 == 0:
+        job.log(f"[TRANSLATION] Saved {completed}/{total} section(s).")
+
+
+def write_checkpoint(handle: io.TextIOBase, job: Job | None, output: Path, completed: int, total: int) -> None:
+    handle.flush()
+    os.fsync(handle.fileno())
+    checkpoint_partial_translation(job, output, completed, total)
+
+
+def translate_markdown(job: Job | None, source: Path, output: Path) -> None:
+    text = source.read_text(encoding="utf-8")
+    total = translation_unit_count(text)
+    if not total:
+        raise RuntimeError("The Markdown file contains no text to translate.")
+    set_translation_progress(job, total)
+    completed = 0
+    with output.open("w", encoding="utf-8", newline="") as handle:
+        def save_chunk(translated_chunk: str) -> None:
+            nonlocal completed
+            handle.write(translated_chunk)
+            completed += 1
+            write_checkpoint(handle, job, output, completed, total)
+
+        translate_text_block(job, text, save_chunk)
+
+
+def translate_html(job: Job | None, source: Path, output: Path) -> None:
+    soup = BeautifulSoup(source.read_text(encoding="utf-8"), "html.parser")
+    skipped_tags = {"script", "style", "code", "pre", "math", "svg", "kbd", "samp"}
+    nodes = [
+        node for node in soup.find_all(string=True)
+        if not isinstance(node, Comment) and node.parent and node.parent.name not in skipped_tags
+        and str(node).strip() and re.search(r"[A-Za-z]", str(node))
+    ]
+    total = sum(translation_unit_count(str(node).strip()) for node in nodes)
+    if not total:
+        raise RuntimeError("The HTML file contains no visible text to translate.")
+    set_translation_progress(job, total)
+    completed = 0
+    for node in nodes:
+        if isinstance(node, Comment) or not node.parent or node.parent.name in skipped_tags:
+            continue
+        value = str(node)
+        if not value.strip() or not re.search(r"[A-Za-z]", value):
+            continue
+        leading = value[: len(value) - len(value.lstrip())]
+        trailing = value[len(value.rstrip()):]
+        partial_chunks: list[str] = []
+        current_node = node
+
+        def save_chunk(translated_chunk: str) -> None:
+            nonlocal completed, current_node
+            partial_chunks.append(translated_chunk)
+            replacement = soup.new_string(f"{leading}{''.join(partial_chunks)}{trailing}")
+            current_node.replace_with(replacement)
+            current_node = replacement
+            completed += 1
+            output.write_text(str(soup), encoding="utf-8")
+            with output.open("a", encoding="utf-8") as handle:
+                write_checkpoint(handle, job, output, completed, total)
+
+        translate_text_block(job, value.strip(), save_chunk)
+
+
+def partial_translation_path(source: Path) -> Path:
+    return source.with_name(f"{source.stem}_zh-CN.partial{source.suffix}")
+
+
+def translation_source_sort_key(source: Path) -> tuple[int, str]:
+    """Prefer Markdown wherever a mixed file/folder upload is translated."""
+    priority = {".md": 0, ".mmd": 1, ".html": 2}
+    return priority.get(source.suffix.lower(), 99), source.as_posix().casefold()
+
+
+def package_document_translations(job: Job, outputs: list[Path]) -> tuple[Path, str]:
+    if not outputs:
+        raise RuntimeError("No translation output was produced.")
+    if len(outputs) == 1:
+        return outputs[0], outputs[0].name
+    output_dir = job.root / "output"
+    archive = job.root / "document_translate_results.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
+        for output in outputs:
+            bundle.write(output, output.relative_to(output_dir))
+    return archive, archive.name
+
+
+def run_document_translation(job: Job) -> None:
+    input_dir = job.root / "input"
+    sources = sorted(
+        (path for path in input_dir.rglob("*") if path.is_file() and path.suffix.lower() in TRANSLATABLE_SUFFIXES),
+        key=lambda path: translation_source_sort_key(path.relative_to(input_dir)),
+    )
+    if not sources:
+        raise RuntimeError("No MMD, Markdown, or HTML files were uploaded.")
+    output_dir = job.root / "output"
+    output_dir.mkdir(exist_ok=True)
+    outputs: list[Path] = []
+    job.phase = "translation"
+    job.log(f"[TRANSLATION] Translating {len(sources)} file(s) into Simplified Chinese.")
+    for index, source in enumerate(sources, start=1):
+        relative = source.relative_to(input_dir)
+        output = output_dir / relative.parent / f"{source.stem}_zh-CN{source.suffix}"
+        partial_output = partial_translation_path(output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if output.exists() or partial_output.exists():
+            raise FileExistsError(f"A translation already exists: {output.relative_to(output_dir)}")
+        job.log(f"[TRANSLATION] ({index}/{len(sources)}) {relative.as_posix()}")
+        if source.suffix.lower() == ".html":
+            translate_html(job, source, partial_output)
+        else:
+            translate_markdown(job, source, partial_output)
+        os.replace(partial_output, output)
+        outputs.append(output)
+    job.download_path, job.download_name = package_document_translations(job, outputs)
+    job.phase = "translation_complete"
+
+
+def run_pdf_translation(job: Job) -> None:
+    if not job.pending_artifact_id:
+        raise RuntimeError("No OCR output was selected for translation.")
+    selected = artifact_for_id(job, job.pending_artifact_id)
+    if not selected:
+        raise RuntimeError("The selected OCR output is no longer available.")
+    artifact, source = selected
+    if not artifact.get("translationSupported"):
+        raise ValueError("Only MMD, Markdown, and HTML OCR outputs can be translated.")
+    output = source.with_name(f"{source.stem}_zh-CN{source.suffix}")
+    partial_output = partial_translation_path(source)
+    if output.exists():
+        raise FileExistsError(f"A translation already exists: {output.name}")
+    if partial_output.exists():
+        raise FileExistsError(f"A partial translation already exists: {partial_output.name}")
+    job.phase = "translation"
+    job.log(f"[TRANSLATION] Translating {source.name} into Simplified Chinese.")
+    try:
+        if source.suffix.lower() == ".html":
+            translate_html(job, source, partial_output)
+        else:
+            translate_markdown(job, source, partial_output)
+        os.replace(partial_output, output)
+        if job.local_save_dir and (job.local_save_dir / partial_output.name).exists():
+            os.replace(job.local_save_dir / partial_output.name, job.local_save_dir / output.name)
+            job.log(f"[LOCAL] Saved {output.name} beside the original PDF.")
+        else:
+            save_local_artifact(job, output)
+        add_artifact(job, output, "translation", "Simplified Chinese translation")
+        job.download_path, job.download_name = package_pdf_artifacts(job)
+        job.phase = "translation_complete"
+        job.pending_artifact_id = None
+    except Exception:
+        if partial_output.exists() and partial_output.stat().st_size:
+            add_artifact(job, partial_output, "translation_partial", "Partial Simplified Chinese translation")
+            save_local_artifact_with_log(job, partial_output, log=False)
+            job.phase = "translation_partial"
+            progress = job.translation_progress or {"completed": 0, "total": 0}
+            job.log(
+                "[TRANSLATION] Failed after saving "
+                f"{progress['completed']}/{progress['total']} section(s) to {partial_output.name}."
+            )
+        raise
 
 
 def build_command(job: Job, files: list[Path]) -> tuple[list[str] | None, list[Path]]:
@@ -415,7 +1281,41 @@ def package_artifacts(job: Job, artifacts: list[Path]) -> tuple[Path, str]:
 def run_job(job: Job) -> None:
     with job.lock:
         job.status = "running"
-    job.log(f"[INFO] Starting {job.tool.title}.")
+    job.log(f"[INFO] Starting {job.tool.title}{' translation' if job.operation == 'translate' else ''}.")
+    if job.tool.id == "pdf_ocr_translate":
+        try:
+            if job.operation == "translate":
+                run_pdf_translation(job)
+            else:
+                files = sorted(path for path in (job.root / "input").rglob("*") if path.is_file())
+                run_pdf_ocr(job, files)
+        except Exception:
+            with job.lock:
+                job.finished_at = time.time()
+            raise
+        finally:
+            if job.operation == "translate":
+                job.translation_config = None
+        with job.lock:
+            job.status = "completed_with_warnings" if job.warnings else "completed"
+            job.finished_at = time.time()
+        job.log("[INFO] Completed. Download is ready.")
+        return
+    if job.tool.id == "document_translate":
+        try:
+            run_document_translation(job)
+        except Exception:
+            with job.lock:
+                job.finished_at = time.time()
+            raise
+        finally:
+            # The selected provider credential is needed only while this job runs.
+            job.translation_config = None
+        with job.lock:
+            job.status = "completed"
+            job.finished_at = time.time()
+        job.log("[INFO] Completed. Download is ready.")
+        return
     files = sorted((job.root / "input").rglob("*"))
     files = [path for path in files if path.is_file()]
     command, artifacts = build_command(job, files)
@@ -446,21 +1346,17 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
         suffix = Path(upload.filename or relative.name).suffix.lower()
         if suffix not in job.tool.accepts:
             raise ValueError(f"{relative.name}: unsupported file type for {job.tool.title}.")
+        if job.tool.id == "pdf_ocr_translate":
+            job.source_stem = safe_output_stem(upload.filename or relative.name)
+            target = input_dir / f"{job.source_stem}.pdf"
+            upload.save(target)
+            continue
         work_name = safe_work_name(str(item.get("workName") or relative.stem), suffix)
         target = input_dir / relative.parent / f"{index:04d}_{work_name}"
         target.parent.mkdir(parents=True, exist_ok=True)
         upload.save(target)
         if needs_ordered_copies:
             shutil.copyfile(target, ordered_dir / target.name)
-=======
-        workbook = pd.ExcelFile(path, engine=engine)
-    except ImportError as exc:
-        raise SheetToAnkiError(
-            f"Reading {suffix} files requires {engine}. Install dependencies with: "
-            "run_web_panel.ps1 on Windows or run_web_panel.command on macOS."
-        ) from exc
-    return workbook.sheet_names
->>>>>>> Stashed changes
 
 
 @app.get("/")
@@ -512,6 +1408,10 @@ def create_job():
     error = dependency_error(tool)
     if error:
         return json_error(error, 503)
+    if tool.id == "pdf_ocr_translate":
+        error = mathpix_config_error()
+        if error:
+            return json_error(error, 503)
     try:
         options = json.loads(request.form.get("options", "{}"))
         manifest = json.loads(request.form.get("manifest", "[]"))
@@ -519,15 +1419,33 @@ def create_job():
         return json_error("Invalid job options.")
     if not isinstance(options, dict) or not isinstance(manifest, list):
         return json_error("Invalid job payload.")
+    translation_config = None
+    if tool.id == "document_translate":
+        try:
+            # Do not retain a custom API key in job.options, which may be used by
+            # generic tooling or future diagnostics. The worker receives it only
+            # through the in-memory translation configuration.
+            translation_config = translation_config_from_request({"llm": options.pop("llm", None)})
+        except ValueError as exc:
+            return json_error(str(exc))
     uploaded_files = request.files.getlist("files")
     if len(uploaded_files) < tool.min_files:
         return json_error(f"{tool.title} requires at least {tool.min_files} file(s).")
     if tool.max_files is not None and len(uploaded_files) > tool.max_files:
         return json_error(f"{tool.title} accepts at most {tool.max_files} file(s).")
     job_id = uuid.uuid4().hex
-    job = Job(job_id, tool, JOBS_DIR / job_id, options)
+    job = Job(
+        job_id,
+        tool,
+        JOBS_DIR / job_id,
+        options,
+        operation="ocr" if tool.id == "pdf_ocr_translate" else "default",
+        translation_config=translation_config,
+    )
     try:
         store_job_uploads(job, uploaded_files, manifest)
+        if tool.id == "pdf_ocr_translate":
+            prepare_local_pdf_folder(job)
     except Exception as exc:
         shutil.rmtree(job.root, ignore_errors=True)
         return json_error(str(exc))
@@ -550,6 +1468,62 @@ def job_download(job_id: str):
     if not job or not job.download_path or not job.download_path.exists():
         return json_error("Download is not ready.", 404)
     return send_file(job.download_path, as_attachment=True, download_name=job.download_name)
+
+
+@app.get("/api/jobs/<job_id>/artifacts/<artifact_id>")
+def artifact_download(job_id: str, artifact_id: str):
+    job = job_manager.get(job_id)
+    if not job:
+        return json_error("Job not found.", 404)
+    selected = artifact_for_id(job, artifact_id)
+    if not selected:
+        return json_error("Output file not found.", 404)
+    artifact, path = selected
+    return send_file(path, as_attachment=True, download_name=artifact["name"])
+
+
+@app.post("/api/jobs/<job_id>/translations")
+def create_translation(job_id: str):
+    job = job_manager.get(job_id)
+    if not job or job.tool.id != "pdf_ocr_translate":
+        return json_error("PDF OCR job not found.", 404)
+    error = dependency_error(job.tool)
+    if error:
+        return json_error(error, 503)
+    data = request.get_json(silent=True) or {}
+    try:
+        selected_llm = translation_config_from_request(data)
+    except ValueError as exc:
+        return json_error(str(exc))
+    artifact_id = str(data.get("artifactId", ""))
+    selected = artifact_for_id(job, artifact_id)
+    if not selected:
+        return json_error("Choose an OCR output from this job.")
+    artifact, source = selected
+    if not artifact.get("translationSupported"):
+        return json_error("Only MMD, Markdown, and HTML OCR outputs can be translated.")
+    with job.lock:
+        if job.status not in {"completed", "completed_with_warnings"}:
+            return json_error("Wait for the current OCR or translation task to finish.", 409)
+        output = source.with_name(f"{source.stem}_zh-CN{source.suffix}")
+        if output.exists():
+            return json_error(f"A translation already exists: {output.name}", 409)
+        partial_output = partial_translation_path(source)
+        if partial_output.exists():
+            return json_error(
+                f"A partial translation already exists: {partial_output.name}. Download it before starting a new translation.",
+                409,
+            )
+        job.operation = "translate"
+        job.phase = "translation_queued"
+        job.pending_artifact_id = artifact_id
+        job.translation_config = selected_llm
+        job.translation_progress = None
+        job.status = "queued"
+        job.finished_at = None
+    job.log(f"[INFO] Queued Simplified Chinese translation for {source.name} using {selected_llm['name']}.")
+    job_manager.submit(job)
+    return jsonify({"id": job.id, "status": job.status}), 202
 
 
 def open_browser_when_ready(url: str) -> None:

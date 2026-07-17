@@ -10,7 +10,7 @@ VENV_PYTHON="$VENV_DIR/bin/python"
 REQUIREMENTS="$PROJECT_ROOT/requirements.txt"
 REQUIREMENTS_STAMP="$VENV_DIR/.requirements.sha256"
 MAIN_SCRIPT="$PROJECT_ROOT/web_panel.py"
-PREFIX="web-panel"
+PREFIX="toolbox"
 NO_PAUSE=0
 NO_BROWSER=0
 PORT=8765
@@ -93,6 +93,19 @@ EOF
     get_system_python
 }
 
+ensure_ffmpeg() {
+    if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+        write_step "FFmpeg and FFprobe are available."
+        return
+    fi
+
+    cat >&2 <<'EOF'
+[toolbox] FFmpeg/FFprobe are not installed. The panel will still start, but video
+tools will be shown as unavailable. Install FFmpeg and restart the panel to enable
+them: https://ffmpeg.org/download.html
+EOF
+}
+
 ensure_pip() {
     if "$VENV_PYTHON" -c 'import pip' >/dev/null 2>&1; then
         return
@@ -172,11 +185,12 @@ else
 fi
 
 sync_dependencies
+ensure_ffmpeg
 
 export WEB_PANEL_PORT="$PORT"
 export WEB_PANEL_OPEN_BROWSER=$([[ "$NO_BROWSER" -eq 1 ]] && printf '0' || printf '1')
 
-write_step "Starting local web panel on 127.0.0.1."
+write_step "Starting local multi-tool panel on 127.0.0.1."
 if [[ "$NO_BROWSER" -eq 0 ]]; then
     write_step "Your browser will open automatically when the panel is ready."
 fi

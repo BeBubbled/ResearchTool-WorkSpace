@@ -6,3 +6,7 @@ Pillow>=10.0
 python-pptx>=1.0
 opencv-python>=4.8
 scholarly>=1.7
+requests>=2.31
+python-dotenv>=1.0
+openai>=1.0
+beautifulsoup4>=4.12
