@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paper Lens · 科研论文阅读器</title>
+  <link rel="stylesheet" href="/static/reader.css">
+  <script>
+    window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+  <header class="reader-header">
+    <a class="brand" href="/">Everything To Memory</a>
+    <div><p class="eyebrow">PAPER LENS</p><h1>科研论文阅读器</h1></div>
+    <p class="header-copy">为机器学习、深度学习、扩散模型与数学理论而设计</p>
+  </header>
+
+  <main>
+    <section id="uploadCard" class="upload-card">
+      <div>
+        <p class="eyebrow">导入论文</p>
+        <h2>上传 PDF，或直接打开 Markdown</h2>
+        <p>PDF 将通过 Mathpix 识别为含公式的 Markdown；Markdown/MMD 可直接阅读。选择双语模式后，译文按段落生成并与原文对照。</p>
+      </div>
+      <form id="uploadForm" class="upload-form">
+        <label id="readerDropzone" class="file-picker"><input id="sourceFile" type="file" accept=".pdf,.md,.mmd" required><span>拖拽 PDF / Markdown / MMD 到这里，或点击选择</span><strong id="fileName">尚未选择文件</strong><small>文件仅保存到本机 .runtime 任务文件夹，不会上传到 GitHub。</small></label>
+        <label>阅读模式
+          <select id="processingMode">
+            <option value="ocr">OCR / 原文阅读</option>
+            <option value="ocr_translate">OCR + 中英对照翻译</option>
+          </select>
+        </label>
+        <div id="uploadLlm" class="llm-config hidden"></div>
+        <button class="primary" type="submit">开始准备论文</button>
+        <p id="uploadStatus" class="status-text" role="status"></p>
+      </form>
+    </section>
+
+    <section id="readerShell" class="reader-shell hidden">
+      <aside class="outline-panel">
+        <button id="newPaper" class="text-button">← 导入另一篇</button>
+        <p class="eyebrow">文档结构</p>
+        <h2 id="documentTitle">论文</h2>
+        <nav id="outline" aria-label="论文目录"></nav>
+        <div class="view-switch" id="viewSwitch" hidden>
+          <button data-view="original" class="active">原文</button>
+          <button data-view="translated">译文</button>
+        </div>
+      </aside>
+
+      <article class="paper-panel">
+        <div class="paper-toolbar"><span id="readingStatus" class="status-pill">已就绪</span><span>划选内容以获得针对性解读</span></div>
+        <div id="paperContent" class="paper-content"></div>
+        <div id="selectionMenu" class="selection-menu hidden">
+          <p id="selectionPreview"></p>
+          <div id="actionButtons" class="action-buttons"></div>
+        </div>
+      </article>
+
+      <aside class="assistant-panel">
+        <div class="assistant-heading"><div><p class="eyebrow">RESEARCH COPILOT</p><h2>划词解读</h2></div><span class="dot"></span></div>
+        <p class="assistant-intro">选择原文或译文后，可解释公式、推导步骤、检视假设或切换到实现视角。</p>
+        <div id="questionLlm" class="llm-config"></div>
+        <label class="followup-label">补充问题（可选）<textarea id="customQuestion" placeholder="例如：这里为什么要加噪声？"></textarea></label>
+        <section id="answerPanel" class="answer-panel" aria-live="polite"><p>划选论文中的一段文本，然后选择一个预定义问题。</p></section>
+      </aside>
+    </section>
+  </main>
+  <script src="/static/reader.js"></script>
+</body>
+</html>

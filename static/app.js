@@ -62,8 +62,10 @@ function llmConfigurationHtml() {
   const presets = state.active.llmPresets || [];
   if (!state.llmPreset || !presets.some(item => item.id === state.llmPreset)) state.llmPreset = presets[0]?.id || "custom";
   const options = `${presets.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.llmPreset ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.model)} · ${escapeHtml(item.baseUrl)}</option>`).join("")}<option value="custom" ${state.llmPreset === "custom" ? "selected" : ""}>手动添加 OpenAI-compatible 配置</option>`;
-  return `<div class="field wide"><label>LLM 配置</label><select id="llmPreset">${options}</select><p class="hint">预设只从本地 .env 读取密钥。手动配置仅保存在本次任务内存中，不写入 .env、日志或结果文件。</p></div><div id="customLlmFields" class="custom-llm-fields wide" ${state.llmPreset === "custom" ? "" : "hidden"}><div class="field"><label>配置名称</label><input id="customLlmName" placeholder="例如：公司代理"></div><div class="field"><label>Base URL</label><input id="customLlmBaseUrl" placeholder="https://api.example.com/v1"></div><div class="field"><label>API Key</label><input id="customLlmApiKey" type="password" autocomplete="off" placeholder="仅用于本次翻译"></div><div class="field"><label>Model ID</label><input id="customLlmModel" placeholder="模型名称"></div></div>`;
+  return `<div class="field wide"><label>LLM 配置</label><select id="llmPreset">${options}</select><p class="hint">预设从本机 .env 读取。手动配置可仅用于本次任务，或保存为本机预设。</p></div>${customLlmFieldsHtml("wide")}`;
 }
+
+function customLlmFieldsHtml(extraClass = "") { return `<div id="customLlmFields" class="custom-llm-fields ${extraClass}" ${state.llmPreset === "custom" ? "" : "hidden"}><div class="field"><label>配置名称</label><input id="customLlmName" placeholder="例如：公司代理"></div><div class="field"><label>Base URL</label><input id="customLlmBaseUrl" placeholder="https://api.example.com/v1"></div><div class="field"><label>API Key</label><input id="customLlmApiKey" type="password" autocomplete="off" placeholder="仅保存于本机 .env"></div><div class="field"><label>Model ID</label><input id="customLlmModel" placeholder="模型名称"></div><button type="button" class="save-llm-preset" data-save-llm>保存为本机预设</button></div>`; }
 
 function bindUpload() {
   const fileInput = form.querySelector("[data-file-input]"); const folderInput = form.querySelector("[data-folder-input]"); const dropzone = form.querySelector("[data-dropzone]");
@@ -107,9 +109,28 @@ function renderFileList() {
 
 function bindDynamicOptions() {
   if (state.active.id === "anki") return;
-  if (state.active.id === "document_translate") form.querySelector("#llmPreset")?.addEventListener("change", event => { state.llmPreset = event.target.value; form.querySelector("#customLlmFields")?.toggleAttribute("hidden", state.llmPreset !== "custom"); });
+  if (state.active.id === "document_translate") bindLlmControls(form);
   form.querySelectorAll('[data-option="rows"],[data-option="cols"],[data-option="mode"]').forEach(input => input.addEventListener("change", renderCaptions));
   if (state.active.id === "stack_videos") renderCaptions();
+}
+
+function bindLlmControls(scope) {
+  scope.querySelector("#llmPreset")?.addEventListener("change", event => { state.llmPreset = event.target.value; scope.querySelector("#customLlmFields")?.toggleAttribute("hidden", state.llmPreset !== "custom"); });
+  scope.querySelector("[data-save-llm]")?.addEventListener("click", () => saveLlmPreset(scope));
+}
+
+function llmConfigurationFrom(scope = form) {
+  const presetId = scope.querySelector("#llmPreset")?.value;
+  if (presetId === "custom") return { mode:"custom", name:scope.querySelector("#customLlmName")?.value.trim(), baseUrl:scope.querySelector("#customLlmBaseUrl")?.value.trim(), apiKey:scope.querySelector("#customLlmApiKey")?.value.trim(), model:scope.querySelector("#customLlmModel")?.value.trim() };
+  return { mode:"preset", presetId };
+}
+
+async function saveLlmPreset(scope) {
+  const config = llmConfigurationFrom(scope);
+  if (config.mode !== "custom" || !config.name || !config.baseUrl || !config.apiKey || !config.model) return setTask("请完整填写手动 LLM 配置后再保存。", "bad");
+  const button = scope.querySelector("[data-save-llm]"); if (button) button.disabled = true;
+  try { const response = await fetch("/api/llm-presets", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(config) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "保存预设失败"); state.active.llmPresets.push(data.preset); state.llmPreset = data.preset.id; const select = scope.querySelector("#llmPreset"); select.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(data.preset.id)}" selected>${escapeHtml(data.preset.name)} · ${escapeHtml(data.preset.model)} · ${escapeHtml(data.preset.baseUrl)}</option>`); select.value = data.preset.id; scope.querySelector("#customLlmFields")?.setAttribute("hidden", ""); setTask(`已保存本机 LLM 预设：${data.preset.name}`, "ok"); }
+  catch (error) { setTask(error.message, "bad"); } finally { if (button) button.disabled = false; }
 }
 
 function renderCaptions() {
@@ -184,9 +205,9 @@ function renderOcrArtifacts(data) {
   if (!state.llmPreset || !presets.some(item => item.id === state.llmPreset)) state.llmPreset = presets[0]?.id || "custom";
   const llmOptions = `${presets.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.llmPreset ? "selected" : ""}>${escapeHtml(item.name)} · ${escapeHtml(item.model)} · ${escapeHtml(item.baseUrl)}</option>`).join("")}<option value="custom" ${state.llmPreset === "custom" ? "selected" : ""}>手动添加 OpenAI-compatible 配置</option>`;
   const customHidden = state.llmPreset === "custom" ? "" : "hidden";
-  target.innerHTML = `<div class="section-heading"><h3>OCR 输出</h3><span class="hint">下载或选择可翻译文件</span></div><div class="artifact-list">${artifacts.map(item => `<div class="artifact-row"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.format)}${item.translationSupported ? " · 可翻译" : " · 仅下载"}</small></div><a class="artifact-download" href="${escapeHtml(item.downloadUrl)}">下载</a></div>`).join("")}</div>${ready ? `<div class="translation-box"><label>翻译源文件<select id="translationSource">${sources.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.translationSource ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label>LLM 配置<select id="llmPreset">${llmOptions}</select></label><div id="customLlmFields" class="custom-llm-fields" ${customHidden}><div class="field"><label>配置名称</label><input id="customLlmName" placeholder="例如：公司代理"></div><div class="field"><label>Base URL</label><input id="customLlmBaseUrl" placeholder="https://api.example.com/v1"></div><div class="field"><label>API Key</label><input id="customLlmApiKey" type="password" autocomplete="off" placeholder="仅用于本次翻译"></div><div class="field"><label>Model ID</label><input id="customLlmModel" placeholder="模型名称"></div></div><p class="hint">预设从本地 .env 读取，密钥不会发送到浏览器。手动配置仅保存在当前翻译任务的内存中，不写入 .env、日志或结果文件。</p><button type="button" class="primary" id="startTranslation" ${sources.length ? "" : "disabled"}>翻译所选文件</button></div>` : `<p class="hint">OCR 完成后可在这里下载或选择文本格式进行翻译。</p>`}`;
+  target.innerHTML = `<div class="section-heading"><h3>OCR 输出</h3><span class="hint">下载或选择可翻译文件</span></div><div class="artifact-list">${artifacts.map(item => `<div class="artifact-row"><div><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.format)}${item.translationSupported ? " · 可翻译" : " · 仅下载"}</small></div><a class="artifact-download" href="${escapeHtml(item.downloadUrl)}">下载</a></div>`).join("")}</div>${ready ? `<div class="translation-box"><label>翻译源文件<select id="translationSource">${sources.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.translationSource ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}</select></label><label>LLM 配置<select id="llmPreset">${llmOptions}</select></label>${customLlmFieldsHtml("")}<p class="hint">预设从本机 .env 读取。手动配置可仅用于本次翻译，或保存为本机预设。</p><button type="button" class="primary" id="startTranslation" ${sources.length ? "" : "disabled"}>翻译所选文件</button></div>` : `<p class="hint">OCR 完成后可在这里下载或选择文本格式进行翻译。</p>`}`;
   const select = target.querySelector("#translationSource"); if (select) select.addEventListener("change", () => { state.translationSource = select.value; });
-  const llmSelect = target.querySelector("#llmPreset"); if (llmSelect) llmSelect.addEventListener("change", () => { state.llmPreset = llmSelect.value; target.querySelector("#customLlmFields")?.classList.toggle("hidden", state.llmPreset !== "custom"); });
+  bindLlmControls(target);
   target.querySelector("#startTranslation")?.addEventListener("click", () => submitTranslation(data.id));
 }
 

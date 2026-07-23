@@ -42,11 +42,15 @@ class ToolboxApiTest(unittest.TestCase):
         self.previous_jobs_dir = web_panel.JOBS_DIR
         web_panel.JOBS_DIR = Path(self.temp_dir.name) / "jobs"
         web_panel.JOBS_DIR.mkdir()
+        with web_panel.reader_manager.lock:
+            web_panel.reader_manager.documents.clear()
         web_panel.app.config.update(TESTING=True)
         self.client = web_panel.app.test_client()
 
     def tearDown(self) -> None:
         web_panel.JOBS_DIR = self.previous_jobs_dir
+        with web_panel.reader_manager.lock:
+            web_panel.reader_manager.documents.clear()
         self.temp_dir.cleanup()
 
     def test_tools_are_listed(self) -> None:
@@ -54,6 +58,67 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         ids = {tool["id"] for tool in response.get_json()["tools"]}
         self.assertTrue({"anki", "image_crop", "stack_videos", "bibtex"}.issubset(ids))
+
+    def test_reader_opens_markdown_and_builds_context_blocks(self) -> None:
+        response = self.client.post(
+            "/api/reader/documents",
+            data={
+                "mode": "ocr",
+                "file": (io.BytesIO(b"# Diffusion Models\n\nThe score $s_\\theta(x,t)$ estimates noise.\n\n$$\n x_t = \\alpha_t x_0 + \\sigma_t \\epsilon\n$$\n"), "paper.md"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 202, response.get_json())
+        document_id = response.get_json()["id"]
+        for _ in range(100):
+            status = self.client.get(f"/api/reader/documents/{document_id}").get_json()
+            if status["status"] in {"ready", "failed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status["status"], "ready", status)
+        content = self.client.get(f"/api/reader/documents/{document_id}/content").get_json()
+        self.assertEqual(content["blocks"][0]["type"], "heading")
+        self.assertIn("score", content["blocks"][1]["content"])
+        self.assertEqual(content["blocks"][2]["type"], "math")
+
+    def test_research_reader_prompt_specializes_formula_geometry(self) -> None:
+        config = {"name": "test", "baseUrl": "https://llm.example", "apiKey": "key", "model": "model"}
+        block = {"id": "b2", "section": "Method", "content": "$x_t = \\alpha_t x_0 + \\sigma_t \\epsilon$"}
+        with patch.object(web_panel, "OpenAI") as client_class:
+            client = client_class.return_value
+            client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="几何解释"))])
+            answer = web_panel.ask_reader_llm(config, "geometry", "x_t", block, [block], "")
+        self.assertEqual(answer, "几何解释")
+        call = client.chat.completions.create.call_args.kwargs
+        self.assertIn("扩散模型", call["messages"][0]["content"])
+        self.assertIn("几何意义", call["messages"][1]["content"])
+        self.assertIn("$x_t", call["messages"][1]["content"])
+
+    def test_reader_markdown_parser_keeps_mathpix_latex_tables_and_lists_together(self) -> None:
+        blocks = web_panel.markdown_to_reader_blocks(
+            "\\section{Method}\n\n"
+            "\\begin{align}\n"
+            "x_t &= \\alpha_t x_0 + \\sigma_t \\epsilon \\\\n"
+            "\\epsilon &\\sim \\mathcal{N}(0, I)\n"
+            "\\end{align}\n\n"
+            "| Model | FID |\n| --- | ---: |\n| DDPM | 3.1 |\n\n"
+            "- first\n  - nested\n"
+        )
+        self.assertEqual([block["type"] for block in blocks], ["heading", "math", "table", "list"])
+        self.assertIn("\\begin{align}", blocks[1]["content"])
+        self.assertIn("\\end{align}", blocks[1]["content"])
+        self.assertIn("DDPM", blocks[2]["content"])
+        self.assertIn("nested", blocks[3]["content"])
+
+    def test_reader_can_persist_a_named_llm_preset_locally(self) -> None:
+        env_file = Path(self.temp_dir.name) / ".env"
+        with patch.object(web_panel, "ENV_FILE", env_file), patch.dict("os.environ", {}, clear=True):
+            preset = web_panel.save_llm_preset("Lab Gateway", "https://llm.example/v1", "secret-key", "research-model")
+            self.assertEqual(preset["id"], "lab_gateway")
+            self.assertIn("LLM_PRESETS='LAB_GATEWAY'", env_file.read_text(encoding="utf-8"))
+            self.assertIn("LLM_PRESET_LAB_GATEWAY_API_KEY='secret-key'", env_file.read_text(encoding="utf-8"))
+            with self.assertRaises(ValueError):
+                web_panel.save_llm_preset("Lab Gateway", "https://llm.example/v1", "other-key", "research-model")
 
     def test_unknown_tool_is_rejected(self) -> None:
         response = self.client.post("/api/jobs", data={"tool": "nope"})

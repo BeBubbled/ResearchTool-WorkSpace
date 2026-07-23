@@ -27,7 +27,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
@@ -41,7 +41,8 @@ from sheet_to_anki import SheetToAnkiError, clean_cell, read_table, require_colu
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-load_dotenv(PROJECT_ROOT / ".env", override=False)
+ENV_FILE = PROJECT_ROOT / ".env"
+load_dotenv(ENV_FILE, override=False)
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
 JOBS_DIR = RUNTIME_DIR / "jobs"
@@ -50,6 +51,7 @@ ALLOWED_TABLE_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 PDF_SUFFIXES = {".pdf"}
+READER_SOURCE_SUFFIXES = {".pdf", ".md", ".mmd"}
 MATHPIX_BASE_URL = "https://api.mathpix.com/v3"
 OCR_OPTIONAL_FORMATS = ("docx", "md", "html", "tex.zip")
 MMD_BUNDLE_FORMAT = "mmd.zip"
@@ -110,6 +112,7 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     pending_artifact_id: str | None = None
     translation_config: dict[str, str] | None = None
+    reader_document_id: str | None = None
     translation_progress: dict[str, int] | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -180,6 +183,64 @@ class JobManager:
 
 
 job_manager = JobManager()
+
+
+# The reader intentionally keeps documents in the local runtime directory and
+# in memory.  It makes uploaded research papers private to this machine while
+# still letting the browser poll an asynchronous OCR/translation job.
+@dataclass
+class ReaderDocument:
+    id: str
+    root: Path
+    title: str
+    source_type: str
+    mode: str
+    status: str = "queued"
+    message: str = "Waiting for local worker."
+    blocks: list[dict[str, Any]] = field(default_factory=list)
+    translated_blocks: list[dict[str, Any]] | None = None
+    job_id: str | None = None
+    error: str | None = None
+    created_at: float = field(default_factory=time.time)
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "sourceType": self.source_type,
+            "mode": self.mode,
+            "status": self.status,
+            "message": self.message,
+            "hasTranslation": self.translated_blocks is not None,
+            "jobId": self.job_id,
+            "error": self.error,
+        }
+
+
+class ReaderManager:
+    def __init__(self) -> None:
+        self.documents: dict[str, ReaderDocument] = {}
+        self.lock = threading.Lock()
+
+    def add(self, document: ReaderDocument) -> None:
+        with self.lock:
+            self.documents[document.id] = document
+
+    def get(self, document_id: str) -> ReaderDocument | None:
+        with self.lock:
+            return self.documents.get(document_id)
+
+
+reader_manager = ReaderManager()
+READER_TOOL = ToolSpec(
+    "paper_reader",
+    "科研论文阅读器",
+    "研究",
+    "对 PDF 执行 Mathpix OCR，或直接阅读 Markdown。",
+    READER_SOURCE_SUFFIXES,
+    ("requests", "openai"),
+    max_files=1,
+)
 
 
 def json_error(message: str, status: int = 400):
@@ -292,6 +353,49 @@ def validate_llm_fields(name: Any, base_url: Any, api_key: Any, model: Any) -> d
     if not values["model"] or len(values["model"]) > 200:
         raise ValueError("LLM model ID is required.")
     return values
+
+
+def persistent_preset_id(value: Any) -> str:
+    raw = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip()).strip("_").upper()
+    if not raw:
+        raise ValueError("A preset name is required.")
+    if raw[0].isdigit():
+        raw = f"PROVIDER_{raw}"
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", raw):
+        raise ValueError("The preset name must contain at most 64 letters, numbers, or underscores.")
+    if raw == "DEFAULT":
+        raise ValueError("'default' is reserved for the legacy LLM configuration.")
+    return raw
+
+
+def save_llm_preset(preset_name: Any, base_url: Any, api_key: Any, model: Any) -> dict[str, str]:
+    """Persist one named OpenAI-compatible provider in the project-local .env."""
+    config = validate_llm_fields(preset_name, base_url, api_key, model)
+    preset_key = persistent_preset_id(config["name"])
+    current_ids = [item.upper() for item in re.split(r"[\s,]+", os.environ.get("LLM_PRESETS", "").strip()) if item]
+    if preset_key in current_ids:
+        raise ValueError(f"A saved LLM preset named '{preset_key.lower()}' already exists.")
+    if not ENV_FILE.exists():
+        ENV_FILE.touch(mode=0o600)
+    updated_ids = [*current_ids, preset_key]
+    prefix = f"LLM_PRESET_{preset_key}_"
+    # set_key handles quoting and replaces only the targeted keys, so unrelated
+    # project configuration and comments remain intact.
+    set_key(str(ENV_FILE), "LLM_PRESETS", ",".join(updated_ids), quote_mode="auto")
+    set_key(str(ENV_FILE), f"{prefix}NAME", config["name"], quote_mode="auto")
+    set_key(str(ENV_FILE), f"{prefix}BASE_URL", config["baseUrl"], quote_mode="auto")
+    set_key(str(ENV_FILE), f"{prefix}API_KEY", config["apiKey"], quote_mode="auto")
+    set_key(str(ENV_FILE), f"{prefix}MODEL", config["model"], quote_mode="auto")
+    # Existing requests should see the provider immediately without a restart.
+    os.environ["LLM_PRESETS"] = ",".join(updated_ids)
+    os.environ[f"{prefix}NAME"] = config["name"]
+    os.environ[f"{prefix}BASE_URL"] = config["baseUrl"]
+    os.environ[f"{prefix}API_KEY"] = config["apiKey"]
+    os.environ[f"{prefix}MODEL"] = config["model"]
+    for preset in public_llm_presets():
+        if preset["id"] == preset_key.lower():
+            return preset
+    raise RuntimeError("The saved LLM preset could not be reloaded.")
 
 
 def translation_config_from_request(data: dict[str, Any]) -> dict[str, str]:
@@ -1173,6 +1277,193 @@ def run_pdf_translation(job: Job) -> None:
         raise
 
 
+def markdown_to_reader_blocks(text: str) -> list[dict[str, Any]]:
+    """Create stable reading units for common Markdown and Mathpix MMD output.
+
+    Mathpix uses a mixture of Markdown and LaTeX environments, so a paragraph
+    splitter is not enough: it would split ``align`` equations, tables, and
+    nested lists into unrelated blocks.  This deliberately keeps source syntax
+    intact for the browser renderer instead of attempting lossy conversion.
+    """
+    blocks: list[dict[str, Any]] = []
+    paragraph: list[str] = []
+    fenced: list[str] | None = None
+    math: list[str] | None = None
+    latex: list[str] | None = None
+    section = ""
+
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if lines and lines[0].strip() == "---":
+        try:
+            closing = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() in {"---", "..."})
+            lines = lines[closing + 1:]
+        except StopIteration:
+            pass
+
+    def emit_paragraph() -> None:
+        nonlocal paragraph
+        content = "\n".join(paragraph).strip()
+        if content:
+            blocks.append({"id": f"b{len(blocks) + 1}", "type": "paragraph", "section": section, "content": content})
+        paragraph = []
+
+    def emit(kind: str, content: str, **extra: Any) -> None:
+        blocks.append({"id": f"b{len(blocks) + 1}", "type": kind, "section": section, "content": content, **extra})
+
+    def is_table_divider(line: str) -> bool:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
+        line = raw_line.rstrip()
+        if fenced is not None:
+            fenced.append(raw_line)
+            if line.startswith("```") or line.startswith("~~~"):
+                emit("code", "\n".join(fenced))
+                fenced = None
+            index += 1
+            continue
+        if math is not None:
+            math.append(raw_line)
+            if line == "$$" or line == r"\]":
+                emit("math", "\n".join(math))
+                math = None
+            index += 1
+            continue
+        if latex is not None:
+            latex.append(raw_line)
+            if re.match(r"^\\end\{(?:equation\*?|align\*?|aligned|alignat\*?|gather\*?|multline\*?|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|array|smallmatrix|split)\}", line):
+                emit("math", "\\[\n" + "\n".join(latex) + "\n\\]")
+                latex = None
+            index += 1
+            continue
+        if line.startswith(("```", "~~~")):
+            emit_paragraph()
+            fenced = [raw_line]
+            index += 1
+            continue
+        if line in {"$$", r"\["}:
+            emit_paragraph()
+            math = [raw_line]
+            index += 1
+            continue
+        if re.match(r"^\\begin\{(?:equation\*?|align\*?|aligned|alignat\*?|gather\*?|multline\*?|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix|array|smallmatrix|split)\}", line):
+            emit_paragraph()
+            latex = [raw_line]
+            index += 1
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        latex_heading = re.match(r"^\\(?:sub)*section\*?\{(.+?)\}\s*$", line)
+        if heading or latex_heading:
+            emit_paragraph()
+            section = heading.group(2) if heading else latex_heading.group(1)
+            level = len(heading.group(1)) if heading else max(1, line.count("sub") + 1)
+            emit("heading", section, level=level)
+            index += 1
+            continue
+        if index + 1 < len(lines) and line.strip() and re.fullmatch(r"[=-]{3,}\s*", lines[index + 1]):
+            emit_paragraph()
+            section = line.strip()
+            emit("heading", section, level=1 if lines[index + 1].lstrip().startswith("=") else 2)
+            index += 2
+            continue
+        if re.fullmatch(r"\s{0,3}(?:[-*_]\s*){3,}", line):
+            emit_paragraph()
+            emit("rule", "")
+            index += 1
+            continue
+        if line.strip() and index + 1 < len(lines) and "|" in line and is_table_divider(lines[index + 1]):
+            emit_paragraph()
+            table = [raw_line, lines[index + 1]]
+            index += 2
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                table.append(lines[index])
+                index += 1
+            emit("table", "\n".join(table))
+            continue
+        if line.lstrip().startswith(">"):
+            emit_paragraph()
+            quote: list[str] = []
+            while index < len(lines) and lines[index].lstrip().startswith(">"):
+                quote.append(re.sub(r"^\s*>\s?", "", lines[index]))
+                index += 1
+            emit("quote", "\n".join(quote))
+            continue
+        if re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", line):
+            emit_paragraph()
+            list_lines: list[str] = []
+            while index < len(lines) and (not lines[index].strip() or re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", lines[index])):
+                list_lines.append(lines[index])
+                index += 1
+            emit("list", "\n".join(list_lines).strip())
+            continue
+        if not line.strip():
+            emit_paragraph()
+            index += 1
+            continue
+        paragraph.append(raw_line)
+        index += 1
+    emit_paragraph()
+    if fenced:
+        emit("code", "\n".join(fenced))
+    if math:
+        emit("math", "\n".join(math))
+    if latex:
+        emit("math", "\\[\n" + "\n".join(latex) + "\n\\]")
+    if not blocks:
+        raise RuntimeError("The document contains no readable Markdown content.")
+    return blocks
+
+
+def reader_source_artifact(job: Job) -> Path:
+    output_dir = job.root / "output"
+    candidates = [output_dir / f"{job.source_stem}.mmd", output_dir / f"{job.source_stem}.md"]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise RuntimeError("OCR finished without a Markdown document for the reader.")
+
+
+def run_reader_document(job: Job) -> None:
+    if not job.reader_document_id:
+        raise RuntimeError("Reader job is missing its document ID.")
+    document = reader_manager.get(job.reader_document_id)
+    if not document:
+        raise RuntimeError("Reader document was not found.")
+    source_files = [path for path in (job.root / "input").rglob("*") if path.is_file()]
+    if len(source_files) != 1:
+        raise RuntimeError("A reader document requires exactly one source file.")
+    source = source_files[0]
+    document.status = "processing"
+    document.message = "正在解析文档。"
+    suffix = source.suffix.lower()
+    if suffix == ".pdf":
+        document.message = "正在由 Mathpix 识别 PDF 与公式。"
+        run_pdf_ocr(job, [source])
+        markdown_source = reader_source_artifact(job)
+    else:
+        markdown_source = source
+    original_text = markdown_source.read_text(encoding="utf-8")
+    document.blocks = markdown_to_reader_blocks(original_text)
+    if document.mode == "ocr_translate":
+        if not job.translation_config:
+            raise RuntimeError("OCR + translation requires an LLM configuration.")
+        document.message = "正在按论文段落生成对照译文。"
+        translated = job.root / "output" / f"{markdown_source.stem}_zh-CN{markdown_source.suffix}"
+        partial = partial_translation_path(translated)
+        translated.parent.mkdir(exist_ok=True)
+        translate_markdown(job, markdown_source, partial)
+        os.replace(partial, translated)
+        document.translated_blocks = markdown_to_reader_blocks(translated.read_text(encoding="utf-8"))
+    document.status = "ready"
+    document.message = "论文已准备好，可划词提问。"
+    job.phase = "reader_ready"
+    job.download_path = markdown_source
+    job.download_name = markdown_source.name
+
+
 def build_command(job: Job, files: list[Path]) -> tuple[list[str] | None, list[Path]]:
     tool_id = job.tool.id
     options = job.options
@@ -1282,6 +1573,25 @@ def run_job(job: Job) -> None:
     with job.lock:
         job.status = "running"
     job.log(f"[INFO] Starting {job.tool.title}{' translation' if job.operation == 'translate' else ''}.")
+    if job.tool.id == "paper_reader":
+        try:
+            run_reader_document(job)
+        except Exception as exc:
+            document = reader_manager.get(job.reader_document_id or "")
+            if document:
+                document.status = "failed"
+                document.error = str(exc)
+                document.message = "文档处理失败。"
+            with job.lock:
+                job.finished_at = time.time()
+            raise
+        finally:
+            job.translation_config = None
+        with job.lock:
+            job.status = "completed_with_warnings" if job.warnings else "completed"
+            job.finished_at = time.time()
+        job.log("[INFO] Reader document is ready.")
+        return
     if job.tool.id == "pdf_ocr_translate":
         try:
             if job.operation == "translate":
@@ -1362,6 +1672,189 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/reader")
+def reader():
+    return render_template("reader.html")
+
+
+READER_ACTIONS = {
+    "explain": "解释选区：先给一句结论，再逐句解释术语、变量和逻辑；优先给机器学习论文中的具体含义。",
+    "formula": "解释公式：列出所有符号及张量形状/取值域，说明每一项的作用、输入输出、假设和训练/推理时的意义。",
+    "geometry": "解释公式的几何意义：明确向量/参数/概率分布所处的空间，说明方向、距离、角度、投影、流形或优化几何；没有严格几何解释时要直说并给直觉。",
+    "derivation": "推导这一步：从可见的前提开始，逐行给出代数、概率或微积分变形；指出使用的恒等式、近似或条件，不能凭空补全未给出的前提。",
+    "summary": "总结选区和相邻上下文：说明问题、方法、关键机制、结论以及它在整篇论文中的作用。",
+    "intuition": "给出直觉解释：使用一个小型数值、二维几何或训练过程例子，但不要改变原公式或暗示未证实结论。",
+    "assumptions": "批判性阅读：识别显式/隐式假设、潜在失效情形、计算代价、数据分布要求与需要实验验证的主张。",
+    "implementation": "转换为实现视角：说明张量形状、伪代码步骤、数值稳定性、常用默认值和在 PyTorch/JAX 中容易出错的位置。",
+}
+
+
+def reader_llm_config(data: dict[str, Any]) -> dict[str, str]:
+    return translation_config_from_request(data)
+
+
+def reader_context(document: ReaderDocument, block_id: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    blocks = document.blocks
+    index = next((i for i, block in enumerate(blocks) if block["id"] == block_id), None)
+    if index is None:
+        return None, []
+    start, end = max(0, index - 2), min(len(blocks), index + 3)
+    return blocks[index], blocks[start:end]
+
+
+def ask_reader_llm(config: dict[str, str], action: str, selection: str, block: dict[str, Any], context: list[dict[str, Any]], custom_question: str) -> str:
+    if OpenAI is None:
+        raise RuntimeError("The OpenAI Python SDK is not installed.")
+    instruction = READER_ACTIONS.get(action)
+    if not instruction:
+        raise ValueError("Unsupported reader action.")
+    context_text = "\n\n".join(
+        f"[{item['id']} · {item.get('section') or '未命名章节'}]\n{item['content']}" for item in context
+    )
+    user_prompt = (
+        f"任务：{instruction}\n\n"
+        f"所在章节：{block.get('section') or '未命名章节'}\n"
+        f"用户划选文本：\n{selection}\n\n"
+        f"相邻原文（只能作为上下文，不能把未出现内容说成论文事实）：\n{context_text}"
+    )
+    if custom_question.strip():
+        user_prompt += f"\n\n用户的补充问题：{custom_question.strip()}"
+    client = OpenAI(api_key=config["apiKey"], base_url=config["baseUrl"])
+    response = client.chat.completions.create(
+        model=config["model"],
+        temperature=0.2,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你是严谨的计算机科学研究导师，专长为深度学习、机器学习、扩散模型、概率建模、"
+                    "优化与相关数学理论。用简体中文作答。只依据给定文本和明确标注的通用数学知识；"
+                    "区分论文原文、你的推导和合理推断。保留全部 LaTeX 符号与变量命名，不编造实验、"
+                    "引用或作者意图。答案先给直接结论，随后按需使用小标题；若上下文不足，明确说明缺少什么。"
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    answer = response.choices[0].message.content if response.choices else None
+    if not answer or not answer.strip():
+        raise RuntimeError("LLM returned an empty explanation.")
+    return answer.strip()
+
+
+@app.get("/api/reader/config")
+def reader_config():
+    return jsonify({"llmPresets": public_llm_presets(), "actions": [{"id": key, "label": label.split("：", 1)[0]} for key, label in READER_ACTIONS.items()]})
+
+
+@app.post("/api/llm-presets")
+@app.post("/api/reader/llm-presets")  # Backward-compatible reader alias.
+def create_reader_llm_preset():
+    data = request.get_json(silent=True) or {}
+    try:
+        preset = save_llm_preset(data.get("name"), data.get("baseUrl"), data.get("apiKey"), data.get("model"))
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc))
+    return jsonify({"preset": preset}), 201
+
+
+@app.post("/api/reader/documents")
+def create_reader_document():
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        return json_error("Choose a PDF, Markdown, or MMD file.")
+    suffix = Path(uploaded.filename).suffix.lower()
+    if suffix not in READER_SOURCE_SUFFIXES:
+        return json_error("Reader accepts .pdf, .md, and .mmd files.")
+    mode = str(request.form.get("mode", "ocr")).strip()
+    if mode not in {"ocr", "ocr_translate"}:
+        return json_error("Choose OCR only or OCR + translation.")
+    if suffix != ".pdf" and mode == "ocr":
+        # Markdown is already OCR-equivalent; keep a single mode name on the client.
+        mode = "markdown"
+    if suffix == ".pdf":
+        error = mathpix_config_error()
+        if error:
+            return json_error(error, 503)
+    translation_config = None
+    if mode == "ocr_translate":
+        try:
+            llm_payload = json.loads(request.form.get("llm", "{}"))
+            translation_config = reader_llm_config({"llm": llm_payload})
+        except (ValueError, json.JSONDecodeError) as exc:
+            return json_error(str(exc))
+    document_id = uuid.uuid4().hex
+    root = JOBS_DIR / f"reader-{document_id}"
+    document = ReaderDocument(document_id, root, Path(uploaded.filename).stem, "pdf" if suffix == ".pdf" else "markdown", mode)
+    job = Job(document_id, READER_TOOL, root, {"ocrFormats": ["md"]}, operation="reader", translation_config=translation_config, reader_document_id=document_id)
+    try:
+        input_dir = root / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        destination = input_dir / safe_work_name(uploaded.filename, suffix)
+        uploaded.save(destination)
+        job.source_stem = safe_output_stem(destination.name)
+    except Exception as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        return json_error(str(exc))
+    document.job_id = job.id
+    reader_manager.add(document)
+    job.log("[INFO] Reader document queued.")
+    job_manager.submit(job)
+    return jsonify(document.snapshot()), 202
+
+
+@app.get("/api/reader/documents/<document_id>")
+def reader_document_status(document_id: str):
+    document = reader_manager.get(document_id)
+    if not document:
+        return json_error("Reader document not found.", 404)
+    return jsonify(document.snapshot())
+
+
+@app.get("/api/reader/documents/<document_id>/content")
+def reader_document_content(document_id: str):
+    document = reader_manager.get(document_id)
+    if not document:
+        return json_error("Reader document not found.", 404)
+    if document.status != "ready":
+        return json_error("The reader document is not ready.", 409)
+    return jsonify({"title": document.title, "blocks": document.blocks, "translatedBlocks": document.translated_blocks, "assetBase": f"/api/reader/documents/{document.id}/assets/"})
+
+
+@app.get("/api/reader/documents/<document_id>/assets/<path:asset_path>")
+def reader_asset(document_id: str, asset_path: str):
+    document = reader_manager.get(document_id)
+    if not document:
+        return json_error("Reader document not found.", 404)
+    candidate = (document.root / "output" / safe_relative_path(asset_path)).resolve()
+    output_root = (document.root / "output").resolve()
+    if output_root not in candidate.parents or not candidate.is_file():
+        return json_error("Reader asset not found.", 404)
+    return send_file(candidate)
+
+
+@app.post("/api/reader/documents/<document_id>/questions")
+def reader_question(document_id: str):
+    document = reader_manager.get(document_id)
+    if not document or document.status != "ready":
+        return json_error("Reader document is not ready.", 404)
+    data = request.get_json(silent=True) or {}
+    selection = str(data.get("selection", "")).strip()
+    action = str(data.get("action", "")).strip()
+    block_id = str(data.get("blockId", "")).strip()
+    if not selection or len(selection) > 12000:
+        return json_error("Select between 1 and 12,000 characters of text.")
+    block, context = reader_context(document, block_id)
+    if not block:
+        return json_error("The selected paragraph is unavailable.")
+    try:
+        config = reader_llm_config(data)
+        answer = ask_reader_llm(config, action, selection, block, context, str(data.get("question", "")))
+    except (ValueError, RuntimeError) as exc:
+        return json_error(str(exc), 503 if "SDK" in str(exc) else 400)
+    return jsonify({"answer": answer, "action": action, "sourceBlockId": block_id, "contextBlockIds": [item["id"] for item in context]})
 
 
 @app.get("/api/tools")
