@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
-  <link rel="stylesheet" href="/static/reader.css">
+  <link rel="stylesheet" href="/static/reader.css?v=20260802-pastel-theme">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
@@ -12,9 +12,9 @@
 </head>
 <body>
   <header class="reader-header">
-    <a class="brand" href="/">Everything To Memory</a>
+    <a class="brand" href="/">← 科研工具箱</a>
     <div><p class="eyebrow">PAPER LENS</p><h1>科研论文阅读器</h1></div>
-    <p class="header-copy">为机器学习、深度学习、扩散模型与数学理论而设计</p>
+    <p class="header-copy">为机器学习、深度学习、扩散模型与数学理论而设计 · <a href="/#llm-settings">全局 AI / 语音 / GitHub 配置</a></p>
   </header>
 
   <main>
@@ -22,52 +22,271 @@
       <div>
         <p class="eyebrow">导入论文</p>
         <h2>上传 PDF，或直接打开 Markdown</h2>
-        <p>PDF 将通过 Mathpix 识别为含公式的 Markdown；Markdown/MMD 可直接阅读。选择双语模式后，译文按段落生成并与原文对照。</p>
+        <p>带文字层的 PDF 可直接本地阅读；扫描件可按需交给 Mathpix OCR。Markdown/MMD、HTML/HTM 以及 OCR HTML 均可交给 AI-Markdown-Translator 后端生成整篇译文。</p>
+        <section class="local-library" aria-labelledby="localLibraryTitle">
+          <div class="local-library-heading">
+            <div><p class="eyebrow">LOCAL LIBRARY</p><h3 id="localLibraryTitle">继续上次阅读</h3></div>
+            <button id="refreshLocalLibrary" type="button" aria-label="刷新本地文档">刷新</button>
+          </div>
+          <p class="local-library-policy">这里只缓存文档、OCR 与译文内容；每次打开都会重新应用当前版本的阅读器功能。</p>
+          <div id="localLibraryList" class="local-library-list" aria-live="polite">
+            <p class="local-library-empty">正在检索本地文档…</p>
+          </div>
+        </section>
       </div>
       <form id="uploadForm" class="upload-form">
-        <label id="readerDropzone" class="file-picker"><input id="sourceFile" type="file" accept=".pdf,.md,.mmd" required><span>拖拽 PDF / Markdown / MMD 到这里，或点击选择</span><strong id="fileName">尚未选择文件</strong><small>文件仅保存到本机 .runtime 任务文件夹，不会上传到 GitHub。</small></label>
-        <label>阅读模式
-          <select id="processingMode">
-            <option value="ocr">OCR / 原文阅读</option>
-            <option value="ocr_translate">OCR + 中英对照翻译</option>
-          </select>
-        </label>
+        <label id="readerDropzone" class="file-picker"><input id="sourceFile" type="file" accept=".pdf,.md,.mmd,.html,.htm" required><span>拖拽 PDF / Markdown / MMD / HTML 到这里，或点击选择</span><strong id="fileName">尚未选择文件</strong><small>文件仅保存到本机 .runtime 任务文件夹，不会上传到 GitHub。</small></label>
+        <label id="existingTranslationOption" class="markdown-assets-option hidden"><span><strong>已有译文（可选）</strong><small>如果已经有对应译文，请选择与原文同类型的 PDF、Markdown/MMD 或 HTML；导入后可直接切换原文与译文，不调用 OCR 或 LLM。</small></span><input id="translationFile" type="file" accept=".pdf,.md,.mmd,.html,.htm"><em id="translationFileSummary">选择已有译文</em></label>
+        <label id="markdownAssetsOption" class="markdown-assets-option hidden"><span><strong id="readerAssetsTitle">图片资源目录（可选）</strong><small id="readerAssetsHint">若正文使用相对图片路径，请选择对应的 `.assets`、`images` 或图片目录；目录结构会随文档一同缓存。</small></span><input id="markdownAssets" type="file" accept=".png,.jpg,.jpeg,.gif,.webp,.bmp,.tif,.tiff" multiple webkitdirectory directory><em id="markdownAssetsSummary">选择图片目录</em></label>
+        <div class="processing-options">
+          <label class="toggle-option"><input id="useLocalCache" type="checkbox" checked><span><strong>优先检索本地缓存</strong><small>按文件内容与处理配置匹配；命中后跳过重复 OCR / 整篇翻译。</small></span></label>
+          <label id="ocrOption" class="toggle-option"><input id="useOcr" type="checkbox"><span><strong>使用 OCR</strong><small>仅 PDF；开启后会将文件发送给 Mathpix 并生成 HTML。</small></span></label>
+          <label id="translationOption" class="toggle-option"><input id="generateTranslation" type="checkbox"><span><strong>生成整篇中文译文</strong><small>支持 Markdown/MMD、HTML/HTM 和开启 OCR 的 PDF；统一使用 AI-Markdown-Translator Go 后端。</small></span></label>
+          <label id="alignmentOption" class="toggle-option hidden"><input id="alignTranslation" type="checkbox"><span><strong>使用 LLM 修复段落对齐</strong><small>支持 Markdown/MMD 与 HTML pair；优先用标题、图片、公式和特征句建立锚点，再执行单调 1:N / N:1 对齐。</small></span></label>
+          <p id="pdfTextHint" class="processing-hint" aria-live="polite"></p>
+        </div>
         <div id="uploadLlm" class="llm-config hidden"></div>
         <button class="primary" type="submit">开始准备论文</button>
         <p id="uploadStatus" class="status-text" role="status"></p>
+        <section id="alignmentProgress" class="alignment-progress hidden" aria-live="polite">
+          <div class="alignment-progress-heading">
+            <strong id="alignmentProgressLabel">正在准备 LLM 对齐</strong>
+            <span id="alignmentProgressPercent">0%</span>
+          </div>
+          <div
+            id="alignmentProgressBar"
+            class="alignment-progress-track"
+            role="progressbar"
+            aria-label="LLM 对齐进度"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          ><span></span></div>
+          <small id="alignmentProgressCount"></small>
+        </section>
       </form>
     </section>
 
     <section id="readerShell" class="reader-shell hidden">
-      <aside class="outline-panel">
-        <button id="newPaper" class="text-button">← 导入另一篇</button>
+      <aside id="outlinePanel" class="outline-panel">
         <p class="eyebrow">文档结构</p>
         <h2 id="documentTitle">论文</h2>
         <nav id="outline" aria-label="论文目录"></nav>
-        <div class="view-switch" id="viewSwitch" hidden>
-          <button data-view="original" class="active">原文</button>
-          <button data-view="translated">译文</button>
-        </div>
       </aside>
 
       <article class="paper-panel">
-        <div class="paper-toolbar"><span id="readingStatus" class="status-pill">已就绪</span><span>划选内容以获得针对性解读</span></div>
+        <button id="paperResizeHandle" class="paper-resize-handle" type="button" role="separator" aria-label="拖动调整正文阅读宽度，向左拖动可加宽" aria-orientation="vertical" aria-valuemin="470" aria-valuemax="2500" aria-valuenow="470"></button>
+        <div class="paper-toolbar">
+          <div class="toolbar-copy">
+            <strong id="paperDocumentTitle" class="paper-document-title">论文</strong>
+            <span id="readingStatus" class="status-pill">已就绪</span>
+            <span id="readerInteractionHint">划选内容以获得针对性解读</span>
+          </div>
+          <div class="toolbar-actions">
+            <button id="newPaper" class="toolbar-text-button" type="button">← 导入另一篇</button>
+            <div class="view-switch toolbar-view-switch" id="viewSwitch" hidden>
+              <button type="button" data-view="original" class="active">原文</button>
+              <button type="button" data-view="translated">译文</button>
+              <button id="liveTranslationViewButton" type="button" data-view="liveTranslation">点段翻译</button>
+              <button id="interleavedViewButton" type="button" data-view="interleaved">段落对照</button>
+              <button id="sideBySideViewButton" type="button" data-view="sideBySide">左右对照</button>
+            </div>
+            <div id="zoomControls" class="zoom-controls hidden"><button id="zoomOut" type="button" aria-label="缩小">−</button><span id="zoomLevel">100%</span><button id="zoomIn" type="button" aria-label="放大">＋</button></div>
+            <label id="speechRateControl" class="speech-rate-control hidden">语速
+              <select id="speechPlaybackRate" aria-label="Azure 朗读语速">
+                <option value="0.5">0.5×</option>
+                <option value="0.75">0.75×</option>
+                <option value="1">1.0×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+                <option value="1.75">1.75×</option>
+                <option value="2">2.0×</option>
+              </select>
+            </label>
+            <button id="startSpeech" class="speech-start-button hidden" type="button" aria-pressed="true">🔊 点击朗读：开</button>
+            <button id="stopSpeech" class="speech-stop-button hidden" type="button" disabled>■ 停止朗读</button>
+            <button id="selectionSettingsButton" class="settings-button" type="button" aria-expanded="false" aria-controls="selectionSettingsPanel">
+              <span aria-hidden="true">⚙</span> 阅读设置
+            </button>
+          </div>
+        </div>
+        <section id="selectionSettingsPanel" class="selection-settings hidden" aria-label="阅读与划词设置">
+          <div class="settings-heading">
+            <div><p class="eyebrow">READING SETTINGS</p><h2>阅读与划词设置</h2></div>
+            <button id="closeSelectionSettings" class="icon-button" type="button" aria-label="关闭阅读设置">×</button>
+          </div>
+          <section class="layout-settings" aria-labelledby="readerLayoutTitle">
+            <label class="switch-row">
+              <span>
+                <strong id="readerLayoutTitle">显示文档目录</strong>
+                <small>关闭后隐藏左侧目录，正文扩展到屏幕左侧；各类提问结果继续显示在右侧。</small>
+              </span>
+              <input id="showTableOfContents" type="checkbox" role="switch" checked>
+            </label>
+            <div class="reader-layout-controls">
+              <div class="reader-layout-control">
+                <span><strong>正文阅读宽度</strong><small>向左扩展正文，最大 2500px</small></span>
+                <div class="reader-layout-slider">
+                  <button type="button" data-paper-width-delta="-100" aria-label="缩窄正文阅读区域">−</button>
+                  <input id="paperWidthSlider" type="range" min="470" max="2500" step="10" value="470" aria-label="正文阅读宽度">
+                  <button type="button" data-paper-width-delta="100" aria-label="加宽正文阅读区域">＋</button>
+                  <output id="paperWidthValue" for="paperWidthSlider">470px</output>
+                </div>
+              </div>
+              <div class="reader-layout-control">
+                <span><strong>阅读器中轴偏移</strong><small>负值向左，正值向右</small></span>
+                <div class="reader-layout-slider">
+                  <button type="button" data-reader-axis-delta="-40" aria-label="阅读器中轴向左移动">←</button>
+                  <input id="readerAxisSlider" type="range" min="-1200" max="1200" step="10" value="0" aria-label="阅读器中轴左右偏移">
+                  <button type="button" data-reader-axis-delta="40" aria-label="阅读器中轴向右移动">→</button>
+                  <output id="readerAxisValue" for="readerAxisSlider">0px</output>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section class="typography-settings" aria-labelledby="typographyTitle">
+            <div class="settings-section-heading">
+              <div><h3 id="typographyTitle">阅读字体</h3><p>分别设置中英文正文与数学文本；可输入本机安装的字体名称。</p></div>
+              <button id="resetTypography" type="button">恢复默认</button>
+            </div>
+            <div class="typography-grid">
+              <label class="settings-field">中文字体
+                <input id="chineseFont" list="chineseFontOptions" placeholder="Songti SC, SimSun">
+              </label>
+              <label class="settings-field">英文字体
+                <input id="englishFont" list="englishFontOptions" placeholder="Georgia, Times New Roman">
+              </label>
+              <label class="settings-field">数学字体
+                <input id="mathFont" list="mathFontOptions" placeholder="STIX Two Math, Cambria Math">
+              </label>
+            </div>
+            <p class="typography-hint">适用于 Markdown、OCR/译文、划词回答和笔记。原生 PDF 画面继续使用 PDF 内嵌字体。</p>
+            <datalist id="chineseFontOptions"><option value="Songti SC, SimSun"><option value="Microsoft YaHei, PingFang SC"><option value="KaiTi, STKaiti"><option value="Noto Serif CJK SC"><option value="Noto Sans CJK SC"></datalist>
+            <datalist id="englishFontOptions"><option value="Georgia, Times New Roman"><option value="Times New Roman"><option value="Arial, Helvetica"><option value="Inter"><option value="Palatino Linotype"></datalist>
+            <datalist id="mathFontOptions"><option value="STIX Two Math, Cambria Math"><option value="Cambria Math"><option value="Latin Modern Math"><option value="STIXGeneral"><option value="Times New Roman"></datalist>
+          </section>
+          <section class="reading-layout-settings" aria-labelledby="readingLayoutTitle">
+            <div class="settings-section-heading">
+              <div><h3 id="readingLayoutTitle">正文排版</h3><p>调整可重排文档的字号与文字、行、段落之间的距离。</p></div>
+              <button id="resetReadingLayout" type="button">恢复默认</button>
+            </div>
+            <div class="reading-layout-grid">
+              <label class="numeric-settings-field">字号
+                <span><input id="readerFontSize" type="number" min="10" max="48" step="0.5" inputmode="decimal"><small>px</small></span>
+              </label>
+              <label class="numeric-settings-field">字距
+                <span><input id="readerLetterSpacing" type="number" min="-3" max="12" step="0.1" inputmode="decimal"><small>px</small></span>
+              </label>
+              <label class="numeric-settings-field">行距
+                <span><input id="readerLineHeight" type="number" min="1" max="3" step="0.05" inputmode="decimal"><small>倍</small></span>
+              </label>
+              <label class="numeric-settings-field">段距
+                <span><input id="readerParagraphSpacing" type="number" min="0" max="96" step="1" inputmode="numeric"><small>px</small></span>
+              </label>
+            </div>
+            <div class="page-margin-heading">
+              <strong>页面区域边距</strong>
+              <span>上 / 右 / 下 / 左，单位为 px</span>
+            </div>
+            <div class="page-margin-grid" role="group" aria-label="页眉、正文与页脚边距">
+              <span class="page-margin-corner" aria-hidden="true">区域</span>
+              <span aria-hidden="true">上</span><span aria-hidden="true">右</span><span aria-hidden="true">下</span><span aria-hidden="true">左</span>
+              <strong>页眉</strong>
+              <label><span class="sr-only">页眉上边距</span><input id="headerMarginTop" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="top"></label>
+              <label><span class="sr-only">页眉右边距</span><input id="headerMarginRight" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="right"></label>
+              <label><span class="sr-only">页眉下边距</span><input id="headerMarginBottom" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="bottom"></label>
+              <label><span class="sr-only">页眉左边距</span><input id="headerMarginLeft" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="left"></label>
+              <strong>正文</strong>
+              <label><span class="sr-only">正文上边距</span><input id="bodyMarginTop" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="top"></label>
+              <label><span class="sr-only">正文右边距</span><input id="bodyMarginRight" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="right"></label>
+              <label><span class="sr-only">正文下边距</span><input id="bodyMarginBottom" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="bottom"></label>
+              <label><span class="sr-only">正文左边距</span><input id="bodyMarginLeft" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="left"></label>
+              <strong>页脚</strong>
+              <label><span class="sr-only">页脚上边距</span><input id="footerMarginTop" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="top"></label>
+              <label><span class="sr-only">页脚右边距</span><input id="footerMarginRight" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="right"></label>
+              <label><span class="sr-only">页脚下边距</span><input id="footerMarginBottom" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="bottom"></label>
+              <label><span class="sr-only">页脚左边距</span><input id="footerMarginLeft" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="left"></label>
+            </div>
+            <p class="typography-hint">Markdown、HTML、OCR 与译文会应用全部设置；原生 PDF 保留文件内嵌排版，仅调整页面外围留白。</p>
+          </section>
+          <div class="default-behavior">
+            <label class="switch-row">
+              <span><strong>划词后自动执行</strong><small>开启时自动运行下方默认动作，同时保留操作菜单以便切换。</small></span>
+              <input id="autoSelectionAction" type="checkbox" role="switch">
+            </label>
+            <label class="settings-field">默认动作
+              <select id="defaultSelectionAction"></select>
+            </label>
+          </div>
+          <div class="settings-section-heading">
+            <div><h3>每个动作使用的 LLM</h3><p>单独指定，或使用下方的兜底配置。</p></div>
+          </div>
+          <div id="actionModelMappings" class="action-model-mappings"></div>
+          <details class="fallback-config">
+            <summary>兜底 / 临时 LLM 配置</summary>
+            <div id="questionLlm" class="llm-config"></div>
+          </details>
+          <p id="selectionSettingsStatus" class="settings-status" role="status"></p>
+        </section>
         <div id="paperContent" class="paper-content"></div>
         <div id="selectionMenu" class="selection-menu hidden">
+          <section class="selection-format-toolbar" aria-label="选区文字格式">
+            <div class="format-toolbar-heading"><strong>文字格式</strong><button id="clearSelectionFormat" type="button">清除格式</button></div>
+            <div class="format-toolbar-controls">
+              <div class="format-color-control" title="设置选区底色">
+                <span>底色</span><input id="selectionHighlightColor" type="color" value="#fff0a8" aria-label="选区底色">
+                <button type="button" data-clear-format-color="highlightColor" aria-label="清除底色">×</button>
+              </div>
+              <div class="format-color-control" title="设置选区文字颜色">
+                <span>文字</span><input id="selectionTextColor" type="color" value="#b42318" aria-label="选区文字颜色">
+                <button type="button" data-clear-format-color="textColor" aria-label="恢复文字颜色">×</button>
+              </div>
+              <div class="format-toggle-buttons" aria-label="字形">
+                <button type="button" data-format-toggle="bold" aria-pressed="false" title="粗体"><strong>B</strong></button>
+                <button type="button" data-format-toggle="italic" aria-pressed="false" title="斜体"><em>I</em></button>
+                <button type="button" data-format-toggle="underline" aria-pressed="false" title="下划线"><u>U</u></button>
+                <button type="button" data-format-toggle="strike" aria-pressed="false" title="删除线"><s>S</s></button>
+              </div>
+            </div>
+            <p id="selectionFormatStatus" class="selection-format-status" role="status"></p>
+          </section>
           <p id="selectionPreview"></p>
+          <button id="saveSelectionNote" class="save-selection-note" type="button">＋ 加入阅读笔记</button>
+          <div class="prompt-actions-heading"><strong>Prompt</strong><span>对选区执行</span></div>
           <div id="actionButtons" class="action-buttons"></div>
         </div>
       </article>
 
       <aside class="assistant-panel">
+        <button id="assistantResizeHandle" class="assistant-resize-handle" type="button" role="separator" aria-label="拖动调整划词解读栏宽度" aria-orientation="vertical" aria-valuemin="300" aria-valuemax="2500" aria-valuenow="345"></button>
         <div class="assistant-heading"><div><p class="eyebrow">RESEARCH COPILOT</p><h2>划词解读</h2></div><span class="dot"></span></div>
+        <div class="assistant-width-control" aria-label="调整划词解读面板整体宽度">
+          <span>面板宽度</span>
+          <button type="button" data-assistant-width-delta="-40" aria-label="缩窄划词解读面板">−</button>
+          <input id="assistantWidthSlider" type="range" min="300" max="2500" step="10" value="345" aria-label="划词解读面板宽度">
+          <button type="button" data-assistant-width-delta="40" aria-label="加宽划词解读面板">＋</button>
+          <output id="assistantWidthValue" for="assistantWidthSlider">345px</output>
+        </div>
         <p class="assistant-intro">选择原文或译文后，可解释公式、推导步骤、检视假设或切换到实现视角。</p>
-        <div id="questionLlm" class="llm-config"></div>
         <label class="followup-label">补充问题（可选）<textarea id="customQuestion" placeholder="例如：这里为什么要加噪声？"></textarea></label>
         <section id="answerPanel" class="answer-panel" aria-live="polite"><p>划选论文中的一段文本，然后选择一个预定义问题。</p></section>
+        <div class="answer-note-action"><button id="saveAnswerNote" type="button" disabled>回答会自动保存为配对笔记</button></div>
+        <section class="notes-panel" aria-labelledby="notesTitle">
+          <div class="notes-heading">
+            <div><p class="eyebrow">RESEARCH NOTES</p><h3 id="notesTitle">结构化阅读笔记 <span id="notesCount">0</span></h3></div>
+          </div>
+          <p class="notes-intro">每次划词动作会将选区、Prompt 和返回结果自动配对；单击正文虚线或角标、重新划选缓存文字时，会自动展开并标出对应 Note。每条笔记均可单独删除。</p>
+          <div class="notes-actions">
+            <button id="copyNotes" type="button">复制 Markdown</button>
+            <button id="exportNotes" type="button">导出 .md</button>
+            <button id="clearNotes" class="danger-note-action" type="button">清空</button>
+          </div>
+          <div id="notesList" class="notes-list"><p class="notes-empty">还没有笔记。划词并执行一个 Prompt 后，选区与回答会自动配对保存在这里。</p></div>
+          <p id="notesStatus" class="notes-status" role="status"></p>
+        </section>
       </aside>
     </section>
   </main>
-  <script src="/static/reader.js"></script>
+  <script src="/static/reader.js?v=20260729-paired-width-reflow"></script>
 </body>
 </html>

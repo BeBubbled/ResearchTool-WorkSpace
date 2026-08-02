@@ -106,6 +106,39 @@ them: https://ffmpeg.org/download.html
 EOF
 }
 
+ensure_translation_backend() {
+    local source_dir="$PROJECT_ROOT/translation_backend"
+    local runtime_dir="$PROJECT_ROOT/.runtime/translation-backend"
+    local binary="$runtime_dir/ai-markdown-translator"
+
+    [[ -f "$source_dir/go.mod" ]] || {
+        printf '[%s] AI-Markdown-Translator backend source is missing: %s\n' "$PREFIX" "$source_dir" >&2
+        return 1
+    }
+    if ! command -v go >/dev/null 2>&1; then
+        if ! command -v brew >/dev/null 2>&1; then
+            printf '[%s] Go 1.23+ is required to build the AI-Markdown-Translator backend.\n' "$PREFIX" >&2
+            return 1
+        fi
+        write_step "Go was not found. Installing it with Homebrew."
+        brew install go
+    fi
+
+    local must_build=0
+    [[ -x "$binary" ]] || must_build=1
+    if [[ "$must_build" -eq 0 ]] && find "$source_dir" -type f \( -name '*.go' -o -name 'go.mod' -o -name 'go.sum' \) -newer "$binary" -print -quit | grep -q .; then
+        must_build=1
+    fi
+    if [[ "$must_build" -eq 0 ]]; then
+        write_step "AI-Markdown-Translator backend is already built."
+        return
+    fi
+
+    mkdir -p "$runtime_dir"
+    write_step "Building the backend-only AI-Markdown-Translator adapter."
+    (cd "$source_dir" && go build -trimpath -o "$binary" ./cmd/translator)
+}
+
 ensure_pip() {
     if "$VENV_PYTHON" -c 'import pip' >/dev/null 2>&1; then
         return
@@ -186,6 +219,7 @@ fi
 
 sync_dependencies
 ensure_ffmpeg
+ensure_translation_backend
 
 export WEB_PANEL_PORT="$PORT"
 export WEB_PANEL_OPEN_BROWSER=$([[ "$NO_BROWSER" -eq 1 ]] && printf '0' || printf '1')

@@ -3,28 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Everything To Memory · 工具箱</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <title>科研工具箱 · Research Toolkit</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260802-pastel-theme">
 </head>
 <body>
   <main class="app-shell">
     <aside class="sidebar">
-      <p class="eyebrow">Everything To Memory</p>
-      <h1>本地工具箱</h1>
-      <p class="side-copy">所有文件仅在此电脑的本地任务目录中处理。</p>
-      <a class="reader-entry" href="/reader">打开科研论文阅读器 <span>→</span></a>
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">
+          <i></i><i></i><i></i>
+        </span>
+        <div>
+          <p class="eyebrow">Research Toolkit</p>
+          <h1>科研工具箱</h1>
+        </div>
+      </div>
+      <p class="side-copy">从论文处理到实验素材与科研演示，把常用工作流集中在一个本地工作台。</p>
+      <div class="local-note"><span></span> 本地运行 · 文件不离开设备</div>
+      <a class="reader-entry" href="/reader">
+        <span class="reader-entry-copy"><small>深度阅读</small><strong>论文精读工作台</strong></span>
+        <span class="reader-arrow">→</span>
+      </a>
+      <a class="reader-entry health-entry" href="/health">
+        <span class="reader-entry-copy"><small>个人健康</small><strong>Apple 睡眠整理</strong></span>
+        <span class="reader-arrow">→</span>
+      </a>
+      <button id="llmSettingsNav" class="settings-entry" type="button">
+        <span class="reader-entry-copy"><small>全局设置</small><strong>AI、语音与 GitHub</strong></span>
+        <span class="reader-arrow">⚙</span>
+      </button>
+      <div class="nav-heading"><span>全部工具</span><span id="toolCount">0</span></div>
       <nav id="toolNav" class="tool-nav" aria-label="工具列表"></nav>
     </aside>
     <section class="workspace">
+      <div class="workspace-kicker">
+        <span>科研工作区</span>
+        <span class="workspace-meta">LOCAL / PRIVATE</span>
+      </div>
       <header class="workspace-header">
         <div><p id="toolCategory" class="eyebrow"></p><h2 id="toolTitle">加载工具中…</h2><p id="toolDescription"></p></div>
         <span id="availability" class="badge"></span>
       </header>
       <div id="toolForm" class="tool-form"></div>
-      <section class="task-panel">
+      <section id="taskPanel" class="task-panel">
         <div class="section-heading"><h3>任务状态</h3><span id="taskStatus" class="badge">尚未提交</span></div>
-        <pre id="taskLog" class="task-log">选择一个工具、添加文件并提交任务。</pre>
+        <pre id="taskLog" class="task-log">选择一个科研工具、添加文件并提交任务。</pre>
         <a id="downloadLink" class="download hidden" href="#">下载结果</a>
+        <a id="githubCommitLink" class="download secondary-download hidden" href="#" target="_blank" rel="noreferrer">查看 GitHub 提交</a>
+        <a id="translationDebugLink" class="download hidden" href="#">下载翻译诊断</a>
+        <button id="retryTranslation" class="primary hidden" type="button">从缓冲继续翻译</button>
+        <div id="readerImportPanel" class="reader-import-panel hidden"></div>
       </section>
     </section>
   </main>

@@ -30,6 +30,22 @@ function Test-BootstrapPythonModule {
     return $LASTEXITCODE -eq 0
 }
 
+function Test-BootstrapPythonExecutable {
+    param([string]$Python)
+
+    if (-not (Test-Path -LiteralPath $Python)) {
+        return $false
+    }
+
+    try {
+        $probe = & $Python -c "import sys; print('CODEX_PROJECT_PYTHON_OK' if sys.version_info >= (3, 10) else '')" 2>$null
+        return $LASTEXITCODE -eq 0 -and $probe -contains "CODEX_PROJECT_PYTHON_OK"
+    }
+    catch {
+        return $false
+    }
+}
+
 function Test-BootstrapCommand {
     param([string]$Name)
 
@@ -189,6 +205,128 @@ function New-BootstrapVenv {
     Invoke-BootstrapChecked $pythonInfo.FilePath ($pythonInfo.Arguments + @("-m", "venv", $VenvDir))
 }
 
+function Get-BootstrapGo {
+    param(
+        [string]$ProjectRoot,
+        [string]$Prefix = "translation-backend"
+    )
+
+    $go = Get-Command "go" -ErrorAction SilentlyContinue
+    if ($go) {
+        return $go.Source
+    }
+
+    $installedGo = Join-Path $env:ProgramFiles "Go\bin\go.exe"
+    if (Test-Path -LiteralPath $installedGo) {
+        return $installedGo
+    }
+
+    $toolchainRoot = Join-Path $ProjectRoot ".runtime\toolchains"
+    $localCandidates = @(
+        (Join-Path $toolchainRoot "go1.26.5\go\bin\go.exe"),
+        (Join-Path $toolchainRoot "go-complete\go\bin\go.exe")
+    )
+    foreach ($candidate in $localCandidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $version = "1.26.5"
+    $archive = Join-Path $toolchainRoot "go${version}.windows-amd64.zip"
+    $destination = Join-Path $toolchainRoot "go${version}"
+    $portableGo = Join-Path $destination "go\bin\go.exe"
+    New-Item -ItemType Directory -Path $toolchainRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $archive)) {
+        Write-BootstrapStep $Prefix "Downloading the project-local Go $version toolchain."
+        Invoke-WebRequest -Uri "https://go.dev/dl/go${version}.windows-amd64.zip" -OutFile $archive -UseBasicParsing
+    }
+    $expectedHash = "97e6b2a833b6d89f9ff17d25419ac0a7e3b482a044e9ab18cdef834bd834fd38"
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        throw "Downloaded Go archive checksum mismatch. Expected $expectedHash but received $actualHash."
+    }
+    if (-not (Test-Path -LiteralPath $portableGo)) {
+        if (Test-Path -LiteralPath $destination) {
+            throw "The project-local Go directory is incomplete: $destination. Remove only that directory and rerun the launcher."
+        }
+        Write-BootstrapStep $Prefix "Extracting the project-local Go toolchain."
+        New-Item -ItemType Directory -Path $destination | Out-Null
+        tar.exe -xf $archive -C $destination
+    }
+    if (-not (Test-Path -LiteralPath $portableGo)) {
+        throw "The project-local Go toolchain is incomplete: $portableGo"
+    }
+    return $portableGo
+}
+
+function Ensure-BootstrapTranslationBackend {
+    param(
+        [string]$ProjectRoot,
+        [string]$Prefix = "translation-backend"
+    )
+
+    $sourceDir = Join-Path $ProjectRoot "translation_backend"
+    $runtimeDir = Join-Path $ProjectRoot ".runtime\translation-backend"
+    $binary = Join-Path $runtimeDir "ai-markdown-translator.exe"
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceDir "go.mod"))) {
+        throw "AI-Markdown-Translator backend source is missing: $sourceDir"
+    }
+
+    $mustBuild = -not (Test-Path -LiteralPath $binary)
+    if (-not $mustBuild) {
+        $binaryTime = (Get-Item -LiteralPath $binary).LastWriteTimeUtc
+        $newerSource = Get-ChildItem -LiteralPath $sourceDir -Recurse -File |
+            Where-Object { $_.Name -in @("go.mod", "go.sum") -or $_.Extension -eq ".go" } |
+            Where-Object { $_.LastWriteTimeUtc -gt $binaryTime } |
+            Select-Object -First 1
+        $mustBuild = $null -ne $newerSource
+    }
+    if (-not $mustBuild) {
+        Write-BootstrapStep $Prefix "AI-Markdown-Translator backend is already built."
+        return $binary
+    }
+
+    $go = Get-BootstrapGo -ProjectRoot $ProjectRoot -Prefix $Prefix
+    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    $env:GOCACHE = (New-Item -ItemType Directory -Path (Join-Path $ProjectRoot ".runtime\go-cache") -Force).FullName
+    $env:GOPATH = (New-Item -ItemType Directory -Path (Join-Path $ProjectRoot ".runtime\go-path") -Force).FullName
+    $env:GOMODCACHE = (New-Item -ItemType Directory -Path (Join-Path $ProjectRoot ".runtime\go-mod-cache") -Force).FullName
+    $env:GOTOOLCHAIN = "local"
+    Write-BootstrapStep $Prefix "Building the backend-only AI-Markdown-Translator adapter."
+    Push-Location $sourceDir
+    try {
+        Invoke-BootstrapChecked $go @("build", "-trimpath", "-o", $binary, ".\cmd\translator")
+    }
+    finally {
+        Pop-Location
+    }
+    if (-not (Test-Path -LiteralPath $binary)) {
+        throw "The AI-Markdown-Translator backend build did not produce $binary"
+    }
+    return $binary
+}
+
+function Move-BootstrapInvalidVenv {
+    param(
+        [string]$ProjectRoot,
+        [string]$VenvDir,
+        [string]$Prefix
+    )
+
+    $root = (Resolve-Path -LiteralPath $ProjectRoot).Path.TrimEnd('\')
+    $resolvedVenv = (Resolve-Path -LiteralPath $VenvDir).Path.TrimEnd('\')
+    $expectedVenv = (Join-Path $root ".venv").TrimEnd('\')
+    if (-not $resolvedVenv.Equals($expectedVenv, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to move an invalid environment outside the project .venv: $resolvedVenv"
+    }
+
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $backupDir = Join-Path $root ".venv.invalid-$timestamp"
+    Write-BootstrapStep $Prefix "Existing project .venv cannot run. Preserving it at $backupDir"
+    Move-Item -LiteralPath $resolvedVenv -Destination $backupDir
+}
+
 function Get-BootstrapRequirementsHash {
     param([string]$Requirements)
 
@@ -258,6 +396,10 @@ function Initialize-ProjectPythonEnvironment {
     $RequirementsStamp = Join-Path $VenvDir ".requirements.sha256"
 
     Write-BootstrapStep $Prefix "Python dependencies are isolated in project .venv."
+
+    if ((Test-Path -LiteralPath $VenvDir) -and -not (Test-BootstrapPythonExecutable $VenvPython)) {
+        Move-BootstrapInvalidVenv $ProjectRoot $VenvDir $Prefix
+    }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         New-BootstrapVenv $ProjectRoot $VenvDir $Prefix

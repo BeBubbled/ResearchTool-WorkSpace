@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172650">
+  <title>眠序 · Apple 睡眠整理</title>
+  <meta name="description" content="在浏览器本地解析 Apple 健康导出，合并重复记录并整理睡眠趋势与分期。">
+  <link rel="stylesheet" href="/static/health.css?v=20260802-pastel-theme">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回科研工具箱">
+      <span class="brand-orbit" aria-hidden="true"><i></i></span>
+      <span><strong>眠序</strong><small>SLEEP ARCHIVE</small></span>
+    </a>
+    <div class="topbar-actions">
+      <span class="privacy-pill"><i></i> 仅在此浏览器处理</span>
+      <a class="back-link" href="/">返回工具箱</a>
+    </div>
+  </header>
+
+  <main>
+    <section id="importSection" class="import-hero">
+      <div class="hero-copy">
+        <p class="eyebrow">APPLE HEALTH · SLEEP</p>
+        <h1>把每一晚，整理成<br><em>看得懂的睡眠。</em></h1>
+        <p class="hero-lead">导入 Apple 健康导出的 ZIP 或 XML。眠序会合并多设备重叠记录、优先采用 Apple Watch 睡眠分期，并把旧数据清楚标记为估算。</p>
+        <div class="hero-notes" aria-label="功能特点">
+          <span><i>01</i> 多来源去重</span>
+          <span><i>02</i> 睡眠分期整理</span>
+          <span><i>03</i> 一键导出 CSV</span>
+        </div>
+      </div>
+
+      <div class="import-card">
+        <div class="moon-visual" aria-hidden="true">
+          <div class="moon"></div>
+          <span class="star star-a"></span><span class="star star-b"></span><span class="star star-c"></span>
+          <div class="orbit"></div>
+        </div>
+        <label id="dropzone" class="dropzone" for="healthFile">
+          <input id="healthFile" type="file" accept=".zip,.xml,application/zip,text/xml,application/xml">
+          <span class="upload-icon" aria-hidden="true">↥</span>
+          <strong>拖入 Apple 健康导出</strong>
+          <small>或点击选择 <b>导出.zip</b> / <b>export.xml</b></small>
+        </label>
+        <div id="importProgress" class="import-progress hidden" aria-live="polite">
+          <div class="progress-heading"><span id="progressLabel">正在读取健康数据…</span><b id="progressCount"></b></div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+        </div>
+        <p id="importError" class="import-error hidden" role="alert"></p>
+        <p class="local-proof"><span aria-hidden="true">⌁</span> 文件不会上传，也不会保存到服务器</p>
+      </div>
+    </section>
+
+    <section id="dashboard" class="dashboard hidden" aria-labelledby="dashboardTitle">
+      <header class="dashboard-header">
+        <div>
+          <p class="eyebrow">YOUR SLEEP ARCHIVE</p>
+          <h1 id="dashboardTitle">睡眠档案</h1>
+          <p id="archiveSummary">已整理睡眠数据</p>
+        </div>
+        <div class="dashboard-actions">
+          <label>数据来源
+            <select id="sourceFilter" aria-label="筛选数据来源"><option value="all">全部来源</option></select>
+          </label>
+          <label>时间范围
+            <select id="rangeFilter" aria-label="筛选时间范围">
+              <option value="30">最近 30 晚</option>
+              <option value="90">最近 90 晚</option>
+              <option value="all">全部记录</option>
+            </select>
+          </label>
+          <button id="exportCsv" class="button secondary" type="button">导出 CSV</button>
+          <button id="importAnother" class="button primary" type="button">重新导入</button>
+        </div>
+      </header>
+
+      <section class="metric-grid" aria-label="睡眠概览">
+        <article class="metric-card metric-featured">
+          <div class="metric-heading"><span>平均睡眠</span><i class="metric-dot violet"></i></div>
+          <strong id="avgSleep">—</strong>
+          <p id="avgSleepNote">等待数据</p>
+          <div class="goal-track"><span id="goalBar"></span></div>
+          <small>目标 8 小时</small>
+        </article>
+        <article class="metric-card">
+          <div class="metric-heading"><span>平均入睡</span><i class="metric-dot blue"></i></div>
+          <strong id="avgBedtime">—</strong>
+          <p id="bedtimeNote">以主睡眠段开始计</p>
+        </article>
+        <article class="metric-card">
+          <div class="metric-heading"><span>睡眠效率</span><i class="metric-dot green"></i></div>
+          <strong id="avgEfficiency">—</strong>
+          <p id="efficiencyNote">睡眠 / 睡眠窗口</p>
+        </article>
+        <article class="metric-card">
+          <div class="metric-heading"><span>已整理夜晚</span><i class="metric-dot amber"></i></div>
+          <strong id="nightCount">—</strong>
+          <p id="nightCountNote">— 条原始睡眠记录</p>
+        </article>
+      </section>
+
+      <section class="analysis-grid">
+        <article class="panel trend-panel">
+          <header class="panel-heading">
+            <div><p class="eyebrow">DURATION TREND</p><h2>近 14 晚睡眠</h2></div>
+            <div class="chart-legend" aria-label="图例">
+              <span><i class="deep"></i>深睡</span><span><i class="rem"></i>REM</span><span><i class="core"></i>核心</span><span><i class="other"></i>未细分</span>
+            </div>
+          </header>
+          <div class="trend-chart-wrap">
+            <div class="y-axis"><span>12h</span><span>8h</span><span>4h</span><span>0h</span></div>
+            <div id="trendChart" class="trend-chart" role="img" aria-label="最近十四晚睡眠时长柱状图"></div>
+          </div>
+        </article>
+
+        <article class="panel stage-panel">
+          <header class="panel-heading">
+            <div><p class="eyebrow">SLEEP STAGES</p><h2>平均睡眠结构</h2></div>
+          </header>
+          <div class="stage-content">
+            <div id="stageDonut" class="stage-donut" role="img" aria-label="睡眠分期占比">
+              <div><strong id="stageTotal">—</strong><span>平均每晚</span></div>
+            </div>
+            <div id="stageLegend" class="stage-legend"></div>
+          </div>
+          <p id="stageCoverage" class="coverage-note">仅对有睡眠分期的夜晚统计。</p>
+        </article>
+      </section>
+
+      <section id="insightStrip" class="insight-strip" aria-label="数据观察"></section>
+
+      <section class="panel nights-panel">
+        <header class="panel-heading table-heading">
+          <div><p class="eyebrow">NIGHTLY LOG</p><h2>每晚记录</h2></div>
+          <p>同一晚的手机、手表与第三方来源已合并去重</p>
+        </header>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>夜晚</th><th>睡眠窗口</th><th>总睡眠</th><th>睡眠结构</th><th>效率</th><th>来源</th></tr></thead>
+            <tbody id="nightRows"></tbody>
+          </table>
+        </div>
+        <button id="showMore" class="show-more hidden" type="button">显示更多夜晚</button>
+      </section>
+
+      <footer class="method-note">
+        <strong>整理口径</strong>
+        <p>优先使用“深睡 / REM / 核心 / 清醒”分期；其他设备的重叠“已睡眠”不会重复累计。没有睡眠分期的旧记录使用“在床”时段估算，并在表格中标明。结果用于个人回顾，不构成医疗建议。</p>
+      </footer>
+    </section>
+  </main>
+
+  <script src="/static/health.js?v=20260730"></script>
+</body>
+</html>
