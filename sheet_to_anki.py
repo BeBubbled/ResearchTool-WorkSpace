@@ -11,8 +11,8 @@ try:
     import pandas as pd
 except ImportError as exc:  # pragma: no cover - only exercised without deps
     raise SystemExit(
-        "Missing dependency: pandas. Run .\\run_sheet_to_anki.ps1 so dependencies "
-        "are installed into the project .venv."
+        "Missing dependency: pandas. Run the project launcher for your operating system "
+        "so dependencies are installed into the project .venv."
     ) from exc
 
 
@@ -77,7 +77,7 @@ def read_table(input_path: Path, sheet_name: str | None) -> pd.DataFrame:
         except ImportError as exc:
             raise SheetToAnkiError(
                 f"Reading {suffix} files requires {engine}. Install dependencies with: "
-                ".\\run_sheet_to_anki.ps1 or .\\run_web_panel.ps1."
+                "the project launcher for your operating system."
             ) from exc
 
         target_sheet = sheet_name or workbook.sheet_names[0]

@@ -6,7 +6,7 @@ This project is developed entirely through ViveCoding. The code is provided as-i
 
 ## Local toolbox
 
-Start the local web panel:
+Start the local web panel on Windows:
 
 ```powershell
 .\run_web_panel.ps1
@@ -20,20 +20,28 @@ change your system policy:
 .\run_web_panel.cmd
 ```
 
-On macOS, double-click `run_web_panel.command` in Finder, or run it from
-Terminal:
+On macOS, double-click `run_web_panel.command` in Finder, or run the shared
+macOS/Linux launcher from Terminal:
 
 ```bash
 chmod +x run_web_panel.command
 ./run_web_panel.command
+# Or: ./run_web_panel.sh
 ```
 
-The macOS launcher creates and reuses the same project-local `.venv`, installs
+On Linux, run:
+
+```bash
+chmod +x run_web_panel.sh
+./run_web_panel.sh
+```
+
+The macOS/Linux launcher creates and reuses a project-local `.venv`, installs
 dependencies from `requirements.txt` when needed, and opens the panel in the
-default browser. If Python 3.10+ is missing, it installs Python 3.12 through
-Homebrew when Homebrew is available. It also installs FFmpeg through Homebrew
-for the video tools. You can pass `--no-browser`, `--no-pause`, or `--port 8765`
-to the macOS launcher.
+default browser. It requires Python 3.10+ and Go 1.23+; macOS installs missing
+Python and Go through Homebrew, while Linux prints distribution-specific install
+instructions. FFmpeg is optional: without it the non-video tools remain usable.
+You can pass `--no-browser`, `--no-pause`, or `--port 8765` to either launcher.
 The launcher opens the local web panel automatically when it is ready. If port
 `8765` is unavailable, it chooses another local port and prints the actual URL
 in the launcher window.
@@ -47,7 +55,7 @@ job. Results are downloaded from the panel; original files are never renamed.
 
 - 自动生成的 Markdown/MMD 整篇译文会在交付前进行本地数学结构后处理：仅修复高置信度的粘连或缺失行间 `$$` 分隔符，并跳过围栏代码块和普通行内公式。HTML/HTM 译文保持原样。
 - 若译文仍存在未配对 `$$`、数学块吞入标题/图片/脚注/正文或未转义 `#` 等结构风险，任务会失败而不会发布正式 `*_zh-CN.md/.mmd`；原始模型输出会保留为 `*_zh-CN_unfixed.md/.mmd` 供下载、检查或重试。
-- 面板中的“Markdown 修复”可独立处理 `.md` 与 `.mmd`，不会翻译正文或覆盖上传文件：默认输出 `*_fixed` 副本，并执行确定性 `$$` 与 OCR 合并脚注修复。脚注仅在正文上标与合并定义能唯一对应时拆分；歧义内容不会猜测修改。可按需开启中文标点转英文符号（代码、公式、链接和 URL 保持不变）或需要 LLM 的深度 OCR 结构修复。校验失败时会保留 `*_fixed_unfixed` 原稿供下载。
+- 面板中的“Markdown 修复”可独立处理 `.md` 与 `.mmd`，不会翻译正文或覆盖上传文件：默认输出 `*_fixed` 副本，并将含空格但未用尖括号包裹的本地图片路径（如 `![图](Conceptual Framework.png)`）修复为合法写法。它也执行确定性 `$$` 与 OCR 合并脚注修复。脚注仅在正文上标与合并定义能唯一对应时拆分；歧义内容不会猜测修改。可按需开启中文标点转英文符号（代码、公式、链接和 URL 保持不变）或需要 LLM 的深度 OCR 结构修复。校验失败时会保留 `*_fixed_unfixed` 原稿供下载。
 
 ### 科研论文阅读器
 
@@ -153,12 +161,16 @@ Use the PowerShell launcher on Windows:
 .\run_sheet_to_anki.ps1 input.xlsx --front-sheet 正面Sheet --front 正面列名 --back-sheet 背面Sheet --back 背面列名 --output anki_cards.txt
 ```
 
-On a new computer, the launcher checks for a project-local `.venv`. If it is
-missing, it finds or installs Python 3 with `winget`, creates `.venv`, installs
-`requirements.txt` into that isolated environment only, and then runs the
-converter. Later runs reuse `.venv` and only reinstall dependencies when
-`requirements.txt` changes. The launchers never install Python packages into the
-user's system Python environment.
+On macOS or Linux, use:
+
+```bash
+./run_sheet_to_anki.sh input.xlsx --front-sheet 正面Sheet --front 正面列名 --back-sheet 背面Sheet --back 背面列名 --output anki_cards.txt
+```
+
+On a new computer, the launcher creates a project-local `.venv` and installs
+`requirements.txt` into that isolated environment only. Later runs reuse `.venv`
+and only reinstall dependencies when `requirements.txt` changes. The launchers
+never install Python packages into the user's system Python environment.
 
 The generated `.txt` file is tab-separated and can be imported directly by Anki.
 

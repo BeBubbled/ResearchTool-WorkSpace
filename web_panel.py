@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 import webbrowser
 import zipfile
@@ -169,7 +170,7 @@ class ToolSpec:
 TOOLS = (
     ToolSpec("pdf_ocr_translate", "论文 PDF OCR", "文献处理", "将论文 PDF 识别为 Markdown、HTML、DOCX 与 LaTeX 等科研格式。", PDF_SUFFIXES, ("requests", "dotenv"), max_files=1),
     ToolSpec("document_translate", "科研文档翻译", "文献处理", "使用 AI-Markdown-Translator 后端批量翻译 Markdown、MMD 或 HTML。", TRANSLATABLE_SUFFIXES),
-    ToolSpec("markdown_repair", "Markdown 修复", "文献处理", "独立修复 Markdown/MMD 的结构与行间公式边界，不翻译正文。", {".md", ".mmd"}),
+    ToolSpec("markdown_repair", "Markdown 修复", "文献处理", "独立修复 Markdown/MMD 的结构、图片路径与行间公式边界，不翻译正文。", {".md", ".mmd"}),
     ToolSpec("markdown_github", "Markdown 图片发布", "文献处理", "将 Markdown 引用的本地图片发布到 GitHub，并下载替换链接后的副本。", GITHUB_PUBLISH_SUFFIXES),
     ToolSpec("bibtex", "论文标题转 BibTeX", "文献处理", "根据论文标题检索并整理可直接引用的 BibTeX。", {".txt"}, ("scholarly",), max_files=1),
     ToolSpec("anki", "研究笔记转 Anki", "知识整理", "从表格选择问答字段，导出可直接导入 Anki 的复习卡片。", ALLOWED_TABLE_SUFFIXES, max_files=1),
@@ -1193,7 +1194,7 @@ def dependency_error(tool: ToolSpec) -> str | None:
     if missing:
         return (
             f"Missing Python dependency: {', '.join(missing)}. "
-            "Run run_web_panel.ps1 on Windows or run_web_panel.command on macOS."
+            "Run the project launcher for your operating system."
         )
     if tool.needs_ffmpeg:
         missing_bins = [binary for binary in ("ffmpeg", "ffprobe") if shutil.which(binary) is None]
@@ -1247,6 +1248,19 @@ def safe_output_stem(value: str) -> str:
     raw = Path(value).stem if value else "document"
     cleaned = re.sub(r'[\\/:*?"<>|#%\x00-\x1f]', "_", raw).strip(". ")
     return cleaned[:180] or "document"
+
+
+def relative_path_within(path: Path, root: Path) -> Path:
+    """Return a relative path while accepting equivalent symlinked roots.
+
+    macOS commonly aliases ``/var`` to ``/private/var``. Comparing the original
+    spelling first avoids changing normal paths, while the resolved fallback
+    keeps internal task and cache paths interoperable across that alias.
+    """
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return path.resolve().relative_to(root.resolve())
 
 
 def local_pdf_source_path(options: dict[str, Any]) -> Path:
@@ -1369,9 +1383,12 @@ def add_artifact(job: Job, path: Path, kind: str, format_name: str) -> None:
 def artifact_for_id(job: Job, artifact_id: str) -> tuple[dict[str, Any], Path] | None:
     for artifact in job.artifacts:
         if artifact["id"] == artifact_id:
-            path = (job.root / "output" / artifact["name"]).resolve()
-            output_dir = (job.root / "output").resolve()
-            if path.parent == output_dir and path.is_file():
+            # Preserve the original path spelling for callers. macOS exposes
+            # both /var and /private/var, and returning only the resolved form
+            # makes a valid task file fail equality checks against its root.
+            output_dir = job.root / "output"
+            path = output_dir / artifact["name"]
+            if path.resolve().parent == output_dir.resolve() and path.is_file():
                 return artifact, path
     return None
 
@@ -1739,14 +1756,30 @@ def normalized_markdown_label(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def github_markdown_references(text: str) -> list[GithubMarkdownReference]:
+def contains_unescaped_whitespace(value: str) -> bool:
+    escaped = False
+    for character in value:
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character.isspace():
+            return True
+    return False
+
+
+def is_unbracketed_local_image_destination(value: str) -> bool:
+    """Return whether a Markdown destination can be safely wrapped in ``<...>``."""
+    if not contains_unescaped_whitespace(value):
+        return False
+    decoded = local_markdown_asset_path(value)
+    return decoded is not None and PurePosixPath(decoded).suffix.lower() in GITHUB_IMAGE_SUFFIXES
+
+
+def github_inline_markdown_image_references(text: str) -> list[GithubMarkdownReference]:
+    """Extract inline image destinations, including unbracketed local paths with spaces."""
     masked = mask_markdown_code(text)
     references: list[GithubMarkdownReference] = []
-
-    def add_span(match: re.Match[str], group: str | int) -> None:
-        start, end = match.span(group)
-        if start >= 0 and end > start:
-            references.append(GithubMarkdownReference(start, end, text[start:end]))
 
     inline_start_pattern = re.compile(r"!\[(?:\\.|[^\]\r\n])*\]\(\s*")
     for match in inline_start_pattern.finditer(masked):
@@ -1761,6 +1794,7 @@ def github_markdown_references(text: str) -> list[GithubMarkdownReference]:
         start = cursor
         depth = 0
         escaped = False
+        closing = -1
         while cursor < len(masked):
             char = masked[cursor]
             if escaped:
@@ -1771,13 +1805,48 @@ def github_markdown_references(text: str) -> list[GithubMarkdownReference]:
                 depth += 1
             elif char == ")":
                 if depth == 0:
+                    closing = cursor
                     break
+                depth -= 1
+            cursor += 1
+        content_end = closing if closing >= 0 else cursor
+        raw_end = start + len(text[start:content_end].rstrip())
+        if raw_end <= start:
+            continue
+        raw_target = text[start:raw_end]
+        if is_unbracketed_local_image_destination(raw_target):
+            references.append(GithubMarkdownReference(start, raw_end, raw_target))
+            continue
+
+        target_end = start
+        depth = 0
+        escaped = False
+        while target_end < raw_end:
+            char = masked[target_end]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "(":
+                depth += 1
+            elif char == ")" and depth:
                 depth -= 1
             elif char.isspace() and depth == 0:
                 break
-            cursor += 1
-        if cursor > start:
-            references.append(GithubMarkdownReference(start, cursor, text[start:cursor]))
+            target_end += 1
+        if target_end > start:
+            references.append(GithubMarkdownReference(start, target_end, text[start:target_end]))
+    return references
+
+
+def github_markdown_references(text: str) -> list[GithubMarkdownReference]:
+    masked = mask_markdown_code(text)
+    references = github_inline_markdown_image_references(text)
+
+    def add_span(match: re.Match[str], group: str | int) -> None:
+        start, end = match.span(group)
+        if start >= 0 and end > start:
+            references.append(GithubMarkdownReference(start, end, text[start:end]))
 
     latex_pattern = re.compile(r"\\includegraphics(?:\[[^\]\r\n]*\])?\{(?P<path>[^}\r\n]+)\}")
     for match in latex_pattern.finditer(masked):
@@ -1846,7 +1915,21 @@ def local_markdown_asset_path(target: str) -> str | None:
     return decoded or None
 
 
-def resolve_github_markdown_asset(input_root: Path, source_relative: Path, target: str) -> tuple[Path, Path] | None:
+def repair_unbracketed_markdown_image_paths(text: str) -> tuple[str, int]:
+    """Wrap unambiguous local image destinations containing spaces in angle brackets."""
+    replacements: list[tuple[int, int, str]] = []
+    for reference in github_inline_markdown_image_references(text):
+        if reference.start > 0 and text[reference.start - 1] == "<":
+            continue
+        if is_unbracketed_local_image_destination(reference.target):
+            replacements.append((reference.start, reference.end, f"<{reference.target}>"))
+    for start, end, replacement in reversed(replacements):
+        text = text[:start] + replacement + text[end:]
+    return text, len(replacements)
+
+
+def github_markdown_asset_relative_path(source_relative: Path, target: str) -> Path | None:
+    """Convert one local Markdown target to a validated task-relative path."""
     decoded = local_markdown_asset_path(target)
     if decoded is None:
         return None
@@ -1865,8 +1948,44 @@ def resolve_github_markdown_asset(input_root: Path, source_relative: Path, targe
         parts.append(part)
     if not parts:
         raise ValueError(f"图片引用路径无效：{target}")
-    relative = Path(*parts)
-    candidate = (input_root / relative).resolve()
+    return Path(*parts)
+
+
+def unicode_equivalent_uploaded_path(input_root: Path, relative: Path) -> Path:
+    """Resolve a validated upload path while tolerating NFC/NFD filename differences.
+
+    Markdown generated on one platform may spell an accented filename with a
+    single code point while browsers upload the same visible filename as a base
+    character plus combining mark. Only exact Unicode-normalized component
+    matches are considered, and ambiguous matches are rejected.
+    """
+    current = input_root
+    for index, part in enumerate(relative.parts):
+        exact = current / part
+        if exact.exists():
+            current = exact
+            continue
+        if not current.is_dir():
+            return current.joinpath(*relative.parts[index:])
+        normalized_part = unicodedata.normalize("NFC", part)
+        matches = [
+            child for child in current.iterdir()
+            if unicodedata.normalize("NFC", child.name) == normalized_part
+        ]
+        if len(matches) == 1:
+            current = matches[0]
+            continue
+        if len(matches) > 1:
+            raise ValueError(f"图片引用路径存在无法确定的 Unicode 名称匹配：{relative.as_posix()}")
+        return current.joinpath(*relative.parts[index:])
+    return current
+
+
+def resolve_github_markdown_asset(input_root: Path, source_relative: Path, target: str) -> tuple[Path, Path] | None:
+    relative = github_markdown_asset_relative_path(source_relative, target)
+    if relative is None:
+        return None
+    candidate = unicode_equivalent_uploaded_path(input_root, relative).resolve()
     resolved_root = input_root.resolve()
     if resolved_root not in candidate.parents:
         raise ValueError(f"图片引用越出了上传目录：{target}")
@@ -1875,6 +1994,60 @@ def resolve_github_markdown_asset(input_root: Path, source_relative: Path, targe
     if not candidate.is_file():
         raise ValueError(f"Markdown 引用的图片未随任务提供：{target}")
     return candidate, relative
+
+
+def log_github_asset_resolution_diagnostics(
+    job: Job,
+    input_root: Path,
+    source_relative: Path,
+    target: str,
+) -> None:
+    """Write evidence from the task's uploaded files when an asset cannot resolve."""
+    job.log(f"[GITHUB][DIAGNOSTIC] Markdown image target (literal): {target!r}")
+    job.log(f"[GITHUB][DIAGNOSTIC] Markdown source in task: {source_relative.as_posix()!r}")
+    try:
+        relative = github_markdown_asset_relative_path(source_relative, target)
+    except ValueError as exc:
+        job.log(f"[GITHUB][DIAGNOSTIC] Target cannot form a safe task-relative path: {exc}")
+        return
+    if relative is None:
+        job.log("[GITHUB][DIAGNOSTIC] Target is remote, root-relative, fragment-only, or empty; no local file is expected.")
+        return
+    candidate = unicode_equivalent_uploaded_path(input_root, relative)
+    job.log(f"[GITHUB][DIAGNOSTIC] Expected uploaded path: {relative.as_posix()!r}")
+    job.log(
+        "[GITHUB][DIAGNOSTIC] Resolved candidate status: "
+        f"exists={candidate.exists()}, is_file={candidate.is_file()}, is_dir={candidate.is_dir()}."
+    )
+    uploaded_images = [
+        path for path in input_root.rglob("*")
+        if path.is_file() and path.suffix.lower() in GITHUB_IMAGE_SUFFIXES
+    ]
+    job.log(f"[GITHUB][DIAGNOSTIC] Image files actually uploaded with this task: {len(uploaded_images)}.")
+    exact_name_matches = [
+        path.relative_to(input_root).as_posix()
+        for path in uploaded_images
+        if path.name == relative.name
+    ]
+    normalized_name_matches = [
+        path.relative_to(input_root).as_posix()
+        for path in uploaded_images
+        if unicodedata.normalize("NFC", path.name) == unicodedata.normalize("NFC", relative.name)
+    ]
+    if exact_name_matches:
+        job.log(
+            "[GITHUB][DIAGNOSTIC] Uploaded files with the same filename: "
+            + ", ".join(exact_name_matches[:10])
+            + (" (additional matches omitted)" if len(exact_name_matches) > 10 else "")
+        )
+    elif normalized_name_matches:
+        job.log(
+            "[GITHUB][DIAGNOSTIC] Uploaded files with a Unicode-equivalent filename: "
+            + ", ".join(normalized_name_matches[:10])
+            + (" (additional matches omitted)" if len(normalized_name_matches) > 10 else "")
+        )
+    else:
+        job.log("[GITHUB][DIAGNOSTIC] No uploaded image has the requested filename.")
 
 
 def github_raw_url(repository: str, commit_sha: str, path: str) -> str:
@@ -1985,7 +2158,11 @@ def run_github_markdown_publish(job: Job) -> None:
     references = github_markdown_references(text)
     resolved: list[tuple[GithubMarkdownReference, Path]] = []
     for reference in references:
-        asset = resolve_github_markdown_asset(input_root, source_relative, reference.target)
+        try:
+            asset = resolve_github_markdown_asset(input_root, source_relative, reference.target)
+        except ValueError:
+            log_github_asset_resolution_diagnostics(job, input_root, source_relative, reference.target)
+            raise
         if asset is not None:
             resolved.append((reference, asset[0]))
     if not resolved:
@@ -2055,6 +2232,7 @@ def glued_backtick_fence_match(line: str, opening: tuple[str, int] | None) -> re
 
 def deterministic_markdown_repairs(text: str) -> str:
     """Apply only repairs whose intended output is structurally unambiguous."""
+    text, _image_path_repairs = repair_unbracketed_markdown_image_paths(text)
     text = re.sub(
         r"(\[\^[^\]\r\n]+\])[ \t]*(?=(?:```|~~~))",
         r"\1\n\n",
@@ -2169,7 +2347,8 @@ def markdown_without_fenced_code(text: str) -> str:
 
 def markdown_repair_errors(original: str, repaired: str) -> list[str]:
     errors: list[str] = []
-    if markdown_image_references(original) != markdown_image_references(repaired):
+    normalized_original, _image_path_repairs = repair_unbracketed_markdown_image_paths(original)
+    if markdown_image_references(normalized_original) != markdown_image_references(repaired):
         errors.append("localized image references changed")
 
     blocks, unmatched_fence = markdown_fence_blocks(repaired)
@@ -5507,15 +5686,17 @@ def run_markdown_repair_tool(job: Job) -> None:
         try:
             job.log(f"[MARKDOWN REPAIR] Analyzing {relative.as_posix()}.")
             changes: list[str] = []
+            repaired, image_path_repairs = repair_unbracketed_markdown_image_paths(original)
+            if image_path_repairs:
+                changes.append(f"wrapped {image_path_repairs} local image path(s) containing spaces in angle brackets")
             if deep_repair:
                 repaired = repair_markdown_text(
                     job,
-                    original,
+                    repaired,
                     source.suffix.lower().lstrip("."),
                     repair_footnotes=footnote_repair,
                 )
             else:
-                repaired = original
                 if footnote_repair:
                     repaired, footnote_changes = repair_merged_markdown_footnotes(repaired)
                     changes.extend(footnote_changes)
@@ -5595,12 +5776,15 @@ def run_translation_backend(
             "AI-Markdown-Translator backend is not built. Run the project launcher again "
             "so it can build translation_backend."
         )
-    source_root = source_root.resolve()
+    # Keep the caller's absolute spelling intact. On macOS, /var is commonly a
+    # symlink to /private/var; resolving only one side turns otherwise identical
+    # task paths into paths that cannot be compared with ``relative_to``.
+    source_root = source_root.absolute()
     output_root.mkdir(parents=True, exist_ok=True)
-    output_root = output_root.resolve()
+    output_root = output_root.absolute()
     relative_sources: list[Path] = []
     for source in sources:
-        source = source.resolve()
+        source = source.absolute()
         try:
             relative = source.relative_to(source_root)
         except ValueError as exc:
@@ -6752,7 +6936,7 @@ def translate_reader_html_with_backend(job: Job, document: ReaderDocument, html_
             job.log("[CACHE] Saved HTML translation to the persistent local reader cache.")
         except Exception as exc:
             note_reader_cache_failure(job, "save HTML translation to", exc)
-    document.translated_filename = translated.relative_to(output_root).as_posix()
+    document.translated_filename = relative_path_within(translated, output_root).as_posix()
     return translated
 
 
@@ -6797,7 +6981,7 @@ def run_reader_document(job: Job) -> None:
             job.log("[CACHE] No reusable OCR output found; starting Mathpix OCR.")
             html_source = run_reader_html_ocr(job, source)
         document.render_kind = "html"
-        document.document_filename = html_source.relative_to(job.root / "output").as_posix()
+        document.document_filename = relative_path_within(html_source, job.root / "output").as_posix()
         try:
             store_reader_ocr_cache(job, document)
             if "ocr" in document.cache_hits:
@@ -7488,7 +7672,7 @@ def open_reader_library_document(cache_key: str):
             primary_source = restore_reader_ocr_cache(job, document)
             if not primary_source:
                 raise RuntimeError("Cached HTML reader document is incomplete.")
-            document.document_filename = primary_source.relative_to(root / "output").as_posix()
+            document.document_filename = relative_path_within(primary_source, root / "output").as_posix()
             document.cache_hits.append("ocr" if document.use_ocr else "document")
         else:
             primary_source = restore_reader_source_cache(root, cached)
@@ -7511,7 +7695,7 @@ def open_reader_library_document(cache_key: str):
                 aligned_source = reader_cached_aligned_html_source(cache_key, cached_translation)
                 if aligned_source:
                     shutil.copyfile(aligned_source, primary_source)
-                document.translated_filename = translated.relative_to(root / "output").as_posix()
+                document.translated_filename = relative_path_within(translated, root / "output").as_posix()
             elif cached_is_markdown:
                 output_root = root / "output"
                 output_root.mkdir(parents=True, exist_ok=True)

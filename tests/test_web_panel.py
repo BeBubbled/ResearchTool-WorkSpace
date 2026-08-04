@@ -2438,6 +2438,25 @@ class ToolboxApiTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "image placeholders"):
             web_panel.restore_markdown_repair_images(protected.replace("[[[OCR_IMAGE_0000]]]", ""), images)
 
+    def test_markdown_repair_wraps_unbracketed_local_image_paths_with_spaces(self) -> None:
+        source = (
+            "![Figure](paper assets/Conceptual Framework.png)\n"
+            "![Titled](images/figure.png \"caption\")\n"
+            "`![Code](paper assets/Conceptual Framework.png)`\n"
+        )
+
+        repaired = web_panel.deterministic_markdown_repairs(source)
+
+        self.assertEqual(
+            repaired,
+            (
+                "![Figure](<paper assets/Conceptual Framework.png>)\n"
+                "![Titled](images/figure.png \"caption\")\n"
+                "`![Code](paper assets/Conceptual Framework.png)`\n"
+            ),
+        )
+        self.assertEqual(web_panel.markdown_repair_errors(source, repaired), [])
+
     def test_markdown_repair_validator_rejects_changed_images_and_structures(self) -> None:
         original = "![Figure](paper.assets/figure.png)\n\nText.[^1]\n\n[^1]: Note.\n"
         changed = "![Figure](other/figure.png)\n\n[^1]\n\n```text\nAlgorithm 1: x = $y$\n"
@@ -3851,6 +3870,7 @@ class ToolboxApiTest(unittest.TestCase):
         markdown = """![inline](images/a.png)
 ![nested](images/chart(1).png)
 ![angle](<images/a b.png> \"title\")
+![unbracketed](images/Conceptual Figure.png)
 ![figure][fig]
 [fig]: images/ref.png \"title\"
 ![[images/wiki.png|caption]]
@@ -3870,7 +3890,7 @@ class ToolboxApiTest(unittest.TestCase):
             if path is not None
         ]
         self.assertEqual(local, [
-            "images/a.png", "images/chart(1).png", "images/a b.png", "images/ref.png", "images/wiki.png",
+            "images/a.png", "images/chart(1).png", "images/a b.png", "images/Conceptual Figure.png", "images/ref.png", "images/wiki.png",
             "images/latex.png", "images/html.png", "images/one.png", "images/two.png",
         ])
         self.assertNotIn("images/code.png", [item.target for item in references])
@@ -3931,6 +3951,47 @@ class ToolboxApiTest(unittest.TestCase):
                 web_panel.run_github_markdown_publish(job)
         publish.assert_not_called()
         self.assertIsNone(job.download_path)
+        self.assertIn("Image files actually uploaded with this task: 0.", "\n".join(job.logs))
+        self.assertIn("No uploaded image has the requested filename.", "\n".join(job.logs))
+
+    def test_github_publish_logs_same_named_image_at_another_uploaded_path(self) -> None:
+        job = web_panel.Job(
+            "github-misplaced",
+            web_panel.TOOL_BY_ID["markdown_github"],
+            Path(self.temp_dir.name) / "github-misplaced",
+            {},
+        )
+        source = job.root / "input" / "paper.md"
+        misplaced_asset = job.root / "input" / "other" / "figure.jpg"
+        source.parent.mkdir(parents=True)
+        misplaced_asset.parent.mkdir(parents=True)
+        source.write_text("![Figure](expected/figure.jpg)\n", encoding="utf-8")
+        misplaced_asset.write_bytes(b"image")
+
+        with self.assertRaisesRegex(ValueError, "未随任务提供"):
+            web_panel.run_github_markdown_publish(job)
+
+        logs = "\n".join(job.logs)
+        self.assertIn("Expected uploaded path: 'expected/figure.jpg'", logs)
+        self.assertIn("Uploaded files with the same filename: other/figure.jpg", logs)
+
+    def test_github_publish_resolves_unicode_equivalent_asset_paths(self) -> None:
+        root = Path(self.temp_dir.name) / "github-unicode"
+        source = root / "paper.md"
+        asset_directory = root / "Conceptual Spaces (Peter G\u00e4rdenfors).assets"
+        asset = asset_directory / "figure.jpg"
+        asset_directory.mkdir(parents=True)
+        source.write_text("# Paper\n", encoding="utf-8")
+        asset.write_bytes(b"image")
+
+        resolved = web_panel.resolve_github_markdown_asset(
+            root,
+            Path("paper.md"),
+            "Conceptual Spaces (Peter Ga\u0308rdenfors).assets/figure.jpg",
+        )
+
+        self.assertIsNotNone(resolved)
+        self.assertTrue(resolved[0].samefile(asset))
 
     def test_github_git_data_publish_updates_branch_once_without_force(self) -> None:
         config = {"token": "secret", "repository": "owner/images", "branch": "feature/images", "imageRoot": "assets"}
