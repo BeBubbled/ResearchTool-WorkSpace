@@ -2,6 +2,14 @@
 
 This repository is a local research toolbox for literature processing, paper reading, document translation, reference management, experiment media processing, and presentation-ready outputs. Its tools run from one local web panel and keep task files on the current machine.
 
+## Research Gap Map
+
+Open `/research-gaps` from the panel sidebar to create topic-based literature projects. The workspace can import papers from Semantic Scholar by title, DOI, arXiv ID, or supported link, and can reuse documents already stored in the local paper reader. Open-access PDFs are downloaded and parsed locally when available; otherwise the paper is clearly marked as abstract-level evidence.
+
+Choose a saved OpenAI-compatible LLM preset to extract contributions, limitations, failure conditions, candidate research gaps, and paper-to-gap relationships. AI results enter a review queue and remain visibly provisional until accepted or rejected. Project records, extracted text, evidence, and analysis jobs are stored under `.runtime/research-gaps/` and can be exported as JSON.
+
+Semantic Scholar works without a key under its shared public rate limit. Set `SEMANTIC_SCHOLAR_API_KEY` in `.env` for a dedicated API key when available.
+
 This project is developed entirely through ViveCoding. The code is provided as-is, mainly for personal automation, experimentation, and learning purposes. No guarantee is made regarding correctness, stability, maintainability, or compatibility. Users should review, test, and modify the code before using it in their own workflows.
 
 ## Local toolbox
