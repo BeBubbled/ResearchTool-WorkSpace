@@ -185,9 +185,19 @@ function codexEffortsForModel(model, preferred = "") {
 }
 
 function codexEffortLabel(model, effort) {
-  return effort === "none" && ["gpt-5.6-sol", "gpt-5.6"].includes(model?.id)
+  const modelId = model?.id || "";
+  const supportsInstant = modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-") || ["gpt-6-sol", "gpt-6-luna"].includes(modelId);
+  return effort === "none" && supportsInstant
     ? "Instant（none）"
     : effort;
+}
+
+function codexRuntimeText(runtime) {
+  if (!runtime?.version) return "";
+  const label = runtime.managed ? "项目内 Codex " + runtime.version : "Codex " + runtime.version;
+  return runtime.restartRequired && runtime.availableUpdateVersion
+    ? label + " · " + runtime.availableUpdateVersion + " 将在空闲时刷新后启用"
+    : label;
 }
 
 function codexRateLimitSnapshots(rateLimits) {
@@ -266,6 +276,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   const codexModel = codexModels.find(item => item.id === codex.defaultModel) || codexModels[0] || null;
   const codexEffortView = codexEffortsForModel(codexModel, codex.defaultReasoningEffort);
   const codexReady = Boolean(codex.available && codex.chatgptAuthenticated && codexModel);
+  const codexRuntime = codexRuntimeText(codex.runtime);
   const cards = state.llmPresets.map(preset => `
     <article class="llm-preset-card">
       <div class="llm-preset-copy">
@@ -311,14 +322,14 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
         <div class="section-heading llm-manager-heading">
           <div>
             <div class="llm-preset-heading"><h3>Codex 额度与默认设置</h3><span class="preset-id ${codexReady ? "" : "speech-unconfigured"}">${codexReady ? "已连接" : "不可用"}</span></div>
-            <p class="hint">用于本工具箱内消耗 ChatGPT/Codex 额度的任务；不会修改全局 Codex CLI 配置。</p>
+            <p class="hint">默认自动安装并更新项目内 Codex 稳定版；不会修改全局 Codex CLI 配置。</p>
           </div>
           <div class="codex-heading-actions">
             ${codex.chatgptAuthenticated ? `<button type="button" class="danger-button" data-codex-logout>退出登录</button>` : `<button type="button" class="test-button" data-codex-login>浏览器登录</button>`}
             <button type="button" class="test-button" data-refresh-codex>刷新账户与额度</button>
           </div>
         </div>
-        <p id="codexManagerStatus" class="manager-message ${messageTarget === "codex" ? escapeHtml(kind) : ""} ${message && messageTarget === "codex" ? "" : (codexReady ? "ok" : "warn")}" role="status">${messageTarget === "codex" && message ? escapeHtml(message) : escapeHtml(codexReady ? `ChatGPT ${codex.planType || "账户"} 已连接 · ${codexModels.length} 个可用模型` : (codex.error || "Codex 尚未通过 ChatGPT 登录。"))}</p>
+        <p id="codexManagerStatus" class="manager-message ${messageTarget === "codex" ? escapeHtml(kind) : ""} ${message && messageTarget === "codex" ? "" : (codexReady ? "ok" : "warn")}" role="status">${messageTarget === "codex" && message ? escapeHtml(message) : escapeHtml(codexReady ? `ChatGPT ${codex.planType || "账户"} 已连接 · ${codexModels.length} 个可用模型${codexRuntime ? ` · ${codexRuntime}` : ""}` : (codex.error || "Codex 尚未通过 ChatGPT 登录。"))}</p>
         <div class="codex-quota-heading"><div><span class="eyebrow">USAGE</span><h4>剩余额度</h4></div><span class="hint">额度是即时快照，刷新后更新</span></div>
         <div class="codex-quota-grid">${renderCodexQuotaCards(codex.rateLimits)}</div>
         <form id="codexConfigForm" class="llm-editor-form codex-editor-form">

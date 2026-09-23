@@ -527,6 +527,16 @@ class DirectApiThreePassTest(unittest.TestCase):
 
 
 class CodexClientEnvironmentTest(unittest.TestCase):
+    def test_codex_bin_environment_override_is_used_by_default(self):
+        with patch.dict(os.environ, {"CODEX_BIN": "/opt/current-codex"}):
+            client = CodexAppServerClient(Path.cwd())
+        self.assertEqual(client.codex_bin, "/opt/current-codex")
+
+    def test_explicit_codex_bin_wins_over_environment_override(self):
+        with patch.dict(os.environ, {"CODEX_BIN": "/opt/current-codex"}):
+            client = CodexAppServerClient(Path.cwd(), "/tmp/fake-codex")
+        self.assertEqual(client.codex_bin, "/tmp/fake-codex")
+
     def test_platform_api_keys_are_removed_only_from_child_environment(self):
         client = CodexAppServerClient(Path.cwd())
         with patch.dict(os.environ, {"OPENAI_API_KEY": "platform", "CODEX_API_KEY": "codex", "KEEP_ME": "yes"}):
@@ -802,20 +812,59 @@ class ThreePassApiTest(unittest.TestCase):
             )
             self.assertEqual(invalid.status_code, 400)
 
-    def test_gpt_5_6_sol_exposes_and_persists_instant_as_none(self):
+    def test_future_catalog_reasoning_effort_can_be_saved_without_code_change(self):
+        env_file = Path(self.temp.name) / "codex-future-effort.env"
+        future_status = {
+            "available": True,
+            "authMode": "chatgpt",
+            "chatgptAuthenticated": True,
+            "models": [{
+                "id": "future-model",
+                "displayName": "Future Model",
+                "isDefault": True,
+                "defaultEffort": "adaptive",
+                "supportedEfforts": ["adaptive"],
+            }],
+            "defaultModel": "future-model",
+            "rateLimits": None,
+        }
+        with (
+            patch.object(web_panel, "ENV_FILE", env_file),
+            patch.object(web_panel.three_pass_manager.runtime, "status", return_value=future_status),
+            patch.dict(os.environ, {"CODEX_DEFAULT_MODEL": "", "CODEX_REASONING_EFFORT": ""}, clear=False),
+        ):
+            saved = self.client.put(
+                "/api/codex-config",
+                json={"model": "future-model", "reasoningEffort": "adaptive"},
+            )
+        self.assertEqual(saved.status_code, 200, saved.get_json())
+        self.assertEqual(saved.get_json()["codex"]["defaultReasoningEffort"], "adaptive")
+
+    def test_gpt_5_6_and_gpt_6_compatible_models_expose_instant_as_none(self):
         env_file = Path(self.temp.name) / "codex-instant.env"
+        model_ids = (
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+        )
         sol_status = {
             "available": True,
             "authMode": "chatgpt",
             "chatgptAuthenticated": True,
             "planType": "pro",
-            "models": [{
-                "id": "gpt-5.6-sol",
-                "displayName": "GPT-5.6-Sol",
-                "isDefault": True,
-                "defaultEffort": "low",
-                "supportedEfforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
-            }],
+            "models": [
+                {
+                    "id": model_id,
+                    "displayName": model_id,
+                    "isDefault": model_id == "gpt-5.6-sol",
+                    "defaultEffort": "low",
+                    "supportedEfforts": ["low", "medium", "high", "xhigh", "max"],
+                }
+                for model_id in model_ids
+            ],
             "defaultModel": "gpt-5.6-sol",
             "rateLimits": None,
         }
@@ -825,13 +874,17 @@ class ThreePassApiTest(unittest.TestCase):
             patch.dict(os.environ, {"CODEX_DEFAULT_MODEL": "", "CODEX_REASONING_EFFORT": ""}, clear=False),
         ):
             status = self.client.get("/api/codex/status").get_json()
-            self.assertEqual(status["models"][0]["supportedEfforts"][0], "none")
+            models = {model["id"]: model for model in status["models"]}
+            for model_id in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna"):
+                self.assertEqual(models[model_id]["supportedEfforts"][0], "none")
+            self.assertNotIn("none", models["gpt-6-astra"]["supportedEfforts"])
             saved = self.client.put(
                 "/api/codex-config",
-                json={"model": "gpt-5.6-sol", "reasoningEffort": "none"},
+                json={"model": "gpt-6-sol", "reasoningEffort": "none"},
             )
             self.assertEqual(saved.status_code, 200, saved.get_json())
             self.assertEqual(saved.get_json()["codex"]["defaultReasoningEffort"], "none")
+            self.assertEqual(saved.get_json()["codex"]["defaultModel"], "gpt-6-sol")
             self.assertIn("CODEX_REASONING_EFFORT=none", env_file.read_text(encoding="utf-8"))
 
     def test_three_pass_lengths_are_validated_persisted_and_exposed_to_reader(self):

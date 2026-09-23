@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
+from managed_codex import (
+    CodexRuntimeResolution,
+    ManagedCodexError,
+    ManagedCodexInstaller,
+    read_codex_version,
+)
+
 
 TERMINAL_STATUSES = {"ready", "failed", "cancelled"}
 RUNNING_STATUSES = {"queued", "pass1", "pass2", "pass3", "synthesis", "responding"}
@@ -148,14 +155,25 @@ def _json_error_text(error: Any) -> str:
 class CodexAppServerClient:
     """Small thread-safe JSON-RPC client for a local ``codex app-server``."""
 
-    def __init__(self, project_root: Path, codex_bin: str = "codex") -> None:
+    def __init__(self, project_root: Path, codex_bin: str | None = None) -> None:
         self.project_root = project_root.resolve()
-        self.codex_bin = codex_bin
+        # Use a versioned project-local runtime by default. CODEX_BIN remains an
+        # escape hatch for development and intentionally unmanaged deployments.
+        selected_bin = codex_bin or os.getenv("CODEX_BIN", "").strip()
+        self.codex_bin = str(selected_bin) if selected_bin else None
+        self.managed_installer = None if self.codex_bin else ManagedCodexInstaller(self.project_root)
+        self.active_runtime: CodexRuntimeResolution | None = None
+        self.prepared_runtime: CodexRuntimeResolution | None = None
+        self.available_update: CodexRuntimeResolution | None = None
+        self.restart_required = False
         self.process: subprocess.Popen[str] | None = None
         self.start_lock = threading.Lock()
+        self.lifecycle_lock = threading.RLock()
         self.write_lock = threading.Lock()
         self.pending_lock = threading.Lock()
         self.pending: dict[int, tuple[threading.Event, dict[str, Any], int]] = {}
+        self.active_turns_lock = threading.Lock()
+        self.active_turns: set[str] = set()
         self.listeners: list[Callable[[dict[str, Any]], None]] = []
         self.next_id = 1
         self.generation = 0
@@ -176,64 +194,133 @@ class CodexAppServerClient:
             environment.pop(name, None)
         return environment
 
+    def _resolve_runtime(self, *, force_check: bool = False) -> CodexRuntimeResolution:
+        if self.managed_installer:
+            try:
+                return self.managed_installer.resolve(force_check=force_check)
+            except ManagedCodexError as exc:
+                fallback = shutil.which("codex")
+                if not fallback:
+                    raise CodexProtocolError(str(exc)) from exc
+                try:
+                    version = read_codex_version(fallback)
+                except ManagedCodexError:
+                    version = None
+                return CodexRuntimeResolution(
+                    executable=fallback,
+                    version=version,
+                    source="system-fallback",
+                    update_error=str(exc),
+                )
+        executable = shutil.which(self.codex_bin or "")
+        if not executable:
+            raise CodexProtocolError(f"未找到 CODEX_BIN 指定的 Codex CLI：{self.codex_bin}")
+        try:
+            version = read_codex_version(executable)
+        except ManagedCodexError:
+            version = None
+        return CodexRuntimeResolution(executable=executable, version=version, source="override")
+
+    def _prepare_managed_runtime(self, *, force_check: bool = False) -> None:
+        if not self.managed_installer:
+            return
+        resolution = self._resolve_runtime(force_check=force_check)
+        active = self.active_runtime
+        if not self.running or not active:
+            self.prepared_runtime = resolution
+            return
+        if Path(active.executable) == Path(resolution.executable):
+            self.active_runtime = resolution
+            self.restart_required = False
+            self.available_update = None
+            return
+        with self.lifecycle_lock:
+            with self.pending_lock:
+                has_pending = bool(self.pending)
+            with self.active_turns_lock:
+                has_active_turns = bool(self.active_turns)
+            if has_pending or has_active_turns:
+                self.restart_required = True
+                self.available_update = resolution
+                return
+            self.stop()
+            self.prepared_runtime = resolution
+            self.restart_required = False
+            self.available_update = None
+
+    def _start_runtime(self, resolution: CodexRuntimeResolution) -> None:
+        executable = resolution.executable
+        try:
+            process = subprocess.Popen(
+                [executable, "app-server"],
+                cwd=self.project_root,
+                env=self._child_environment(),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as exc:
+            raise CodexProtocolError(f"无法启动 Codex App Server：{exc}") from exc
+        self.process = process
+        self.generation += 1
+        generation = self.generation
+        self.reader_thread = threading.Thread(
+            target=self._read_stdout,
+            args=(process, generation),
+            daemon=True,
+            name="codex-app-server-reader",
+        )
+        self.stderr_thread = threading.Thread(
+            target=self._read_stderr,
+            args=(process,),
+            daemon=True,
+            name="codex-app-server-stderr",
+        )
+        self.reader_thread.start()
+        self.stderr_thread.start()
+        self.request(
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": "paper_lens",
+                    "title": "Paper Lens",
+                    "version": "1.0.0",
+                }
+            },
+            timeout=20,
+            _skip_start=True,
+        )
+        self.notify("initialized", {}, _skip_start=True)
+        self.active_runtime = resolution
+        self.prepared_runtime = None
+
     def ensure_started(self) -> None:
         if self.process and self.process.poll() is None:
             return
         with self.start_lock:
             if self.process and self.process.poll() is None:
                 return
-            executable = shutil.which(self.codex_bin)
-            if not executable:
-                raise CodexProtocolError("未找到 Codex CLI。请先安装 Codex 并运行 codex login。")
+            resolution = self.prepared_runtime or self._resolve_runtime()
             try:
-                process = subprocess.Popen(
-                    [executable, "app-server"],
-                    cwd=self.project_root,
-                    env=self._child_environment(),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    bufsize=1,
-                )
-            except OSError as exc:
-                raise CodexProtocolError(f"无法启动 Codex App Server：{exc}") from exc
-            self.process = process
-            self.generation += 1
-            generation = self.generation
-            self.reader_thread = threading.Thread(
-                target=self._read_stdout,
-                args=(process, generation),
-                daemon=True,
-                name="codex-app-server-reader",
-            )
-            self.stderr_thread = threading.Thread(
-                target=self._read_stderr,
-                args=(process,),
-                daemon=True,
-                name="codex-app-server-stderr",
-            )
-            self.reader_thread.start()
-            self.stderr_thread.start()
-            try:
-                self.request(
-                    "initialize",
-                    {
-                        "clientInfo": {
-                            "name": "paper_lens",
-                            "title": "Paper Lens",
-                            "version": "1.0.0",
-                        }
-                    },
-                    timeout=20,
-                    _skip_start=True,
-                )
-                self.notify("initialized", {}, _skip_start=True)
-            except Exception:
+                self._start_runtime(resolution)
+            except Exception as first_error:
                 self.stop()
-                raise
+                rollback = None
+                if self.managed_installer and resolution.source == "managed" and resolution.version:
+                    rollback = self.managed_installer.rollback(resolution.version)
+                if not rollback:
+                    raise
+                try:
+                    self._start_runtime(rollback)
+                except Exception as rollback_error:
+                    self.stop()
+                    raise CodexProtocolError(
+                        f"Codex {resolution.version} 启动失败，回滚版本也无法启动：{rollback_error}"
+                    ) from first_error
 
     @property
     def running(self) -> bool:
@@ -308,8 +395,17 @@ class CodexAppServerClient:
             process.stdout.close()
             if process.stdin:
                 process.stdin.close()
+            with self.active_turns_lock:
+                self.active_turns.clear()
 
     def _record_notification(self, message: dict[str, Any]) -> None:
+        if message.get("method") == "turn/completed":
+            params = message.get("params")
+            turn = params.get("turn") if isinstance(params, dict) else None
+            turn_id = str(turn.get("id") if isinstance(turn, dict) else "")
+            if turn_id:
+                with self.active_turns_lock:
+                    self.active_turns.discard(turn_id)
         if message.get("method") != "account/login/completed":
             return
         params = message.get("params")
@@ -353,17 +449,18 @@ class CodexAppServerClient:
         timeout: float = 30,
         _skip_start: bool = False,
     ) -> dict[str, Any]:
-        if not _skip_start:
-            self.ensure_started()
-        generation = self.generation
-        with self.pending_lock:
-            request_id = self.next_id
-            self.next_id += 1
-            event = threading.Event()
-            container: dict[str, Any] = {}
-            self.pending[request_id] = (event, container, generation)
-        try:
+        with self.lifecycle_lock:
+            if not _skip_start:
+                self.ensure_started()
+            generation = self.generation
+            with self.pending_lock:
+                request_id = self.next_id
+                self.next_id += 1
+                event = threading.Event()
+                container: dict[str, Any] = {}
+                self.pending[request_id] = (event, container, generation)
             self._send({"method": method, "id": request_id, "params": params or {}})
+        try:
             if not event.wait(timeout):
                 raise CodexProtocolError(f"Codex App Server 请求超时：{method}")
             if "exception" in container:
@@ -371,7 +468,14 @@ class CodexAppServerClient:
             if "error" in container:
                 raise CodexProtocolError(_json_error_text(container["error"]))
             result = container.get("result")
-            return result if isinstance(result, dict) else {}
+            result = result if isinstance(result, dict) else {}
+            if method == "turn/start":
+                turn = result.get("turn")
+                turn_id = str(turn.get("id") if isinstance(turn, dict) else "")
+                if turn_id:
+                    with self.active_turns_lock:
+                        self.active_turns.add(turn_id)
+            return result
         finally:
             with self.pending_lock:
                 self.pending.pop(request_id, None)
@@ -383,11 +487,13 @@ class CodexAppServerClient:
         *,
         _skip_start: bool = False,
     ) -> None:
-        if not _skip_start:
-            self.ensure_started()
-        self._send({"method": method, "params": params or {}})
+        with self.lifecycle_lock:
+            if not _skip_start:
+                self.ensure_started()
+            self._send({"method": method, "params": params or {}})
 
     def status(self, *, refresh: bool = False) -> dict[str, Any]:
+        self._prepare_managed_runtime(force_check=refresh)
         account_result = self.request("account/read", {"refreshToken": refresh})
         model_result = self.request("model/list", {"includeHidden": False, "limit": 100})
         try:
@@ -416,6 +522,12 @@ class CodexAppServerClient:
                 }
             )
         default = next((item["id"] for item in models if item["isDefault"]), models[0]["id"] if models else None)
+        runtime = self.active_runtime.public() if self.active_runtime else None
+        if runtime:
+            runtime["restartRequired"] = self.restart_required
+            runtime["availableUpdateVersion"] = (
+                self.available_update.version if self.available_update else None
+            )
         return {
             "available": True,
             "authMode": auth_mode,
@@ -425,6 +537,7 @@ class CodexAppServerClient:
             "defaultModel": default,
             "rateLimits": rate_limits,
             "requiresOpenaiAuth": bool(account_result.get("requiresOpenaiAuth")),
+            "runtime": runtime,
         }
 
     def start_login(self, flow: str) -> dict[str, Any]:
@@ -472,6 +585,8 @@ class CodexAppServerClient:
             except OSError:
                 pass
         self._fail_generation(generation, CodexProtocolError("Codex App Server 已停止。"))
+        with self.active_turns_lock:
+            self.active_turns.clear()
 
 
 class CodexTextRunner:

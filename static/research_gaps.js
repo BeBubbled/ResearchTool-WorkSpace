@@ -108,7 +108,9 @@
     const model = (codex.models || []).find(item => item.id === codex.defaultModel);
     const modelLabel = model?.displayName || codex.defaultModel || "未设置模型";
     const effort = codex.defaultReasoningEffort || model?.defaultEffort || "未设置强度";
-    const effortLabel = effort === "none" && ["gpt-5.6-sol", "gpt-5.6"].includes(codex.defaultModel)
+    const modelId = codex.defaultModel || "";
+    const supportsInstant = modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-") || ["gpt-6-sol", "gpt-6-luna"].includes(modelId);
+    const effortLabel = effort === "none" && supportsInstant
       ? "Instant（none）"
       : effort;
     dom.codexStatus.textContent = codex.chatgptAuthenticated

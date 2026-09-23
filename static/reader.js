@@ -3381,9 +3381,19 @@ function threePassEffortView(model, preferred = "high") {
 }
 
 function threePassEffortLabel(model, effort) {
-  return effort === "none" && ["gpt-5.6-sol", "gpt-5.6"].includes(model?.id)
+  const modelId = model?.id || "";
+  const supportsInstant = modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-") || ["gpt-6-sol", "gpt-6-luna"].includes(modelId);
+  return effort === "none" && supportsInstant
     ? "Instant（none）"
     : effort;
+}
+
+function codexRuntimeText(runtime) {
+  if (!runtime?.version) return "";
+  const label = runtime.managed ? "项目内 Codex " + runtime.version : "Codex " + runtime.version;
+  return runtime.restartRequired && runtime.availableUpdateVersion
+    ? label + " · " + runtime.availableUpdateVersion + " 空闲时刷新后启用"
+    : label;
 }
 
 function renderThreePassEfforts(preferred = "high") {
@@ -3429,7 +3439,8 @@ async function loadCodexStatus(forceRefresh = false) {
     $("#threePassModel").value = data.defaultModel || data.models[0].id;
     renderThreePassEfforts(data.defaultReasoningEffort || "high");
     const quota = compactRateLimitText(data.rateLimits);
-    statusNode.textContent = `ChatGPT ${data.planType || "账户"} 已连接${quota ? ` · ${quota}` : ""}`;
+    const runtime = codexRuntimeText(data.runtime);
+    statusNode.textContent = `ChatGPT ${data.planType || "账户"} 已连接${runtime ? ` · ${runtime}` : ""}${quota ? ` · ${quota}` : ""}`;
   } catch (error) {
     readerState.codexStatus = null;
     updateThreePassStartAvailability();

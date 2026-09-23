@@ -49,6 +49,9 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:27px; line-height:1.15; } h2 { margi
 .reader-entry.health-entry { margin-top:10px; border-color:rgba(168,154,235,.38); background:linear-gradient(135deg,rgba(88,73,174,.28),rgba(39,92,108,.15)); }
 .reader-entry.health-entry:hover { border-color:#a89aeb; background:linear-gradient(135deg,rgba(88,73,174,.42),rgba(39,92,108,.22)); }
 .reader-entry.health-entry small { color:#b9aff0; }
+.sidebar-category { margin-top:24px; }
+.sidebar-category-label { margin:0; color:#6f8a8e; font-size:10px; font-weight:800; letter-spacing:.1em; }
+.sidebar-category .reader-entry { margin-top:8px; }
 .reader-entry.gap-entry { margin-top:10px; border-color:rgba(120,196,168,.5); background:linear-gradient(135deg,rgba(34,142,112,.28),rgba(47,113,153,.18)); }
 .reader-entry.gap-entry:hover { border-color:#78c4a8; background:linear-gradient(135deg,rgba(34,142,112,.42),rgba(47,113,153,.27)); }
 .reader-entry.gap-entry small { color:#9ddfc8; }

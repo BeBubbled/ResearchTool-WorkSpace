@@ -29,10 +29,13 @@
         <span class="reader-entry-copy"><small>研究发现</small><strong>研究空白地图</strong></span>
         <span class="reader-arrow">→</span>
       </a>
-      <a class="reader-entry health-entry" href="/health">
-        <span class="reader-entry-copy"><small>个人健康</small><strong>Apple 睡眠整理</strong></span>
-        <span class="reader-arrow">→</span>
-      </a>
+      <div class="sidebar-category" aria-label="生活与健康">
+        <p class="sidebar-category-label">生活与健康</p>
+        <a class="reader-entry health-entry" href="/health">
+          <span class="reader-entry-copy"><small>Apple 健康数据</small><strong>睡眠整理</strong></span>
+          <span class="reader-arrow">→</span>
+        </a>
+      </div>
       <button id="llmSettingsNav" class="settings-entry" type="button">
         <span class="reader-entry-copy"><small>全局设置</small><strong>AI、OCR、语音与 GitHub</strong></span>
         <span class="reader-arrow">⚙</span>
@@ -74,6 +77,6 @@
       <ul data-file-list class="file-list"></ul>
     </section>
   </template>
-  <script src="/static/app.js?v=20260923-merged-settings"></script>
+  <script src="/static/app.js?v=20260923-managed-codex"></script>
 </body>
 </html>

@@ -124,7 +124,7 @@ AZURE_SPEECH_DEFAULT_REGION = "centralus"
 AZURE_SPEECH_DEFAULT_VOICE = "zh-CN-YunxiNeural"
 AZURE_SPEECH_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 GITHUB_API_URL = "https://api.github.com"
-CODEX_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+CODEX_REASONING_EFFORT_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 GITHUB_DEFAULT_BRANCH = "main"
 GITHUB_DEFAULT_IMAGE_ROOT = "images"
 GITHUB_API_VERSION = "2022-11-28"
@@ -468,7 +468,13 @@ def codex_models_with_compat_efforts(models: Any) -> list[dict[str, Any]]:
             continue
         model = dict(item)
         efforts = [str(effort).strip().lower() for effort in model.get("supportedEfforts", []) if str(effort).strip()]
-        if model["id"] in {"gpt-5.6-sol", "gpt-5.6"} and "none" not in efforts:
+        model_id = str(model["id"]).strip().lower()
+        supports_instant = (
+            model_id == "gpt-5.6"
+            or model_id.startswith("gpt-5.6-")
+            or model_id in {"gpt-6-sol", "gpt-6-luna"}
+        )
+        if supports_instant and "none" not in efforts:
             efforts.insert(0, "none")
         model["supportedEfforts"] = efforts
         normalized.append(model)
@@ -530,7 +536,9 @@ def save_codex_preferences(model: Any, reasoning_effort: Any) -> dict[str, Any]:
         for effort in selected.get("supportedEfforts", [])
         if str(effort).strip()
     }
-    if requested_effort not in CODEX_REASONING_EFFORTS or (supported and requested_effort not in supported):
+    if not CODEX_REASONING_EFFORT_PATTERN.fullmatch(requested_effort) or (
+        supported and requested_effort not in supported
+    ):
         raise ValueError("请选择该模型支持的推理强度。")
     with llm_config_lock:
         if not ENV_FILE.exists():
