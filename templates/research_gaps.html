@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17334a">
+  <title>研究空白地图 · Research Toolkit</title>
+  <meta name="description" content="从论文证据中整理贡献、局限、失败条件和仍待解决的研究问题。">
+  <link rel="stylesheet" href="/static/research_gaps.css?v=20260910">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回科研工具箱">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>研究空白地图</strong><small>RESEARCH GAP MAP</small></span>
+    </a>
+    <div class="topbar-project">
+      <label for="projectSelect">研究项目</label>
+      <select id="projectSelect" aria-label="选择研究项目"></select>
+      <button id="newProjectButton" class="button secondary" type="button">新建项目</button>
+    </div>
+    <a class="topbar-link" href="/#llm-settings">AI 设置</a>
+  </header>
+
+  <main>
+    <section id="emptyState" class="empty-state hidden">
+      <p class="eyebrow">START A LANDSCAPE</p>
+      <h1>建立第一个研究主题</h1>
+      <p>项目会把论文证据、局限和后续解决关系保存在本机。</p>
+      <button id="emptyCreateButton" class="button primary" type="button">新建研究项目</button>
+    </section>
+
+    <section id="projectWorkspace" class="workspace hidden">
+      <aside class="project-rail">
+        <div class="project-identity">
+          <p class="eyebrow">CURRENT PROJECT</p>
+          <h1 id="projectName">研究项目</h1>
+          <p id="projectTopic"></p>
+        </div>
+        <dl class="project-stats">
+          <div><dt>论文</dt><dd id="paperCount">0</dd></div>
+          <div><dt>空白</dt><dd id="gapCount">0</dd></div>
+          <div><dt>待审核</dt><dd id="reviewCount">0</dd></div>
+        </dl>
+        <div class="project-actions">
+          <button id="editProjectButton" class="text-button" type="button">编辑项目信息</button>
+          <a id="exportProjectLink" class="text-button" href="#">导出项目 JSON</a>
+          <button id="deleteProjectButton" class="text-button danger" type="button">删除项目</button>
+        </div>
+        <div class="source-status">
+          <span id="semanticStatus" class="status-dot"></span>
+          <div><strong>Semantic Scholar</strong><small id="semanticStatusText">公开接口</small></div>
+        </div>
+      </aside>
+
+      <section class="content">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">EVIDENCE WORKSPACE</p>
+            <h2 id="viewTitle">研究空白</h2>
+          </div>
+          <div class="workspace-actions">
+            <select id="llmPreset" aria-label="选择分析模型"></select>
+            <button id="importPaperButton" class="button secondary" type="button">添加论文</button>
+            <button id="analyzeButton" class="button primary" type="button">分析论文</button>
+          </div>
+        </header>
+
+        <section id="jobPanel" class="job-panel hidden" aria-live="polite">
+          <div><strong id="jobLabel">正在分析</strong><span id="jobProgress">0 / 0</span></div>
+          <div class="progress-track"><span id="jobProgressBar"></span></div>
+          <p id="jobLog"></p>
+        </section>
+
+        <nav class="tabs" aria-label="项目视图">
+          <button class="active" type="button" data-tab="gaps">研究空白 <span id="gapTabCount">0</span></button>
+          <button type="button" data-tab="papers">论文 <span id="paperTabCount">0</span></button>
+          <button type="button" data-tab="review">待审核 <span id="reviewTabCount">0</span></button>
+          <button type="button" data-tab="graph">关系图</button>
+        </nav>
+
+        <section id="gapsView" class="view active" data-view="gaps">
+          <div class="filterbar">
+            <label class="search-field"><span class="sr-only">搜索研究空白</span><input id="gapSearch" type="search" placeholder="搜索空白、任务或失败条件"></label>
+            <select id="gapStatusFilter" aria-label="按状态筛选">
+              <option value="">全部状态</option><option value="OPEN">开放</option>
+              <option value="PARTIALLY_ADDRESSED">部分解决</option><option value="MATURE">较成熟</option>
+            </select>
+            <select id="gapSort" aria-label="研究空白排序">
+              <option value="updated">最近更新</option><option value="confidence">置信度</option>
+              <option value="evidence">证据数量</option><option value="title">标题</option>
+            </select>
+          </div>
+          <div id="gapList" class="gap-list"></div>
+        </section>
+
+        <section id="papersView" class="view" data-view="papers">
+          <div class="filterbar">
+            <label class="search-field"><span class="sr-only">搜索论文</span><input id="paperSearch" type="search" placeholder="搜索标题、作者或会议"></label>
+            <button id="selectAllPapers" class="button quiet" type="button">全选</button>
+          </div>
+          <div class="table-wrap">
+            <table class="paper-table">
+              <thead><tr><th class="check-cell"><span class="sr-only">选择</span></th><th>论文</th><th>证据</th><th>抽取结果</th><th>状态</th><th></th></tr></thead>
+              <tbody id="paperRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="reviewView" class="view" data-view="review">
+          <div class="filterbar">
+            <label class="search-field"><span class="sr-only">搜索待审核证据</span><input id="reviewSearch" type="search" placeholder="搜索论文、事实或研究空白"></label>
+          </div>
+          <div id="reviewList" class="review-list"></div>
+        </section>
+
+        <section id="graphView" class="view" data-view="graph">
+          <div class="graph-toolbar">
+            <div class="graph-filters" aria-label="图谱节点筛选">
+              <label><input type="checkbox" data-node-filter="paper" checked> 论文</label>
+              <label><input type="checkbox" data-node-filter="contribution" checked> 贡献</label>
+              <label><input type="checkbox" data-node-filter="limitation" checked> 局限</label>
+              <label><input type="checkbox" data-node-filter="gap" checked> 空白</label>
+            </div>
+            <button id="fitGraph" class="button quiet" type="button">适合窗口</button>
+          </div>
+          <div id="graphCanvas" class="graph-canvas" role="img" aria-label="论文贡献、局限与研究空白关系图"></div>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
+  <aside id="detailDrawer" class="detail-drawer" aria-hidden="true">
+    <header><div><p id="drawerEyebrow" class="eyebrow"></p><h2 id="drawerTitle"></h2></div><button id="closeDrawer" class="icon-button" type="button" aria-label="关闭详情">×</button></header>
+    <div id="drawerBody" class="drawer-body"></div>
+  </aside>
+
+  <dialog id="projectDialog">
+    <form id="projectForm" method="dialog" class="dialog-form">
+      <header><div><p class="eyebrow">RESEARCH PROJECT</p><h2 id="projectDialogTitle">新建研究项目</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></header>
+      <input id="projectEditId" type="hidden">
+      <label>项目名称<input id="projectNameInput" required maxlength="120" placeholder="例如：动态 3D Gaussian Splatting"></label>
+      <label>研究主题<textarea id="projectTopicInput" required maxlength="2000" rows="4" placeholder="描述研究对象、问题边界和关注的失败条件"></textarea></label>
+      <label>默认检索式<textarea id="projectQueryInput" maxlength="2000" rows="2" placeholder="可选：用于快速填充论文检索"></textarea></label>
+      <p id="projectFormError" class="form-error hidden"></p>
+      <footer><button class="button quiet" value="cancel">取消</button><button id="saveProjectButton" class="button primary" type="submit">保存项目</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="importDialog" class="wide-dialog">
+    <section class="dialog-form">
+      <header><div><p class="eyebrow">ADD PAPERS</p><h2>添加论文</h2></div><button class="icon-button" data-close-dialog="importDialog" aria-label="关闭">×</button></header>
+      <div class="segmented-control">
+        <button class="active" type="button" data-import-tab="search">在线检索</button>
+        <button type="button" data-import-tab="local">本地阅读库</button>
+      </div>
+      <div id="searchImportPanel" class="import-panel active">
+        <form id="paperSearchForm" class="paper-search-form">
+          <input id="paperQuery" required maxlength="1000" placeholder="输入标题、DOI、arXiv ID 或论文链接">
+          <button class="button primary" type="submit">检索</button>
+        </form>
+        <p id="paperSearchStatus" class="panel-status">精确标识会直接解析；标题将返回候选结果。</p>
+        <div id="paperSearchResults" class="import-results"></div>
+      </div>
+      <div id="localImportPanel" class="import-panel">
+        <div id="localLibraryResults" class="import-results"></div>
+      </div>
+    </section>
+  </dialog>
+
+  <dialog id="reviewDialog">
+    <form id="reviewForm" method="dialog" class="dialog-form">
+      <header><div><p class="eyebrow">REVIEW EVIDENCE</p><h2>编辑审核项</h2></div><button class="icon-button" value="cancel" aria-label="关闭">×</button></header>
+      <input id="reviewItemId" type="hidden"><input id="reviewItemType" type="hidden">
+      <label id="reviewTitleField">标题<input id="reviewTitleInput" maxlength="300"></label>
+      <label id="reviewDetailField">说明<textarea id="reviewDetailInput" maxlength="4000" rows="4"></textarea></label>
+      <label id="reviewRelationField" class="hidden">关系类型<select id="reviewRelationInput">
+        <option value="proposes">提出</option><option value="addresses">尝试解决</option>
+        <option value="partially_solves">部分解决</option><option value="solves">解决</option><option value="fails_on">仍然失败</option>
+      </select></label>
+      <p id="reviewEvidence" class="evidence-quote"></p>
+      <footer><button class="button quiet" value="cancel">取消</button><button class="button primary" type="submit">保存并接受</button></footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/static/research_gaps.js?v=20260910"></script>
+</body>
+</html>

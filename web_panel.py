@@ -43,6 +43,8 @@ from flask import Flask, jsonify, render_template, request, send_file
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
+from research_gaps import ResearchGapService, create_research_gap_blueprint
+
 try:
     from openai import OpenAI
 except ImportError:  # Dependency checks keep the rest of the panel usable.
@@ -63,6 +65,7 @@ RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
 JOBS_DIR = RUNTIME_DIR / "jobs"
 READER_CACHE_DIR = RUNTIME_DIR / "reader-cache"
+RESEARCH_GAP_DIR = RUNTIME_DIR / "research-gaps"
 SCRIPTS_DIR = PROJECT_ROOT / "Potential_Scripts"
 ALLOWED_TABLE_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -7444,6 +7447,58 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
             shutil.copyfile(target, ordered_dir / target.name)
 
 
+def research_gap_llm_request(preset_id: str, messages: list[dict[str, str]]) -> str:
+    """Run research extraction through the shared preset runtime."""
+    if OpenAI is None:
+        raise RuntimeError("The OpenAI Python SDK is not installed.")
+    config = managed_translation_config_from_request({
+        "llm": {"mode": "preset", "presetId": preset_id},
+    })
+    client = OpenAI(
+        api_key=config["apiKey"],
+        base_url=config["baseUrl"],
+        timeout=180.0,
+        max_retries=0,
+    )
+    response = create_compatible_chat_completion(
+        client,
+        config,
+        model=config["model"],
+        temperature=0.1,
+        messages=messages,
+    )
+    content = response.choices[0].message.content if response.choices else None
+    result = llm_test_response_text(content)
+    if not result:
+        raise RuntimeError("LLM returned an empty research extraction.")
+    return result
+
+
+def research_gap_reader_source(cache_key: str) -> dict[str, Any] | None:
+    """Resolve the richest durable reader artifact for research analysis."""
+    entry = reader_cache_library_entry(cache_key)
+    if not entry:
+        return None
+    storage_root = str(entry.get("storageRoot") or "")
+    render_kind = str(entry.get("renderKind") or "")
+    filename = entry.get("documentFilename") if render_kind == "html" else entry.get("sourceFilename")
+    if not storage_root or not filename:
+        return None
+    source = reader_cached_file(reader_cache_root(cache_key) / storage_root, str(filename))
+    if not source:
+        return None
+    return {"entry": entry, "path": str(source)}
+
+
+research_gap_service = ResearchGapService(
+    RESEARCH_GAP_DIR,
+    llm_request=research_gap_llm_request,
+    llm_presets=public_llm_presets,
+    reader_source=research_gap_reader_source,
+)
+app.register_blueprint(create_research_gap_blueprint(research_gap_service))
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -7452,6 +7507,11 @@ def index():
 @app.get("/reader")
 def reader():
     return render_template("reader.html")
+
+
+@app.get("/research-gaps")
+def research_gaps():
+    return render_template("research_gaps.html")
 
 
 @app.get("/health")
