@@ -1,4 +1,4 @@
-const state = { tools: [], active: null, view: "tool", files: [], anki: null, captions: { titles: [], captions: [] }, poller: null, currentJob: null, translationSource: "", llmPreset: "", llmPresets: [], editingLlmId: null, speechConfig: null, githubConfig: null, settingsTab: "llm" };
+const state = { tools: [], active: null, view: "tool", files: [], anki: null, captions: { titles: [], captions: [] }, poller: null, currentJob: null, translationSource: "", llmPreset: "", llmPresets: [], editingLlmId: null, mathpixConfig: null, speechConfig: null, githubConfig: null, settingsTab: "llm" };
 const nav = document.querySelector("#toolNav");
 const form = document.querySelector("#toolForm");
 const llmSettingsNav = document.querySelector("#llmSettingsNav");
@@ -77,7 +77,7 @@ function renderTool() {
 function settingsTabFromHash() {
   if (location.hash === "#llm-settings") return "llm";
   const tab = location.hash.replace(/^#settings\//, "");
-  return ["llm", "speech", "github"].includes(tab) ? tab : null;
+  return ["llm", "mathpix", "speech", "github"].includes(tab) ? tab : null;
 }
 
 async function openLlmSettings(updateHash = true, requestedTab = null) {
@@ -88,13 +88,13 @@ async function openLlmSettings(updateHash = true, requestedTab = null) {
   renderNav();
   taskPanel.classList.add("hidden");
   category.textContent = "全局设置";
-  title.textContent = "AI、语音与 GitHub 配置";
-  description.textContent = "统一管理 OpenAI-compatible 模型、Azure Speech 与 Markdown 图片发布仓库。";
+  title.textContent = "AI、OCR、语音与 GitHub 配置";
+  description.textContent = "统一管理 OpenAI-compatible 模型、Mathpix OCR、Azure Speech 与 Markdown 图片发布仓库。";
   availability.textContent = "本机全局";
   availability.className = "badge ok";
   form.innerHTML = `<div class="llm-manager-loading">正在读取本机全局配置…</div>`;
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalSpeechConfig(), loadGlobalGithubConfig()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig()]);
     renderLlmManager();
   } catch (error) {
     form.innerHTML = `<p class="message">${escapeHtml(error.message)}</p><button type="button" data-retry-llm>重新加载</button>`;
@@ -119,6 +119,13 @@ async function loadGlobalSpeechConfig() {
     region: "centralus",
     voice: "zh-CN-YunxiNeural",
   };
+}
+
+async function loadGlobalMathpixConfig() {
+  const response = await fetch("/api/mathpix-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Mathpix 配置。");
+  state.mathpixConfig = data.mathpix || { configured: false };
 }
 
 async function loadGlobalGithubConfig() {
@@ -159,6 +166,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
     region: "centralus",
     voice: "zh-CN-YunxiNeural",
   };
+  const mathpix = state.mathpixConfig || { configured: false };
   const github = state.githubConfig || {
     configured: false,
     repository: "",
@@ -183,9 +191,27 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
     <section class="llm-manager">
       <div class="settings-tabs" role="tablist" aria-label="全局配置类别">
         <button type="button" role="tab" data-settings-tab="llm">LLM</button>
+        <button type="button" role="tab" data-settings-tab="mathpix">Mathpix</button>
         <button type="button" role="tab" data-settings-tab="speech">Azure Speech</button>
         <button type="button" role="tab" data-settings-tab="github">GitHub</button>
       </div>
+      <section class="settings-tab-panel mathpix-manager" data-settings-panel="mathpix" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Mathpix OCR</h3><span class="preset-id ${mathpix.configured ? "" : "speech-unconfigured"}">${mathpix.configured ? "已配置" : "未配置"}</span></div>
+            <p class="hint">用于论文 PDF OCR。App ID 和 App Key 只保存在项目 .env 与当前后端进程；保存后立即启用，不会发起额外识别请求。</p>
+          </div>
+        </div>
+        <p id="mathpixManagerStatus" class="manager-message ${messageTarget === "mathpix" ? escapeHtml(kind) : ""} ${message && messageTarget === "mathpix" ? "" : "hidden"}" role="status">${messageTarget === "mathpix" ? escapeHtml(message) : ""}</p>
+        <form id="mathpixConfigForm" class="llm-editor-form mathpix-editor-form">
+          <label>App ID<input name="appId" autocomplete="off" ${mathpix.configured ? "" : "required"} maxlength="1000" placeholder="${mathpix.configured ? "留空表示保持当前 App ID" : "仅保存到本机 .env"}"></label>
+          <label>App Key<input name="appKey" type="password" autocomplete="new-password" ${mathpix.configured ? "" : "required"} maxlength="1000" placeholder="${mathpix.configured ? "留空表示保持当前 App Key" : "仅保存到本机 .env"}"></label>
+          <div class="speech-editor-actions">
+            ${mathpix.configured ? `<button type="button" class="danger-button" data-delete-mathpix>移除配置</button>` : ""}
+            <button type="submit" class="primary">保存 Mathpix</button>
+          </div>
+        </form>
+      </section>
       <section class="settings-tab-panel speech-manager" data-settings-panel="speech" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
@@ -257,6 +283,8 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   form.querySelector("#speechConfigForm")?.addEventListener("submit", saveGlobalSpeechConfig);
   form.querySelector("[data-test-speech]")?.addEventListener("click", event => testGlobalSpeechConfig(event.currentTarget));
   form.querySelector("[data-delete-speech]")?.addEventListener("click", removeGlobalSpeechConfig);
+  form.querySelector("#mathpixConfigForm")?.addEventListener("submit", saveGlobalMathpixConfig);
+  form.querySelector("[data-delete-mathpix]")?.addEventListener("click", removeGlobalMathpixConfig);
   form.querySelector("#githubConfigForm")?.addEventListener("submit", saveGlobalGithubConfig);
   form.querySelector("[data-test-github]")?.addEventListener("click", event => testGlobalGithubConfig(event.currentTarget));
   form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
@@ -264,7 +292,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
 }
 
 function activateSettingsTab(tab, updateHash = true) {
-  if (!["llm", "speech", "github"].includes(tab)) return;
+  if (!["llm", "mathpix", "speech", "github"].includes(tab)) return;
   state.settingsTab = tab;
   form.querySelectorAll("[data-settings-tab]").forEach(button => {
     const active = button.dataset.settingsTab === tab;
@@ -398,6 +426,47 @@ async function removeGlobalSpeechConfig() {
     renderLlmManager("已移除 Azure Speech 配置。", "ok", "speech");
   } catch (error) {
     const status = form.querySelector("#speechManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+  }
+}
+
+async function saveGlobalMathpixConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editorForm).entries());
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/mathpix-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Mathpix 配置失败。");
+    state.mathpixConfig = data.mathpix;
+    await reloadTools();
+    renderLlmManager("已保存 Mathpix 配置；论文 PDF OCR 已立即更新。", "ok", "mathpix");
+  } catch (error) {
+    const status = form.querySelector("#mathpixManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+async function removeGlobalMathpixConfig() {
+  if (!window.confirm("确定移除 Mathpix 配置吗？论文 PDF OCR 将停止可用。")) return;
+  try {
+    const response = await fetch("/api/mathpix-config", { method:"DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "移除 Mathpix 配置失败。");
+    state.mathpixConfig = data.mathpix;
+    await reloadTools();
+    renderLlmManager("已移除 Mathpix 配置；论文 PDF OCR 已停用。", "ok", "mathpix");
+  } catch (error) {
+    const status = form.querySelector("#mathpixManagerStatus");
     status.textContent = error.message;
     status.className = "manager-message bad";
   }

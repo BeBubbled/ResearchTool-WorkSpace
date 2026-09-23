@@ -1877,6 +1877,41 @@ class ToolboxApiTest(unittest.TestCase):
             self.assertNotIn("AZURE_SPEECH_REGION", removed_env)
             self.assertNotIn("AZURE_SPEECH_VOICE", removed_env)
 
+    def test_mathpix_config_can_be_saved_updated_and_removed_without_exposing_credentials(self) -> None:
+        env_file = Path(self.temp_dir.name) / ".env"
+        environment = {"MATHPIX_APP_ID": "", "MATHPIX_APP_KEY": ""}
+        with patch.object(web_panel, "ENV_FILE", env_file), patch.dict(web_panel.os.environ, environment, clear=False):
+            initial = self.client.get("/api/mathpix-config")
+            self.assertEqual(initial.status_code, 200)
+            self.assertFalse(initial.get_json()["mathpix"]["configured"])
+            self.assertNotIn("appId", initial.get_json()["mathpix"])
+            self.assertNotIn("appKey", initial.get_json()["mathpix"])
+
+            saved = self.client.put("/api/mathpix-config", json={"appId": "mathpix-id", "appKey": "mathpix-secret"})
+            self.assertEqual(saved.status_code, 200, saved.get_json())
+            self.assertTrue(saved.get_json()["mathpix"]["configured"])
+            self.assertNotIn("mathpix-secret", json.dumps(saved.get_json()))
+            self.assertIn("MATHPIX_APP_ID='mathpix-id'", env_file.read_text(encoding="utf-8"))
+            self.assertIn("MATHPIX_APP_KEY='mathpix-secret'", env_file.read_text(encoding="utf-8"))
+
+            updated = self.client.put("/api/mathpix-config", json={"appId": "mathpix-id-v2", "appKey": ""})
+            self.assertEqual(updated.status_code, 200, updated.get_json())
+            self.assertEqual(web_panel.os.environ["MATHPIX_APP_ID"], "mathpix-id-v2")
+            self.assertEqual(web_panel.os.environ["MATHPIX_APP_KEY"], "mathpix-secret")
+
+            tools = self.client.get("/api/tools").get_json()["tools"]
+            pdf_tool = next(item for item in tools if item["id"] == "pdf_ocr_translate")
+            self.assertTrue(pdf_tool["available"])
+
+            removed = self.client.delete("/api/mathpix-config")
+            self.assertEqual(removed.status_code, 200, removed.get_json())
+            self.assertFalse(self.client.get("/api/mathpix-config").get_json()["mathpix"]["configured"])
+            self.assertNotIn("MATHPIX_APP_ID", env_file.read_text(encoding="utf-8"))
+            self.assertNotIn("MATHPIX_APP_KEY", env_file.read_text(encoding="utf-8"))
+            tools = self.client.get("/api/tools").get_json()["tools"]
+            pdf_tool = next(item for item in tools if item["id"] == "pdf_ocr_translate")
+            self.assertFalse(pdf_tool["available"])
+
     def test_saved_llm_preset_can_be_tested_without_exposing_its_key(self) -> None:
         environment = {
             "LLM_NAME": "Test Provider",

@@ -495,6 +495,53 @@ def delete_azure_speech_config() -> dict[str, Any]:
     return existing
 
 
+def validate_mathpix_fields(app_id: Any, app_key: Any) -> dict[str, str]:
+    normalized_id = str(app_id or "").strip()
+    normalized_key = str(app_key or "").strip()
+    if not normalized_id:
+        raise ValueError("请配置 Mathpix App ID。")
+    if not normalized_key:
+        raise ValueError("请配置 Mathpix App Key。")
+    if len(normalized_id) > 1000 or len(normalized_key) > 1000:
+        raise ValueError("Mathpix App ID 和 App Key 不能超过 1,000 个字符。")
+    return {"appId": normalized_id, "appKey": normalized_key}
+
+
+def public_mathpix_config() -> dict[str, bool]:
+    return {
+        "configured": bool(
+            os.getenv("MATHPIX_APP_ID", "").strip()
+            and os.getenv("MATHPIX_APP_KEY", "").strip()
+        ),
+    }
+
+
+def save_mathpix_config(app_id: Any, app_key: Any) -> dict[str, bool]:
+    replacement_id = str(app_id or "").strip() or os.getenv("MATHPIX_APP_ID", "").strip()
+    replacement_key = str(app_key or "").strip() or os.getenv("MATHPIX_APP_KEY", "").strip()
+    config = validate_mathpix_fields(replacement_id, replacement_key)
+    with llm_config_lock:
+        if not ENV_FILE.exists():
+            ENV_FILE.touch(mode=0o600)
+        for environment_key, value in (
+            ("MATHPIX_APP_ID", config["appId"]),
+            ("MATHPIX_APP_KEY", config["appKey"]),
+        ):
+            set_key(str(ENV_FILE), environment_key, value, quote_mode="auto")
+            os.environ[environment_key] = value
+    return public_mathpix_config()
+
+
+def delete_mathpix_config() -> dict[str, bool]:
+    existing = public_mathpix_config()
+    with llm_config_lock:
+        for environment_key in ("MATHPIX_APP_ID", "MATHPIX_APP_KEY"):
+            if ENV_FILE.exists():
+                unset_key(str(ENV_FILE), environment_key)
+            os.environ.pop(environment_key, None)
+    return existing
+
+
 def validate_github_fields(token: Any, repository: Any, branch: Any, image_root: Any) -> dict[str, str]:
     normalized_token = str(token or "").strip()
     normalized_repository = str(repository or "").strip().removesuffix(".git")
@@ -737,7 +784,7 @@ def missing_environment(*names: str) -> list[str]:
 def mathpix_config_error() -> str | None:
     missing = missing_environment("MATHPIX_APP_ID", "MATHPIX_APP_KEY")
     if missing:
-        return f"Mathpix is not configured. Add {', '.join(missing)} to the project .env file and restart the panel."
+        return f"请先在“全局设置”的 Mathpix 中完成配置（缺少：{', '.join(missing)}）。"
     return None
 
 
@@ -7776,6 +7823,30 @@ def remove_speech_config():
     except OSError as exc:
         return json_error(str(exc))
     return jsonify({"speech": speech})
+
+
+@app.get("/api/mathpix-config")
+def get_mathpix_config():
+    return jsonify({"mathpix": public_mathpix_config()})
+
+
+@app.put("/api/mathpix-config")
+def update_mathpix_config():
+    data = request.get_json(silent=True) or {}
+    try:
+        mathpix = save_mathpix_config(data.get("appId"), data.get("appKey"))
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc))
+    return jsonify({"mathpix": mathpix})
+
+
+@app.delete("/api/mathpix-config")
+def remove_mathpix_config():
+    try:
+        mathpix = delete_mathpix_config()
+    except OSError as exc:
+        return json_error(str(exc))
+    return jsonify({"mathpix": mathpix})
 
 
 @app.get("/api/github-config")
