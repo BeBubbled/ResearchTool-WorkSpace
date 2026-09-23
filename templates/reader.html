@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/reader.css?v=20260902-quiet-editorial">
+  <link rel="stylesheet" href="/static/reader.css?v=20260923-merged-settings-reader">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
@@ -70,13 +70,16 @@
 
     <section id="readerShell" class="reader-shell hidden">
       <aside id="outlinePanel" class="outline-panel">
-        <p class="eyebrow">文档结构</p>
+        <div class="outline-heading">
+          <p class="eyebrow">文档结构</p>
+          <button id="closeOutline" class="panel-close-button" type="button" aria-label="关闭文档目录">×</button>
+        </div>
         <h2 id="documentTitle">论文</h2>
         <nav id="outline" aria-label="论文目录"></nav>
       </aside>
 
       <article class="paper-panel">
-        <button id="paperResizeHandle" class="paper-resize-handle" type="button" role="separator" aria-label="拖动调整正文阅读宽度，向左拖动可加宽" aria-orientation="vertical" aria-valuemin="470" aria-valuemax="2500" aria-valuenow="470"></button>
+        <button id="paperResizeHandle" class="paper-resize-handle hidden" type="button" role="separator" aria-label="正文宽度由窗口自动调整" aria-orientation="vertical" aria-valuemin="470" aria-valuemax="2500" aria-valuenow="470"></button>
         <div class="paper-toolbar">
           <div class="toolbar-copy">
             <strong id="paperDocumentTitle" class="paper-document-title">论文</strong>
@@ -84,16 +87,17 @@
             <span id="readerInteractionHint">划选内容以获得针对性解读</span>
           </div>
           <div class="toolbar-actions">
-            <button id="newPaper" class="toolbar-text-button" type="button">← 导入另一篇</button>
+            <button id="outlineToggle" class="toolbar-text-button panel-toggle-button" type="button" aria-label="打开文档目录" title="打开文档目录" aria-controls="outlinePanel" aria-expanded="true"><span class="toolbar-icon" aria-hidden="true">☰</span><span class="toolbar-label">目录</span></button>
+            <button id="newPaper" class="toolbar-text-button" type="button" aria-label="导入另一篇论文" title="导入另一篇论文"><span class="toolbar-icon" aria-hidden="true">←</span><span class="toolbar-label">导入另一篇</span></button>
             <div class="view-switch toolbar-view-switch" id="viewSwitch" hidden>
-              <button type="button" data-view="original" class="active">原文</button>
-              <button type="button" data-view="translated">译文</button>
-              <button id="liveTranslationViewButton" type="button" data-view="liveTranslation">点段翻译</button>
-              <button id="interleavedViewButton" type="button" data-view="interleaved">段落对照</button>
-              <button id="sideBySideViewButton" type="button" data-view="sideBySide">左右对照</button>
+              <button type="button" data-view="original" class="active" aria-label="显示原文" title="显示原文"><span class="toolbar-full-label">原文</span><span class="toolbar-compact-label" aria-hidden="true">原</span></button>
+              <button type="button" data-view="translated" aria-label="显示译文" title="显示译文"><span class="toolbar-full-label">译文</span><span class="toolbar-compact-label" aria-hidden="true">译</span></button>
+              <button id="liveTranslationViewButton" type="button" data-view="liveTranslation" aria-label="点段翻译" title="点段翻译"><span class="toolbar-full-label">点段翻译</span><span class="toolbar-compact-label" aria-hidden="true">翻</span></button>
+              <button id="interleavedViewButton" type="button" data-view="interleaved" aria-label="段落对照" title="段落对照"><span class="toolbar-full-label">段落对照</span><span class="toolbar-compact-label" aria-hidden="true">段</span></button>
+              <button id="sideBySideViewButton" type="button" data-view="sideBySide" aria-label="左右对照" title="左右对照"><span class="toolbar-full-label">左右对照</span><span class="toolbar-compact-label" aria-hidden="true">对</span></button>
             </div>
-            <div id="zoomControls" class="zoom-controls hidden"><button id="zoomOut" type="button" aria-label="缩小">−</button><span id="zoomLevel">100%</span><button id="zoomIn" type="button" aria-label="放大">＋</button></div>
-            <label id="speechRateControl" class="speech-rate-control hidden">语速
+            <div id="zoomControls" class="zoom-controls hidden"><button id="zoomOut" type="button" aria-label="缩小" title="缩小 PDF">−</button><span id="zoomLevel">100%</span><button id="zoomIn" type="button" aria-label="放大" title="放大 PDF">＋</button></div>
+            <label id="speechRateControl" class="speech-rate-control hidden"><span class="toolbar-label">语速</span>
               <select id="speechPlaybackRate" aria-label="Azure 朗读语速">
                 <option value="0.5">0.5×</option>
                 <option value="0.75">0.75×</option>
@@ -104,11 +108,12 @@
                 <option value="2">2.0×</option>
               </select>
             </label>
-            <button id="startSpeech" class="speech-start-button hidden" type="button" aria-pressed="true">🔊 点击朗读：开</button>
-            <button id="stopSpeech" class="speech-stop-button hidden" type="button" disabled>■ 停止朗读</button>
-            <button id="selectionSettingsButton" class="settings-button" type="button" aria-expanded="false" aria-controls="selectionSettingsPanel">
-              <span aria-hidden="true">⚙</span> 阅读设置
+            <button id="startSpeech" class="speech-start-button hidden" type="button" aria-label="关闭点击段落朗读" title="关闭点击段落朗读" aria-pressed="true"><span class="toolbar-icon" data-speech-icon aria-hidden="true">🔊</span><span class="toolbar-label" data-speech-label>点击朗读：开</span></button>
+            <button id="stopSpeech" class="speech-stop-button hidden" type="button" aria-label="停止朗读" title="停止朗读" disabled><span class="toolbar-icon" aria-hidden="true">■</span><span class="toolbar-label">停止朗读</span></button>
+            <button id="selectionSettingsButton" class="settings-button" type="button" aria-label="打开阅读设置" title="打开阅读设置" aria-expanded="false" aria-controls="selectionSettingsPanel">
+              <span class="toolbar-icon" aria-hidden="true">⚙</span><span class="toolbar-label">阅读设置</span>
             </button>
+            <button id="assistantToggle" class="settings-button assistant-toggle-button" type="button" aria-label="打开划词解读" title="打开划词解读" aria-controls="assistantPanel" aria-expanded="false"><span class="toolbar-icon" aria-hidden="true">✦</span><span class="toolbar-label">解读</span></button>
           </div>
         </div>
         <section id="selectionSettingsPanel" class="selection-settings hidden" aria-label="阅读与划词设置">
@@ -120,29 +125,18 @@
             <label class="switch-row">
               <span>
                 <strong id="readerLayoutTitle">显示文档目录</strong>
-                <small>关闭后隐藏左侧目录，正文扩展到屏幕左侧；各类提问结果继续显示在右侧。</small>
+                <small>宽度充足时显示在左侧；窗口变窄时自动收起，可从正文工具栏临时打开。</small>
               </span>
               <input id="showTableOfContents" type="checkbox" role="switch" checked>
             </label>
-            <div class="reader-layout-controls">
-              <div class="reader-layout-control">
-                <span><strong>正文阅读宽度</strong><small>向左扩展正文，最大 2500px</small></span>
-                <div class="reader-layout-slider">
-                  <button type="button" data-paper-width-delta="-100" aria-label="缩窄正文阅读区域">−</button>
-                  <input id="paperWidthSlider" type="range" min="470" max="2500" step="10" value="470" aria-label="正文阅读宽度">
-                  <button type="button" data-paper-width-delta="100" aria-label="加宽正文阅读区域">＋</button>
-                  <output id="paperWidthValue" for="paperWidthSlider">470px</output>
-                </div>
-              </div>
-              <div class="reader-layout-control">
-                <span><strong>阅读器中轴偏移</strong><small>负值向左，正值向右</small></span>
-                <div class="reader-layout-slider">
-                  <button type="button" data-reader-axis-delta="-40" aria-label="阅读器中轴向左移动">←</button>
-                  <input id="readerAxisSlider" type="range" min="-1200" max="1200" step="10" value="0" aria-label="阅读器中轴左右偏移">
-                  <button type="button" data-reader-axis-delta="40" aria-label="阅读器中轴向右移动">→</button>
-                  <output id="readerAxisValue" for="readerAxisSlider">0px</output>
-                </div>
-              </div>
+            <p class="adaptive-layout-note">正文宽度与 PDF 页面缩放会跟随浏览器实时调整，PDF 始终优先占据可用空间。</p>
+            <div class="reader-layout-controls hidden" aria-hidden="true">
+              <button type="button" data-paper-width-delta="100" tabindex="-1">＋</button>
+              <input id="paperWidthSlider" type="range" min="470" max="2500" step="10" value="470" tabindex="-1">
+              <output id="paperWidthValue" for="paperWidthSlider">自动</output>
+              <button type="button" data-reader-axis-delta="-40" tabindex="-1">←</button>
+              <input id="readerAxisSlider" type="range" min="-1200" max="1200" step="10" value="0" tabindex="-1">
+              <output id="readerAxisValue" for="readerAxisSlider">0px</output>
             </div>
           </section>
           <section class="typography-settings" aria-labelledby="typographyTitle">
@@ -258,36 +252,111 @@
         </div>
       </article>
 
-      <aside class="assistant-panel">
-        <button id="assistantResizeHandle" class="assistant-resize-handle" type="button" role="separator" aria-label="拖动调整划词解读栏宽度" aria-orientation="vertical" aria-valuemin="300" aria-valuemax="2500" aria-valuenow="345"></button>
-        <div class="assistant-heading"><div><p class="eyebrow">RESEARCH COPILOT</p><h2>划词解读</h2></div><span class="dot"></span></div>
-        <div class="assistant-width-control" aria-label="调整划词解读面板整体宽度">
-          <span>面板宽度</span>
-          <button type="button" data-assistant-width-delta="-40" aria-label="缩窄划词解读面板">−</button>
-          <input id="assistantWidthSlider" type="range" min="300" max="2500" step="10" value="345" aria-label="划词解读面板宽度">
-          <button type="button" data-assistant-width-delta="40" aria-label="加宽划词解读面板">＋</button>
-          <output id="assistantWidthValue" for="assistantWidthSlider">345px</output>
+      <aside id="assistantPanel" class="assistant-panel">
+        <button id="assistantResizeHandle" class="assistant-resize-handle" type="button" role="separator" aria-label="拖动调整划词解读栏宽度" aria-orientation="vertical" aria-valuemin="280" aria-valuemax="420" aria-valuenow="320"></button>
+        <div class="assistant-heading">
+          <div><p class="eyebrow">RESEARCH COPILOT</p><h2>划词解读</h2></div>
+          <div class="assistant-heading-actions"><span class="dot"></span><button id="closeAssistant" class="panel-close-button" type="button" aria-label="关闭划词解读">×</button></div>
         </div>
-        <p class="assistant-intro">选择原文或译文后，可解释公式、推导步骤、检视假设或切换到实现视角。</p>
+        <details id="assistantTools" class="assistant-tools">
+          <summary><span>AI、模型与高级工具</span><small>按需展开</small></summary>
+          <div class="assistant-tools-body">
+            <a class="assistant-config-link" href="/#llm-settings">管理 API、模型与语音配置 ↗</a>
+            <div class="assistant-width-control" aria-label="调整划词解读面板整体宽度">
+              <span>面板宽度</span>
+              <button type="button" data-assistant-width-delta="-40" aria-label="缩窄划词解读面板">−</button>
+              <input id="assistantWidthSlider" type="range" min="280" max="420" step="10" value="320" aria-label="划词解读面板宽度">
+              <button type="button" data-assistant-width-delta="40" aria-label="加宽划词解读面板">＋</button>
+              <output id="assistantWidthValue" for="assistantWidthSlider">320px</output>
+            </div>
+            <details id="threePassPanel" class="three-pass-panel">
+          <summary><span>THREE-PASS READ</span><strong>整篇 Three-Pass（精简）</strong></summary>
+          <div class="three-pass-body">
+            <label class="three-pass-backend">执行后端<select id="threePassBackend"><option value="codex">Codex · 使用 ChatGPT/Codex 额度</option><option value="api">直接 API · 使用 API Key 计费</option></select></label>
+            <section id="threePassCodexOptions" class="three-pass-provider-options">
+              <p id="codexStatus" class="three-pass-status" role="status">正在检查本机 Codex…</p>
+              <div class="three-pass-auth-actions"><button id="codexLogin" type="button">登录 Codex</button><button id="codexDeviceLogin" type="button">设备码登录</button><button id="refreshCodexStatus" type="button">刷新</button><button id="codexLogout" type="button">登出</button></div>
+              <p id="codexLoginDetails" class="three-pass-login-details hidden"></p>
+              <p class="three-pass-disclosure">论文内容会发送给 OpenAI，并消耗当前 ChatGPT/Codex 套餐额度；不会使用面板中的 API Key。</p>
+              <div class="three-pass-model-grid">
+                <label>模型<select id="threePassModel"></select></label>
+                <label>推理强度<select id="threePassEffort"><option value="high">high</option></select></label>
+              </div>
+            </section>
+            <section id="threePassApiOptions" class="three-pass-provider-options hidden">
+              <p id="threePassApiStatus" class="three-pass-status" role="status"></p>
+              <p class="three-pass-disclosure warning">直接 API 使用所选预设中的 API Key，并产生独立 API 费用。密钥不会发送到浏览器或写入分析记录。</p>
+              <div class="three-pass-api-grid">
+                <label>API 预设<select id="threePassApiPreset"></select></label>
+                <label>模型覆盖<input id="threePassApiModel" list="threePassApiModels" maxlength="200" placeholder="留空使用预设模型"><datalist id="threePassApiModels"></datalist></label>
+                <label>推理强度<select id="threePassApiEffort"><option value="auto">auto</option><option value="low">low</option><option value="medium">medium</option><option value="high" selected>high</option><option value="xhigh">xhigh</option><option value="max">max</option><option value="ultra">ultra</option></select></label>
+                <label>最大输出 token<input id="threePassMaxOutput" type="number" min="1000" max="100000" step="1000" value="12000"></label>
+                <label>Temperature<input id="threePassTemperature" type="number" min="0" max="2" step="0.1" placeholder="自动"></label>
+              </div>
+              <label class="three-pass-billing-confirm"><input id="threePassBillingConfirmed" type="checkbox">我确认本次分析将使用 API Key 并产生 API 费用</label>
+              <a class="manage-presets-link" href="/#llm-settings">管理全局 API 预设 →</a>
+            </section>
+            <div class="three-pass-model-grid three-pass-common-grid">
+              <label>报告语言<select id="threePassLanguage"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
+            </div>
+            <p id="threePassLengthSummary" class="three-pass-disclosure">篇幅采用全局 Three-Pass 设置。<a href="/#settings/three-pass">调整篇幅 →</a></p>
+            <fieldset id="threePassFocus" class="three-pass-focus">
+              <legend>第三遍关注重点</legend>
+              <label><input type="checkbox" value="method" checked>方法</label>
+              <label><input type="checkbox" value="experiments" checked>实验</label>
+              <label><input type="checkbox" value="reproducibility" checked>复现性</label>
+              <label><input type="checkbox" value="related_work">相关工作</label>
+              <label><input type="checkbox" value="limitations">局限</label>
+            </fieldset>
+            <label class="three-pass-custom">自定义关注点<textarea id="threePassCustomFocus" maxlength="2000" placeholder="例如：重点检查损失函数假设与消融实验是否充分"></textarea></label>
+            <div class="three-pass-actions">
+              <button id="startThreePass" class="primary" type="button">开始整篇 Three-Pass</button>
+              <button id="cancelThreePass" type="button" disabled>取消</button>
+            </div>
+            <label class="three-pass-history">历史分析<select id="threePassHistory"><option value="">尚无历史分析</option></select></label>
+            <ol id="threePassProgress" class="three-pass-progress" aria-label="Three-Pass 进度">
+              <li data-analysis-phase="pass1">Pass 1</li>
+              <li data-analysis-phase="pass2">Pass 2</li>
+              <li data-analysis-phase="pass3">Pass 3</li>
+              <li data-analysis-phase="synthesis">综合报告</li>
+            </ol>
+            <p id="threePassMessage" class="three-pass-message" role="status"></p>
+            <section id="threePassPreview" class="three-pass-preview hidden" aria-live="polite"></section>
+            <div id="threePassReportActions" class="three-pass-report-actions hidden">
+              <a id="downloadThreePassReport" href="#">下载 Markdown</a>
+            </div>
+            <form id="threePassFollowup" class="three-pass-followup hidden">
+              <label>继续追问<textarea id="threePassQuestion" maxlength="12000" placeholder="例如：论文的复现风险主要在哪里？" required></textarea></label>
+              <button type="submit">发送追问</button>
+            </form>
+            <div id="threePassMessages" class="three-pass-messages"></div>
+          </div>
+            </details>
+          </div>
+        </details>
+        <p class="assistant-intro">划选原文或译文，可解释公式、推导步骤、检视假设或切换到实现视角。</p>
         <label class="followup-label">补充问题（可选）<textarea id="customQuestion" placeholder="例如：这里为什么要加噪声？"></textarea></label>
         <section id="answerPanel" class="answer-panel" aria-live="polite"><p>划选论文中的一段文本，然后选择一个预定义问题。</p></section>
         <div class="answer-note-action"><button id="saveAnswerNote" type="button" disabled>回答会自动保存为配对笔记</button></div>
-        <section class="notes-panel" aria-labelledby="notesTitle">
-          <div class="notes-heading">
+        <details id="notesPanel" class="notes-panel">
+          <summary class="notes-heading">
             <div><p class="eyebrow">RESEARCH NOTES</p><h3 id="notesTitle">结构化阅读笔记 <span id="notesCount">0</span></h3></div>
+          </summary>
+          <div class="notes-panel-body">
+            <p class="notes-intro">每次划词动作会将选区、Prompt 和返回结果自动配对；单击正文虚线或角标可定位对应 Note。</p>
+            <div class="notes-actions">
+              <button id="copyNotes" type="button">复制 Markdown</button>
+              <button id="exportNotes" type="button">导出 .md</button>
+              <button id="clearNotes" class="danger-note-action" type="button">清空</button>
+            </div>
+            <div id="notesList" class="notes-list"><p class="notes-empty">还没有笔记。划词并执行一个 Prompt 后，选区与回答会自动配对保存在这里。</p></div>
+            <p id="notesStatus" class="notes-status" role="status"></p>
           </div>
-          <p class="notes-intro">每次划词动作会将选区、Prompt 和返回结果自动配对；单击正文虚线或角标、重新划选缓存文字时，会自动展开并标出对应 Note。每条笔记均可单独删除。</p>
-          <div class="notes-actions">
-            <button id="copyNotes" type="button">复制 Markdown</button>
-            <button id="exportNotes" type="button">导出 .md</button>
-            <button id="clearNotes" class="danger-note-action" type="button">清空</button>
-          </div>
-          <div id="notesList" class="notes-list"><p class="notes-empty">还没有笔记。划词并执行一个 Prompt 后，选区与回答会自动配对保存在这里。</p></div>
-          <p id="notesStatus" class="notes-status" role="status"></p>
-        </section>
+        </details>
       </aside>
+      <button id="readerPanelBackdrop" class="reader-panel-backdrop" type="button" aria-label="关闭侧边面板"></button>
     </section>
   </main>
-  <script src="/static/reader.js?v=20260729-paired-width-reflow"></script>
+  <script src="/static/reader.js?v=20260919-codex-defaults-three-pass-notes-toolbar-nowrap-flicker-fix-instant"></script>
 </body>
 </html>

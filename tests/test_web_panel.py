@@ -131,6 +131,7 @@ class ToolboxApiTest(unittest.TestCase):
         response = self.client.get("/reader")
         self.assertEqual(response.status_code, 200)
         html = response.get_data(as_text=True)
+        reader_css = (web_panel.PROJECT_ROOT / "static" / "reader.css").read_text(encoding="utf-8")
         for control_id in (
             "selectionHighlightColor",
             "selectionTextColor",
@@ -181,6 +182,18 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertIn('id="interleavedViewButton"', html)
         self.assertIn('id="sideBySideViewButton"', html)
         self.assertIn('id="liveTranslationViewButton"', html)
+        self.assertIn('class="toolbar-compact-label" aria-hidden="true">原</span>', html)
+        self.assertIn('class="toolbar-compact-label" aria-hidden="true">译</span>', html)
+        self.assertIn('class="toolbar-compact-label" aria-hidden="true">翻</span>', html)
+        self.assertIn('class="toolbar-compact-label" aria-hidden="true">段</span>', html)
+        self.assertIn('class="toolbar-compact-label" aria-hidden="true">对</span>', html)
+        self.assertIn('aria-label="打开文档目录"', html)
+        self.assertIn('aria-label="导入另一篇论文"', html)
+        self.assertIn('aria-label="缩小" title="缩小 PDF"', html)
+        self.assertIn('aria-label="放大" title="放大 PDF"', html)
+        self.assertIn('aria-label="停止朗读" title="停止朗读"', html)
+        self.assertIn('data-speech-label', html)
+        self.assertIn(".paper-toolbar {\n  position:sticky;\n  z-index:20;\n  top:0;", reader_css)
         self.assertIn("每次打开都会重新应用当前版本的阅读器功能", html)
         self.assertIn(".html,.htm", html)
         self.assertLess(html.index("selection-format-toolbar"), html.index("actionButtons"))
@@ -1736,6 +1749,25 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertIn("扩散模型", call["messages"][0]["content"])
         self.assertIn("几何意义", call["messages"][1]["content"])
         self.assertIn("$x_t", call["messages"][1]["content"])
+
+    def test_reader_three_pass_action_uses_one_bounded_structured_answer(self) -> None:
+        config = {"name": "test", "baseUrl": "https://llm.example", "apiKey": "key", "model": "model"}
+        block = {"id": "b3", "section": "Method", "content": "A selected method paragraph."}
+        with patch.object(web_panel, "OpenAI") as client_class:
+            client = client_class.return_value
+            client.chat.completions.create.return_value = SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="## Pass 1 · 快速定位\n\n精简结果"))]
+            )
+            answer = web_panel.ask_reader_llm(config, "three_pass", block["content"], block, [block], "关注复现性")
+        self.assertIn("Pass 1", answer)
+        client.chat.completions.create.assert_called_once()
+        prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertIn("一次回答中完成三个层次", prompt)
+        self.assertIn("Pass 1 · 快速定位", prompt)
+        self.assertIn("总回答不超过 700 个汉字", prompt)
+        self.assertIn("关注复现性", prompt)
+        actions = self.client.get("/api/reader/config").get_json()["actions"]
+        self.assertIn({"id": "three_pass", "label": "Three-Pass 解读"}, actions)
 
     def test_reader_markdown_parser_keeps_mathpix_latex_tables_and_lists_together(self) -> None:
         blocks = web_panel.markdown_to_reader_blocks(
@@ -3846,6 +3878,8 @@ class ToolboxApiTest(unittest.TestCase):
             "baseUrl": "https://llm.example/v1",
             "model": "local-model",
             "concurrency": 1,
+            "protocol": "auto",
+            "contextWindow": None,
         }])
         self.assertNotIn("apiKey", pdf_tool["llmPresets"][0])
 

@@ -23,10 +23,59 @@ const {
   normalizeSpeechPlaybackRate,
   notesToMarkdown,
   pdfParagraphGroups,
+  pdfFitScale,
+  pdfReflowNeeded,
   readerSpeechAvailable,
+  readerLayoutForWidth,
   readerPaperColumnWidth,
+  responsiveReaderWidth,
+  threePassAnswerMarkdown,
+  threePassEffortView,
+  threePassLengthSummary,
+  threePassProgressState,
+  compactRateLimitText,
   textFormatHasStyle,
 } = require("../static/reader.js");
+
+assert.deepEqual(
+  threePassEffortView({ supportedEfforts: ["medium", "high"], defaultEffort: "medium" }, "high"),
+  { efforts: ["medium", "high"], selected: "high" },
+);
+assert.deepEqual(
+  threePassEffortView({ supportedEfforts: ["low", "medium"], defaultEffort: "medium" }, "high"),
+  { efforts: ["low", "medium"], selected: "medium" },
+);
+assert.equal(threePassProgressState({ status: "pass2", phase: "pass2", results: { pass1: "done" } }, "pass1"), "done");
+assert.equal(threePassProgressState({ status: "pass2", phase: "pass2", results: { pass1: "done" } }, "pass2"), "running");
+assert.equal(threePassProgressState({ status: "cancelled", phase: "pass3", results: {} }, "pass3"), "cancelled");
+assert.equal(
+  threePassAnswerMarkdown({
+    phase: "pass3",
+    results: { pass1: "定位主题", pass2: "连接证据" },
+    preview: "检查假设",
+  }),
+  "# Three-Pass 结构化解读\n\n## Pass 1 · 快速定位\n\n定位主题\n\n## Pass 2 · 结构与证据\n\n连接证据\n\n## Pass 3 · 深读与批判\n\n检查假设",
+);
+assert.equal(
+  compactRateLimitText({ rateLimits: [{ primary: { usedPercent: 37 }, secondary: { usedPercent: 82 } }] }),
+  "63% 剩余 · 18% 剩余",
+);
+assert.equal(
+  threePassLengthSummary({
+    tolerancePercent: 20,
+    phases: {
+      pass1: { target: 250 },
+      pass2: { target: 450 },
+      pass3: { target: 1600 },
+      synthesis: { target: 1800 },
+    },
+  }, "zh-CN"),
+  "全局目标：P1 250 · P2 450 · P3 1600 · 综合 1800 字（约 ±20%）",
+);
+assert.match(
+  threePassLengthSummary({ phases: { pass1:{ target:150 }, pass2:{ target:300 }, pass3:{ target:400 }, synthesis:{ target:600 } } }, "en-US"),
+  /words/,
+);
 
 assert.equal(liveSourceFingerprint("  Same paragraph.  "), liveSourceFingerprint("Same paragraph."));
 assert.notEqual(liveSourceFingerprint("First paragraph."), liveSourceFingerprint("Second paragraph."));
@@ -160,10 +209,10 @@ assert.deepEqual(normalizeReadingLayout({
 
 assert.equal(normalizeFormatColor("#A1B2C3"), "#a1b2c3");
 assert.equal(normalizeFormatColor("red; background:url(x)"), "");
-assert.equal(normalizeAssistantWidth(250), 300);
-assert.equal(normalizeAssistantWidth(560.4), 560);
-assert.equal(normalizeAssistantWidth(900), 900);
-assert.equal(normalizeAssistantWidth(2800), 2500);
+assert.equal(normalizeAssistantWidth(250), 280);
+assert.equal(normalizeAssistantWidth(360.4), 360);
+assert.equal(normalizeAssistantWidth(900), 420);
+assert.equal(normalizeAssistantWidth(2800), 420);
 assert.equal(normalizePaperWidth(320), 470);
 assert.equal(normalizePaperWidth(920.6), 921);
 assert.equal(normalizePaperWidth(1800), 1800);
@@ -171,9 +220,21 @@ assert.equal(normalizePaperWidth(2800), 2500);
 assert.equal(normalizeReaderAxisOffset(-1300), -1200);
 assert.equal(normalizeReaderAxisOffset(245.6), 246);
 assert.equal(normalizeReaderAxisOffset(1800), 1200);
-assert.equal(readerPaperColumnWidth(1576), 942);
-assert.equal(readerPaperColumnWidth(1576, 560), 727);
+assert.equal(readerPaperColumnWidth(1576), 1000);
+assert.equal(readerPaperColumnWidth(1576, 560), 900);
 assert.equal(readerPaperColumnWidth(900), 470);
+assert.deepEqual(readerLayoutForWidth(1600), { compactTableOfContents: false, assistantOverlay: false });
+assert.deepEqual(readerLayoutForWidth(1200), { compactTableOfContents: true, assistantOverlay: false });
+assert.deepEqual(readerLayoutForWidth(1120), { compactTableOfContents: true, assistantOverlay: false });
+for (const width of [1100, 900, 760, 600, 420]) {
+  assert.deepEqual(readerLayoutForWidth(width), { compactTableOfContents: true, assistantOverlay: true });
+}
+assert.equal(responsiveReaderWidth(1140, 1091), 1140);
+assert.equal(responsiveReaderWidth(0, 1091), 1091);
+assert.equal(pdfReflowNeeded(1090, 1105), false);
+assert.equal(pdfReflowNeeded(1070, 1105), true);
+assert.equal(pdfFitScale(800, 600), 4 / 3);
+assert.ok(Math.abs(pdfFitScale(800, 600, 1.25) - (5 / 3)) < 1e-12);
 assert.deepEqual(
   calculateNoteBadgeMetrics(17, 32.3, 20, true),
   { badgeFont: 7.5, badgeHeight: 10, lineHeight: 33 },

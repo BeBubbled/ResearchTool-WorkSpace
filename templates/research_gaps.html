@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#17334a">
   <title>研究空白地图 · Research Toolkit</title>
   <meta name="description" content="从论文证据中整理贡献、局限、失败条件和仍待解决的研究问题。">
-  <link rel="stylesheet" href="/static/research_gaps.css?v=20260910">
+  <link rel="stylesheet" href="/static/research_gaps.css?v=20260919-unified-codex-folder-import">
 </head>
 <body>
   <header class="topbar">
@@ -60,11 +60,20 @@
             <h2 id="viewTitle">研究空白</h2>
           </div>
           <div class="workspace-actions">
-            <select id="llmPreset" aria-label="选择分析模型"></select>
+            <select id="analysisBackend" aria-label="选择分析后端">
+              <option value="codex">Codex · 套餐额度</option>
+              <option value="api">直接 API · API Key</option>
+            </select>
+            <span id="analysisApiOptions"><select id="llmPreset" aria-label="选择 API 分析模型"></select></span>
             <button id="importPaperButton" class="button secondary" type="button">添加论文</button>
             <button id="analyzeButton" class="button primary" type="button">分析论文</button>
           </div>
         </header>
+
+        <section id="codexPanel" class="codex-panel hidden" aria-live="polite">
+          <span id="codexStatus">正在检查 Codex…</span>
+          <a id="manageCodex" class="text-button" href="/#settings/codex">在“AI、语音与 GitHub”中管理</a>
+        </section>
 
         <section id="jobPanel" class="job-panel hidden" aria-live="polite">
           <div><strong id="jobLabel">正在分析</strong><span id="jobProgress">0 / 0</span></div>
@@ -153,6 +162,8 @@
       <header><div><p class="eyebrow">ADD PAPERS</p><h2>添加论文</h2></div><button class="icon-button" data-close-dialog="importDialog" aria-label="关闭">×</button></header>
       <div class="segmented-control">
         <button class="active" type="button" data-import-tab="search">在线检索</button>
+        <button type="button" data-import-tab="batch">批量标题</button>
+        <button type="button" data-import-tab="folder">PDF 文件夹</button>
         <button type="button" data-import-tab="local">本地阅读库</button>
       </div>
       <div id="searchImportPanel" class="import-panel active">
@@ -162,6 +173,47 @@
         </form>
         <p id="paperSearchStatus" class="panel-status">精确标识会直接解析；标题将返回候选结果。</p>
         <div id="paperSearchResults" class="import-results"></div>
+      </div>
+      <div id="batchImportPanel" class="import-panel">
+        <form id="batchImportForm" class="batch-import-form">
+          <label>论文标题（每行一篇，最多 50 篇）<textarea id="batchPaperTitles" required rows="9" placeholder="Attention Is All You Need&#10;Denoising Diffusion Probabilistic Models"></textarea></label>
+          <button id="batchImportButton" class="button primary" type="submit">从 arXiv 批量获取</button>
+        </form>
+        <p id="batchImportStatus" class="panel-status">将严格核对标题；匹配后自动获取 arXiv 元数据与开放 PDF。</p>
+        <div id="batchImportResults" class="import-results"></div>
+      </div>
+      <div id="folderImportPanel" class="import-panel">
+        <form id="folderImportForm" class="folder-import-form">
+          <label>PDF 文件夹绝对路径<input id="folderPath" required placeholder="/Users/name/Documents/papers"></label>
+          <p>由本机后端递归扫描全部子目录；仅保存提取文本和原文件引用，不复制 PDF，也不会自动启动 AI 分析。</p>
+          <button id="folderImportButton" class="button primary" type="submit">开始后台导入</button>
+        </form>
+        <section id="folderImportJob" class="folder-import-job hidden" aria-live="polite">
+          <header><strong id="folderImportJobStatus">准备导入</strong><span id="folderImportJobProgress">0 / 0</span></header>
+          <div class="progress-track"><span id="folderImportProgressBar"></span></div>
+          <p id="folderImportCurrent"></p>
+          <dl class="folder-import-stats">
+            <div><dt>新增</dt><dd id="folderImportedCount">0</dd></div>
+            <div><dt>重复</dt><dd id="folderDuplicateCount">0</dd></div>
+            <div><dt>跳过</dt><dd id="folderSkippedCount">0</dd></div>
+            <div><dt>失败</dt><dd id="folderFailedCount">0</dd></div>
+          </dl>
+          <div class="folder-import-actions">
+            <button id="pauseFolderImport" class="button quiet hidden" type="button">暂停</button>
+            <button id="resumeFolderImport" class="button quiet hidden" type="button">恢复</button>
+          </div>
+        </section>
+        <div id="folderImportResultToolbar" class="folder-result-toolbar hidden">
+          <select id="folderImportStatusFilter" aria-label="筛选文件夹导入结果">
+            <option value="">全部结果</option><option value="imported">已导入</option>
+            <option value="duplicate">重复</option><option value="skipped">已跳过</option>
+            <option value="failed">失败</option><option value="pending">待处理</option>
+          </select>
+          <span id="folderImportPageStatus"></span>
+          <button id="folderImportPrev" class="button quiet" type="button">上一页</button>
+          <button id="folderImportNext" class="button quiet" type="button">下一页</button>
+        </div>
+        <div id="folderImportResults" class="import-results"></div>
       </div>
       <div id="localImportPanel" class="import-panel">
         <div id="localLibraryResults" class="import-results"></div>
@@ -185,6 +237,6 @@
   </dialog>
 
   <div id="toast" class="toast hidden" role="status"></div>
-  <script src="/static/research_gaps.js?v=20260910"></script>
+  <script src="/static/research_gaps.js?v=20260919-unified-codex-folder-import"></script>
 </body>
 </html>

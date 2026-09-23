@@ -39,11 +39,26 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment, Declaration, Doctype, NavigableString, ProcessingInstruction, Tag
 from dotenv import load_dotenv, set_key, unset_key
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
 from research_gaps import ResearchGapService, create_research_gap_blueprint
+from codex_three_pass import (
+    ApiThreePassAnalysisManager,
+    CodexTextRunner,
+    DirectApiExecutor,
+    THREE_PASS_LENGTH_MAX,
+    THREE_PASS_LENGTH_MIN,
+    THREE_PASS_LENGTH_PRESETS,
+    ThreePassAnalysisManager,
+    build_chunk_plan,
+    default_phase_lengths,
+    infer_api_protocol,
+    normalize_api_base_url,
+    sse_events,
+    validate_phase_lengths,
+)
 
 try:
     from openai import OpenAI
@@ -109,9 +124,12 @@ AZURE_SPEECH_DEFAULT_REGION = "centralus"
 AZURE_SPEECH_DEFAULT_VOICE = "zh-CN-YunxiNeural"
 AZURE_SPEECH_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 GITHUB_API_URL = "https://api.github.com"
+CODEX_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 GITHUB_DEFAULT_BRANCH = "main"
 GITHUB_DEFAULT_IMAGE_ROOT = "images"
 GITHUB_API_VERSION = "2022-11-28"
+THREE_PASS_SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "three-pass-paper-reader" / "SKILL.md"
+THREE_PASS_LENGTH_ENV_KEY = "THREE_PASS_LENGTH_CONFIG"
 
 app = Flask(__name__)
 # The desktop panel is a long-running local process. Reload templates on each
@@ -119,6 +137,10 @@ app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 reader_cache_lock = threading.Lock()
 llm_config_lock = threading.Lock()
+three_pass_manager = ThreePassAnalysisManager(PROJECT_ROOT, THREE_PASS_SKILL_PATH)
+research_gap_codex_runner = CodexTextRunner(PROJECT_ROOT, three_pass_manager.runtime)
+api_three_pass_manager: ApiThreePassAnalysisManager | None = None
+api_model_cache: dict[str, tuple[float, list[str]]] = {}
 
 
 class LlmConcurrencyRegistry:
@@ -436,6 +458,129 @@ def reader_capabilities(render_kind: str, has_translation: bool) -> dict[str, bo
 
 def json_error(message: str, status: int = 400):
     return jsonify({"error": message}), status
+
+
+def codex_models_with_compat_efforts(models: Any) -> list[dict[str, Any]]:
+    """Apply documented model capabilities missing from older app-server catalogs."""
+    normalized: list[dict[str, Any]] = []
+    for item in models if isinstance(models, list) else []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        model = dict(item)
+        efforts = [str(effort).strip().lower() for effort in model.get("supportedEfforts", []) if str(effort).strip()]
+        if model["id"] in {"gpt-5.6-sol", "gpt-5.6"} and "none" not in efforts:
+            efforts.insert(0, "none")
+        model["supportedEfforts"] = efforts
+        normalized.append(model)
+    return normalized
+
+
+def codex_status_with_preferences(*, refresh: bool = False) -> dict[str, Any]:
+    """Return live Codex account data with this app's saved defaults applied."""
+    status = dict(three_pass_manager.status(refresh=refresh))
+    models = codex_models_with_compat_efforts(status.get("models"))
+    status["models"] = models
+    catalog_default = status.get("defaultModel")
+    saved_model = os.getenv("CODEX_DEFAULT_MODEL", "").strip()
+    selected = next((model for model in models if model["id"] == saved_model), None)
+    if selected is None:
+        selected = next((model for model in models if model["id"] == catalog_default), models[0] if models else None)
+    default_model = selected.get("id") if selected else None
+
+    saved_effort = os.getenv("CODEX_REASONING_EFFORT", "").strip().lower()
+    supported_efforts = [
+        str(effort).strip().lower()
+        for effort in (selected or {}).get("supportedEfforts", [])
+        if str(effort).strip()
+    ]
+    model_default_effort = str((selected or {}).get("defaultEffort") or "").strip().lower()
+    if saved_effort and (not supported_efforts or saved_effort in supported_efforts):
+        default_effort = saved_effort
+    elif model_default_effort:
+        default_effort = model_default_effort
+    elif supported_efforts:
+        default_effort = supported_efforts[0]
+    else:
+        default_effort = "high"
+
+    status.update({
+        "catalogDefaultModel": catalog_default,
+        "defaultModel": default_model,
+        "defaultReasoningEffort": default_effort,
+        "preferencesSaved": bool(saved_model or saved_effort),
+    })
+    return status
+
+
+def save_codex_preferences(model: Any, reasoning_effort: Any) -> dict[str, Any]:
+    """Persist Research Toolkit Codex defaults without changing global Codex settings."""
+    status = codex_status_with_preferences()
+    if not status.get("available") or not status.get("chatgptAuthenticated"):
+        raise ValueError(status.get("error") or "请先使用 ChatGPT 登录 Codex。")
+    requested_model = str(model or "").strip()
+    selected = next(
+        (item for item in status.get("models", []) if isinstance(item, dict) and item.get("id") == requested_model),
+        None,
+    )
+    if selected is None:
+        raise ValueError("请选择当前 Codex 账户可用的模型。")
+    requested_effort = str(reasoning_effort or "").strip().lower()
+    supported = {
+        str(effort).strip().lower()
+        for effort in selected.get("supportedEfforts", [])
+        if str(effort).strip()
+    }
+    if requested_effort not in CODEX_REASONING_EFFORTS or (supported and requested_effort not in supported):
+        raise ValueError("请选择该模型支持的推理强度。")
+    with llm_config_lock:
+        if not ENV_FILE.exists():
+            ENV_FILE.touch(mode=0o600)
+        for environment_key, value in (
+            ("CODEX_DEFAULT_MODEL", requested_model),
+            ("CODEX_REASONING_EFFORT", requested_effort),
+        ):
+            set_key(str(ENV_FILE), environment_key, value, quote_mode="auto")
+            os.environ[environment_key] = value
+    return codex_status_with_preferences()
+
+
+def three_pass_length_config() -> dict[str, dict[str, Any]]:
+    """Load global Three-Pass length defaults, tolerating legacy or damaged values."""
+    raw = os.getenv(THREE_PASS_LENGTH_ENV_KEY, "").strip()
+    if not raw:
+        return default_phase_lengths()
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or int(payload.get("version") or 0) != 1:
+            raise ValueError("unsupported version")
+        return validate_phase_lengths(payload)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default_phase_lengths()
+
+
+def three_pass_config_payload() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "phases": three_pass_length_config(),
+        "presets": {
+            phase: dict(levels)
+            for phase, levels in THREE_PASS_LENGTH_PRESETS.items()
+        },
+        "limits": {"min": THREE_PASS_LENGTH_MIN, "max": THREE_PASS_LENGTH_MAX, "step": 50},
+        "units": {"zh-CN": "characters", "en-US": "words"},
+        "tolerancePercent": 20,
+    }
+
+
+def save_three_pass_length_config(value: Any) -> dict[str, Any]:
+    phases = validate_phase_lengths(value)
+    stored = json.dumps({"version": 1, "phases": phases}, ensure_ascii=False, separators=(",", ":"))
+    with llm_config_lock:
+        if not ENV_FILE.exists():
+            ENV_FILE.touch(mode=0o600)
+        set_key(str(ENV_FILE), THREE_PASS_LENGTH_ENV_KEY, stored, quote_mode="always")
+        os.environ[THREE_PASS_LENGTH_ENV_KEY] = stored
+    return three_pass_config_payload()
 
 
 def validate_azure_speech_fields(api_key: Any, region: Any, voice: Any) -> dict[str, str]:
@@ -823,6 +968,27 @@ def llm_concurrency(value: Any, default: int = 1) -> int:
     return concurrency
 
 
+def llm_protocol(value: Any) -> str:
+    protocol = str(value or "auto").strip().lower()
+    if protocol not in {"auto", "responses", "chat_completions"}:
+        raise ValueError("LLM protocol must be auto, responses, or chat_completions.")
+    return protocol
+
+
+def llm_context_window(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise ValueError("LLM context window must be an integer between 8,000 and 10,000,000.")
+    try:
+        context_window = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("LLM context window must be an integer between 8,000 and 10,000,000.") from exc
+    if not 8_000 <= context_window <= 10_000_000:
+        raise ValueError("LLM context window must be between 8,000 and 10,000,000.")
+    return context_window
+
+
 def llm_presets() -> list[dict[str, Any]]:
     """Return safe public metadata plus in-memory credentials for .env presets."""
     presets: list[dict[str, Any]] = []
@@ -836,6 +1002,8 @@ def llm_presets() -> list[dict[str, Any]]:
                 "model": os.environ["LLM_MODEL"],
                 "apiKey": os.environ["LLM_API_KEY"],
                 "concurrency": llm_concurrency(os.environ.get("LLM_CONCURRENCY")),
+                "protocol": llm_protocol(os.environ.get("LLM_PROTOCOL")),
+                "contextWindow": llm_context_window(os.environ.get("LLM_CONTEXT_WINDOW")),
             }
         )
     raw_ids = re.split(r"[\s,]+", os.environ.get("LLM_PRESETS", "").strip())
@@ -857,13 +1025,61 @@ def llm_presets() -> list[dict[str, Any]]:
                 "model": model,
                 "apiKey": api_key,
                 "concurrency": llm_concurrency(os.environ.get(f"{prefix}CONCURRENCY")),
+                "protocol": llm_protocol(os.environ.get(f"{prefix}PROTOCOL")),
+                "contextWindow": llm_context_window(os.environ.get(f"{prefix}CONTEXT_WINDOW")),
             }
         )
     return presets
 
 
 def public_llm_presets() -> list[dict[str, Any]]:
-    return [{key: preset[key] for key in ("id", "name", "baseUrl", "model", "concurrency")} for preset in llm_presets()]
+    return [{key: preset[key] for key in ("id", "name", "baseUrl", "model", "concurrency", "protocol", "contextWindow")} for preset in llm_presets()]
+
+
+def direct_api_provider(preset_id: str) -> dict[str, Any] | None:
+    return next((preset for preset in llm_presets() if preset["id"] == str(preset_id).strip().lower()), None)
+
+
+def direct_api_models(preset_id: str) -> list[str]:
+    requested = str(preset_id or "").strip().lower()
+    cached = api_model_cache.get(requested)
+    if cached and time.monotonic() - cached[0] < 300:
+        return list(cached[1])
+    config = direct_api_provider(requested)
+    if not config:
+        raise ValueError("The selected LLM preset does not exist.")
+    if OpenAI is None:
+        raise RuntimeError("The OpenAI Python SDK is not installed.")
+    client = OpenAI(
+        api_key=config["apiKey"],
+        base_url=normalize_api_base_url(config["baseUrl"]),
+        timeout=30.0,
+        max_retries=0,
+    )
+    with direct_api_slot(config):
+        response = client.models.list()
+    data = getattr(response, "data", None) or []
+    models = sorted({str(getattr(item, "id", "") or (item.get("id") if isinstance(item, dict) else "")) for item in data} - {""})[:300]
+    if config["model"] not in models:
+        models.insert(0, config["model"])
+    api_model_cache[requested] = (time.monotonic(), models)
+    return list(models)
+
+
+def direct_api_slot(config: dict[str, Any]):
+    return llm_concurrency_registry.slot(f"preset:{config['id']}", llm_concurrency(config.get("concurrency")))
+
+
+def get_api_three_pass_manager() -> ApiThreePassAnalysisManager:
+    global api_three_pass_manager
+    if api_three_pass_manager is None:
+        api_three_pass_manager = ApiThreePassAnalysisManager(
+            PROJECT_ROOT,
+            THREE_PASS_SKILL_PATH,
+            direct_api_provider,
+            DirectApiExecutor(slot_factory=direct_api_slot),
+        )
+    return api_three_pass_manager
 
 
 def validate_llm_fields(
@@ -872,6 +1088,8 @@ def validate_llm_fields(
     api_key: Any,
     model: Any,
     concurrency: Any = None,
+    protocol: Any = "auto",
+    context_window: Any = None,
 ) -> dict[str, Any]:
     values = {
         "name": str(name or "").strip(),
@@ -879,6 +1097,8 @@ def validate_llm_fields(
         "apiKey": str(api_key or "").strip(),
         "model": str(model or "").strip(),
         "concurrency": llm_concurrency(concurrency),
+        "protocol": llm_protocol(protocol),
+        "contextWindow": llm_context_window(context_window),
     }
     if not values["name"] or len(values["name"]) > 100 or any(ord(char) < 32 for char in values["name"]):
         raise ValueError("LLM configuration name is required and must be at most 100 characters.")
@@ -910,9 +1130,11 @@ def save_llm_preset(
     api_key: Any,
     model: Any,
     concurrency: Any = 1,
+    protocol: Any = "auto",
+    context_window: Any = None,
 ) -> dict[str, Any]:
     """Persist one named OpenAI-compatible provider in the project-local .env."""
-    config = validate_llm_fields(preset_name, base_url, api_key, model, concurrency)
+    config = validate_llm_fields(preset_name, base_url, api_key, model, concurrency, protocol, context_window)
     preset_key = persistent_preset_id(config["name"])
     with llm_config_lock:
         current_ids = [item.upper() for item in re.split(r"[\s,]+", os.environ.get("LLM_PRESETS", "").strip()) if item]
@@ -930,6 +1152,13 @@ def save_llm_preset(
         set_key(str(ENV_FILE), f"{prefix}API_KEY", config["apiKey"], quote_mode="auto")
         set_key(str(ENV_FILE), f"{prefix}MODEL", config["model"], quote_mode="auto")
         set_key(str(ENV_FILE), f"{prefix}CONCURRENCY", str(config["concurrency"]), quote_mode="auto")
+        set_key(str(ENV_FILE), f"{prefix}PROTOCOL", config["protocol"], quote_mode="auto")
+        if config["contextWindow"] is None:
+            context_key = f"{prefix}CONTEXT_WINDOW"
+            if context_key in os.environ or context_key in ENV_FILE.read_text(encoding="utf-8", errors="ignore"):
+                unset_key(str(ENV_FILE), context_key)
+        else:
+            set_key(str(ENV_FILE), f"{prefix}CONTEXT_WINDOW", str(config["contextWindow"]), quote_mode="auto")
         # Existing requests should see the provider immediately without a restart.
         os.environ["LLM_PRESETS"] = ",".join(updated_ids)
         os.environ[f"{prefix}NAME"] = config["name"]
@@ -937,6 +1166,11 @@ def save_llm_preset(
         os.environ[f"{prefix}API_KEY"] = config["apiKey"]
         os.environ[f"{prefix}MODEL"] = config["model"]
         os.environ[f"{prefix}CONCURRENCY"] = str(config["concurrency"])
+        os.environ[f"{prefix}PROTOCOL"] = config["protocol"]
+        if config["contextWindow"] is None:
+            os.environ.pop(f"{prefix}CONTEXT_WINDOW", None)
+        else:
+            os.environ[f"{prefix}CONTEXT_WINDOW"] = str(config["contextWindow"])
         llm_concurrency_registry.configure(f"preset:{preset_key.lower()}", config["concurrency"])
     for preset in public_llm_presets():
         if preset["id"] == preset_key.lower():
@@ -951,6 +1185,8 @@ def update_llm_preset(
     api_key: Any,
     model: Any,
     concurrency: Any = None,
+    protocol: Any = None,
+    context_window: Any = None,
 ) -> dict[str, Any]:
     """Update a preset in place so saved browser mappings keep the same ID."""
     requested_id = str(preset_id or "").strip().lower()
@@ -964,6 +1200,8 @@ def update_llm_preset(
         replacement_key,
         model,
         existing["concurrency"] if concurrency in (None, "") else concurrency,
+        existing["protocol"] if protocol in (None, "") else protocol,
+        existing["contextWindow"] if context_window is None else context_window,
     )
     prefix = "LLM_" if requested_id == "default" else f"LLM_PRESET_{requested_id.upper()}_"
     with llm_config_lock:
@@ -975,10 +1213,19 @@ def update_llm_preset(
             ("API_KEY", config["apiKey"]),
             ("MODEL", config["model"]),
             ("CONCURRENCY", str(config["concurrency"])),
+            ("PROTOCOL", config["protocol"]),
         ):
             environment_key = f"{prefix}{suffix}"
             set_key(str(ENV_FILE), environment_key, value, quote_mode="auto")
             os.environ[environment_key] = value
+        context_key = f"{prefix}CONTEXT_WINDOW"
+        if config["contextWindow"] is None:
+            if ENV_FILE.exists() and (context_key in os.environ or context_key in ENV_FILE.read_text(encoding="utf-8", errors="ignore")):
+                unset_key(str(ENV_FILE), context_key)
+            os.environ.pop(context_key, None)
+        else:
+            set_key(str(ENV_FILE), context_key, str(config["contextWindow"]), quote_mode="auto")
+            os.environ[context_key] = str(config["contextWindow"])
         llm_concurrency_registry.configure(f"preset:{requested_id}", config["concurrency"])
     updated = next((preset for preset in public_llm_presets() if preset["id"] == requested_id), None)
     if not updated:
@@ -992,12 +1239,12 @@ def delete_llm_preset(preset_id: Any) -> dict[str, Any]:
     existing = next((preset for preset in llm_presets() if preset["id"] == requested_id), None)
     if not existing:
         raise ValueError("The selected LLM preset does not exist.")
-    public_existing = {key: existing[key] for key in ("id", "name", "baseUrl", "model", "concurrency")}
+    public_existing = {key: existing[key] for key in ("id", "name", "baseUrl", "model", "concurrency", "protocol", "contextWindow")}
     prefix = "LLM_" if requested_id == "default" else f"LLM_PRESET_{requested_id.upper()}_"
     with llm_config_lock:
-        for suffix in ("NAME", "BASE_URL", "API_KEY", "MODEL", "CONCURRENCY"):
+        for suffix in ("NAME", "BASE_URL", "API_KEY", "MODEL", "CONCURRENCY", "PROTOCOL", "CONTEXT_WINDOW"):
             environment_key = f"{prefix}{suffix}"
-            if ENV_FILE.exists():
+            if ENV_FILE.exists() and (environment_key in os.environ or environment_key in ENV_FILE.read_text(encoding="utf-8", errors="ignore")):
                 unset_key(str(ENV_FILE), environment_key)
             os.environ.pop(environment_key, None)
         if requested_id != "default":
@@ -7495,6 +7742,8 @@ research_gap_service = ResearchGapService(
     llm_request=research_gap_llm_request,
     llm_presets=public_llm_presets,
     reader_source=research_gap_reader_source,
+    codex_request=research_gap_codex_runner.run,
+    codex_status=codex_status_with_preferences,
 )
 app.register_blueprint(create_research_gap_blueprint(research_gap_service))
 
@@ -7522,6 +7771,14 @@ def health():
 READER_ACTIONS = {
     "translate": "翻译选区：忠实翻译为简体中文，保留 LaTeX、变量名、引用编号、代码和专有名词；必要时在译文后用一句话说明关键术语。",
     "explain": "解释选区：先给一句结论，再逐句解释术语、变量和逻辑；优先给机器学习论文中的具体含义。",
+    "three_pass": (
+        "Three-Pass 解读：在一次回答中完成三个层次的精简阅读，不要拆成多次请求。"
+        "严格使用 `## Pass 1 · 快速定位`、`## Pass 2 · 结构与证据`、`## Pass 3 · 深读与批判` 三个小标题。"
+        "Pass 1 只说明选区主题、目的及其在章节中的位置，不超过 120 个汉字；"
+        "Pass 2 连接核心主张、方法步骤、公式/证据与必要假设，不超过 220 个汉字；"
+        "Pass 3 指出深层含义、潜在缺口、失效条件或复现问题，不超过 260 个汉字。"
+        "总回答不超过 700 个汉字；每层最多 3 个要点，不复述同一内容。"
+    ),
     "formula": "解释公式：列出所有符号及张量形状/取值域，说明每一项的作用、输入输出、假设和训练/推理时的意义。",
     "geometry": "解释公式的几何意义：明确向量/参数/概率分布所处的空间，说明方向、距离、角度、投影、流形或优化几何；没有严格几何解释时要直说并给直觉。",
     "derivation": "推导这一步：从可见的前提开始，逐行给出代数、概率或微积分变形；指出使用的恒等式、近似或条件，不能凭空补全未给出的前提。",
@@ -7661,6 +7918,470 @@ def ask_reader_llm(config: dict[str, Any], action: str, selection: str, block: d
     if not answer or not answer.strip():
         raise RuntimeError("LLM returned an empty explanation.")
     return answer.strip()
+
+
+THREE_PASS_FOCUS_LABELS = {
+    "method": "方法",
+    "experiments": "实验",
+    "reproducibility": "复现性",
+    "related_work": "相关工作",
+    "limitations": "局限与失败模式",
+}
+THREE_PASS_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+
+
+def reader_analysis_root(document: ReaderDocument) -> Path:
+    if document.cache_key and re.fullmatch(r"[0-9a-f]{64}", document.cache_key):
+        return reader_cache_root(document.cache_key) / "analyses"
+    return document.root / "analyses"
+
+
+def find_reader_analysis(analysis_id: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", analysis_id):
+        return None
+    existing = three_pass_manager.get(analysis_id)
+    if existing:
+        return existing
+    api_manager = get_api_three_pass_manager()
+    existing = api_manager.get(analysis_id)
+    if existing:
+        return existing
+    candidates = list(READER_CACHE_DIR.glob(f"*/*/analyses/{analysis_id}/analysis.json"))
+    candidates.extend(JOBS_DIR.glob(f"reader-*/analyses/{analysis_id}/analysis.json"))
+    for metadata in candidates:
+        try:
+            payload = json.loads(metadata.read_text(encoding="utf-8"))
+            manager = api_manager if str(payload.get("backend") or "codex") == "api" else three_pass_manager
+            return manager.load(metadata.parent)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def html_to_analysis_markdown(source: Path) -> str:
+    soup = BeautifulSoup(source.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    standalone_images: list[str] = []
+    for node in soup.find_all("script"):
+        script_type = str(node.get("type") or "").lower()
+        if "math/tex" in script_type:
+            formula = node.get_text(strip=True)
+            marker = f"$${formula}$$" if "mode=display" in script_type else f"${formula}$"
+            node.replace_with(NavigableString(marker))
+        else:
+            node.decompose()
+    for node in soup.find_all("math"):
+        annotation = node.find("annotation", attrs={"encoding": re.compile(r"(?:x-tex|latex)", re.I)})
+        formula = (annotation.get_text(" ", strip=True) if annotation else node.get_text(" ", strip=True)).strip()
+        if formula:
+            marker = f"$${formula}$$" if str(node.get("display") or "").lower() == "block" else f"${formula}$"
+            node.replace_with(NavigableString(marker))
+        else:
+            node.decompose()
+    for node in soup.find_all("img"):
+        alt = clean_reader_title(node.get("alt")) or "image"
+        src = str(node.get("src") or "").strip()
+        marker = f"![{alt}]({src})" if src and not src.lower().startswith("data:") else f"[Embedded image: {alt}]"
+        if not node.find_parent(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "table", "figcaption"]):
+            standalone_images.append(marker)
+        node.replace_with(NavigableString(marker))
+    for node in soup.select("style,noscript,template"):
+        node.decompose()
+    lines: list[str] = []
+    for node in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "table", "figcaption"]):
+        if node.find_parent(["table", "pre"]) and node.name not in {"table", "pre"}:
+            continue
+        text = node.get_text(" ", strip=True)
+        if not text:
+            continue
+        if node.name and re.fullmatch(r"h[1-6]", node.name):
+            lines.append(f"{'#' * int(node.name[1])} {text}")
+        elif node.name == "li":
+            lines.append(f"- {text}")
+        elif node.name == "pre":
+            lines.append(f"```\n{text}\n```")
+        elif node.name == "table":
+            rows: list[list[str]] = []
+            for row in node.find_all("tr"):
+                cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
+                if cells:
+                    rows.append(cells)
+            if rows:
+                width = max(len(row) for row in rows)
+                normalized = [row + [""] * (width - len(row)) for row in rows]
+                rendered = ["| " + " | ".join(cell.replace("|", r"\|") for cell in row) + " |" for row in normalized]
+                rendered.insert(1, "| " + " | ".join(["---"] * width) + " |")
+                lines.append("[Table]\n" + "\n".join(rendered))
+        elif node.name == "figcaption":
+            lines.append(f"[Figure caption] {text}")
+        else:
+            lines.append(text)
+    lines.extend(standalone_images)
+    return "\n\n".join(lines)
+
+
+def reader_analysis_input(document: ReaderDocument) -> str:
+    header = (
+        f"# {document.title}\n\n"
+        f"> Paper Lens canonical source. Source type: {document.source_type}; "
+        f"render kind: {document.render_kind}.\n\n"
+    )
+    if document.render_kind == "pdf":
+        if PdfReader is None:
+            raise RuntimeError("pypdf 未安装，无法为 Codex 提取 PDF 文字。")
+        if not document.source_filename:
+            raise RuntimeError("PDF 原文件不可用。")
+        source = document.root / "input" / document.source_filename
+        if not source.is_file():
+            raise RuntimeError("PDF 原文件不可用。")
+        try:
+            reader = PdfReader(str(source), strict=False)
+            pages = []
+            readable_characters = 0
+            for index, page in enumerate(reader.pages, start=1):
+                text = (page.extract_text() or "").strip()
+                readable_characters += len(re.sub(r"\s+", "", text))
+                pages.append(f"## [Page {index}]\n\n{text or '[No readable text extracted on this page]'}")
+        except Exception as exc:
+            raise RuntimeError(f"无法提取 PDF 文字：{exc}") from exc
+        minimum = max(300, len(pages) * 40)
+        if readable_characters < minimum:
+            raise ValueError("PDF 没有足够稳定的文字层。请重新导入并开启 OCR 后再运行 Three-Pass。")
+        return header + "\n\n".join(pages)
+    if document.render_kind == "html":
+        if not document.document_filename:
+            raise RuntimeError("HTML 阅读源不可用。")
+        source = document.root / "output" / document.document_filename
+        if not source.is_file():
+            raise RuntimeError("HTML 阅读源不可用。")
+        body = html_to_analysis_markdown(source)
+    else:
+        if not document.source_filename:
+            raise RuntimeError("Markdown 阅读源不可用。")
+        source = document.root / "input" / document.source_filename
+        if not source.is_file():
+            raise RuntimeError("Markdown 阅读源不可用。")
+        body = source.read_text(encoding="utf-8", errors="replace")
+    if len(re.sub(r"\s+", "", body)) < 300:
+        raise ValueError("文档可分析文字过少，无法可靠执行 Three-Pass。")
+    return header + body
+
+
+def validated_three_pass_options(data: dict[str, Any], status: dict[str, Any]) -> tuple[str, str, str, list[str], str]:
+    if not status.get("chatgptAuthenticated"):
+        raise ValueError(status.get("error") or "Codex 未使用 ChatGPT 登录。")
+    models = {str(item.get("id")): item for item in status.get("models", []) if item.get("id")}
+    model = str(data.get("model") or status.get("defaultModel") or "").strip()
+    if not model or model not in models:
+        raise ValueError("请选择当前 Codex 账户可用的模型。")
+    supported = set(models[model].get("supportedEfforts") or [])
+    requested_effort = str(data.get("effort") or "high").strip().lower()
+    if requested_effort not in THREE_PASS_EFFORTS:
+        raise ValueError("不支持的推理强度。")
+    effort = requested_effort if not supported or requested_effort in supported else str(
+        models[model].get("defaultEffort") or sorted(supported)[0]
+    )
+    language = str(data.get("language") or "zh-CN")
+    if language not in {"zh-CN", "en-US"}:
+        raise ValueError("Three-Pass 报告语言必须是 zh-CN 或 en-US。")
+    raw_focuses = data.get("focuses") or ["method", "experiments", "reproducibility"]
+    if not isinstance(raw_focuses, list):
+        raise ValueError("focuses 必须是数组。")
+    focus_ids = list(dict.fromkeys(str(item) for item in raw_focuses))
+    if not focus_ids or any(item not in THREE_PASS_FOCUS_LABELS for item in focus_ids):
+        raise ValueError("请至少选择一个有效的第三遍关注项。")
+    custom_focus = str(data.get("customFocus") or "").strip()
+    if len(custom_focus) > 2000:
+        raise ValueError("自定义关注点不能超过 2,000 个字符。")
+    return model, effort, language, [THREE_PASS_FOCUS_LABELS[item] for item in focus_ids], custom_focus
+
+
+def validated_api_three_pass_options(data: dict[str, Any]) -> tuple[dict[str, Any], str, str, str, str, list[str], str, dict[str, Any]]:
+    api = data.get("api")
+    if not isinstance(api, dict):
+        raise ValueError("API 配置缺失。")
+    if api.get("confirmedApiBilling") is not True:
+        raise ValueError("开始 API 分析前必须确认将使用 API Key 并产生独立费用。")
+    preset_id = str(api.get("presetId") or "").strip().lower()
+    provider = direct_api_provider(preset_id)
+    if not provider:
+        raise ValueError("请选择一个有效的 API 预设。")
+    protocol = infer_api_protocol(provider["baseUrl"], provider.get("protocol") or "auto")
+    model = str(api.get("model") or provider["model"]).strip()
+    if not model or len(model) > 200:
+        raise ValueError("API 模型 ID 必须包含 1 到 200 个字符。")
+    effort = str(api.get("reasoningEffort") or "high").strip().lower()
+    if effort not in THREE_PASS_EFFORTS | {"auto"}:
+        raise ValueError("不支持的 API 推理强度。")
+    try:
+        max_output_tokens = int(api.get("maxOutputTokens") or 12_000)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("最大输出 token 必须是整数。") from exc
+    if not 1_000 <= max_output_tokens <= 100_000:
+        raise ValueError("最大输出 token 必须在 1,000 到 100,000 之间。")
+    temperature = api.get("temperature")
+    if temperature in (None, ""):
+        temperature = None
+    else:
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("temperature 必须是 0 到 2 之间的数字。") from exc
+        if not 0 <= temperature <= 2:
+            raise ValueError("temperature 必须是 0 到 2 之间的数字。")
+    common = {
+        "model": model,
+        "effort": effort if effort != "auto" else "high",
+        "language": data.get("language"),
+        "focuses": data.get("focuses"),
+        "customFocus": data.get("customFocus"),
+    }
+    synthetic_status = {
+        "chatgptAuthenticated": True,
+        "models": [{"id": model, "supportedEfforts": [], "defaultEffort": "high"}],
+        "defaultModel": model,
+    }
+    _model, _effort, language, focuses, custom_focus = validated_three_pass_options(common, synthetic_status)
+    options = {
+        "reasoningEffort": effort,
+        "maxOutputTokens": max_output_tokens,
+        "temperature": temperature,
+    }
+    return provider, protocol, model, effort, language, focuses, custom_focus, options
+
+
+@app.get("/api/codex/status")
+def codex_status():
+    status = codex_status_with_preferences()
+    return jsonify(status), 200 if status.get("available") else 503
+
+
+@app.post("/api/codex/status/refresh")
+def refresh_codex_status():
+    status = codex_status_with_preferences(refresh=True)
+    return jsonify(status), 200 if status.get("available") else 503
+
+
+@app.put("/api/codex-config")
+def update_codex_config():
+    data = request.get_json(silent=True) or {}
+    try:
+        status = save_codex_preferences(data.get("model"), data.get("reasoningEffort"))
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    return jsonify({"codex": status})
+
+
+@app.get("/api/three-pass-config")
+def get_three_pass_config():
+    return jsonify({"threePass": three_pass_config_payload()})
+
+
+@app.put("/api/three-pass-config")
+def update_three_pass_config():
+    data = request.get_json(silent=True) or {}
+    try:
+        config = save_three_pass_length_config(data)
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+    return jsonify({"threePass": config})
+
+
+@app.post("/api/codex/login")
+def start_codex_login():
+    data = request.get_json(silent=True) or {}
+    try:
+        attempt = three_pass_manager.login(str(data.get("flow") or "browser"))
+    except (ValueError, RuntimeError) as exc:
+        return json_error(str(exc), 409)
+    return jsonify(attempt), 202
+
+
+@app.get("/api/codex/login/<login_id>")
+def codex_login_progress(login_id: str):
+    attempt = three_pass_manager.login_status(login_id)
+    if not attempt:
+        return json_error("Codex login attempt not found.", 404)
+    return jsonify(attempt)
+
+
+@app.post("/api/codex/logout")
+def logout_codex():
+    try:
+        three_pass_manager.logout()
+    except RuntimeError as exc:
+        return json_error(str(exc), 409)
+    return jsonify({"ok": True})
+
+
+@app.get("/api/reader/analysis-providers")
+def reader_analysis_providers():
+    codex = codex_status_with_preferences()
+    presets = []
+    for preset in public_llm_presets():
+        presets.append({
+            **preset,
+            "resolvedProtocol": infer_api_protocol(preset["baseUrl"], preset.get("protocol") or "auto"),
+            "models": [preset["model"]],
+            "capabilities": {
+                "modelOverride": True,
+                "reasoningEffort": True,
+                "maxOutputTokens": True,
+                "temperature": True,
+            },
+        })
+    return jsonify({
+        "defaultBackend": "codex",
+        "codex": codex,
+        "api": {"presets": presets},
+        "threePass": three_pass_config_payload(),
+    })
+
+
+@app.get("/api/llm-presets/<preset_id>/models")
+def list_saved_llm_models(preset_id: str):
+    try:
+        models = direct_api_models(preset_id)
+    except ValueError as exc:
+        return json_error(str(exc), 404)
+    except Exception as exc:
+        return json_error(safe_llm_test_error(exc, preset_id), 502)
+    return jsonify({"models": models})
+
+
+@app.post("/api/reader/documents/<document_id>/analyses")
+def create_reader_analysis(document_id: str):
+    document = reader_manager.get(document_id)
+    if not document or document.status != "ready":
+        return json_error("Reader document is not ready.", 404)
+    if not THREE_PASS_SKILL_PATH.is_file():
+        return json_error("Three-Pass Codex Skill is missing.", 503)
+    data = request.get_json(silent=True) or {}
+    try:
+        analysis_input = reader_analysis_input(document)
+        backend = str(data.get("backend") or "codex").strip().lower()
+        phase_lengths = three_pass_length_config()
+        if backend == "api":
+            provider, protocol, model, effort, language, focuses, custom_focus, options = validated_api_three_pass_options(data)
+            chunk_plan, _chunks = build_chunk_plan(analysis_input, provider.get("contextWindow"), options["maxOutputTokens"])
+            if chunk_plan["requiresConfirmation"] and not data["api"].get("confirmedChunkedCalls"):
+                return jsonify({
+                    "error": "文档需要分块分析，请确认预计 API 调用次数后继续。",
+                    "requiresChunkConfirmation": True,
+                    "chunkPlan": chunk_plan,
+                }), 409
+            session = get_api_three_pass_manager().create(
+                root=reader_analysis_root(document),
+                document_id=document.id,
+                document_cache_key=document.cache_key or "",
+                document_title=document.title,
+                provider=provider,
+                protocol=protocol,
+                model=model,
+                effort=effort,
+                language=language,
+                focuses=focuses,
+                custom_focus=custom_focus,
+                input_markdown=analysis_input,
+                options=options,
+                chunk_plan=chunk_plan,
+                phase_lengths=phase_lengths,
+            )
+        elif backend == "codex":
+            status = codex_status_with_preferences()
+            codex_options = data.get("codex") if isinstance(data.get("codex"), dict) else data
+            merged = {**data, "model": codex_options.get("model"), "effort": codex_options.get("reasoningEffort") or codex_options.get("effort")}
+            model, effort, language, focuses, custom_focus = validated_three_pass_options(merged, status)
+            session = three_pass_manager.create(
+                root=reader_analysis_root(document),
+                document_id=document.id,
+                document_cache_key=document.cache_key or "",
+                document_title=document.title,
+                model=model,
+                effort=effort,
+                language=language,
+                focuses=focuses,
+                custom_focus=custom_focus,
+                input_markdown=analysis_input,
+                phase_lengths=phase_lengths,
+            )
+        else:
+            raise ValueError("Three-Pass 后端必须是 codex 或 api。")
+    except (ValueError, RuntimeError, OSError) as exc:
+        return json_error(str(exc), 409)
+    return jsonify(session.snapshot()), 202
+
+
+@app.get("/api/reader/documents/<document_id>/analyses")
+def list_reader_analyses(document_id: str):
+    document = reader_manager.get(document_id)
+    if not document:
+        return json_error("Reader document not found.", 404)
+    root = reader_analysis_root(document)
+    sessions = three_pass_manager.list_from_root(root) + get_api_three_pass_manager().list_from_root(root)
+    sessions.sort(key=lambda item: item.created_at, reverse=True)
+    return jsonify({"analyses": [session.snapshot() for session in sessions]})
+
+
+@app.get("/api/reader/analyses/<analysis_id>")
+def reader_analysis_status(analysis_id: str):
+    session = find_reader_analysis(analysis_id)
+    if not session:
+        return json_error("Three-Pass analysis not found.", 404)
+    return jsonify(session.snapshot())
+
+
+@app.get("/api/reader/analyses/<analysis_id>/events")
+def reader_analysis_events(analysis_id: str):
+    session = find_reader_analysis(analysis_id)
+    if not session:
+        return json_error("Three-Pass analysis not found.", 404)
+    raw_after = request.headers.get("Last-Event-ID") or request.args.get("after") or "0"
+    try:
+        after = max(0, int(raw_after))
+    except ValueError:
+        after = 0
+    response = Response(stream_with_context(sse_events(session, after)), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@app.post("/api/reader/analyses/<analysis_id>/cancel")
+def cancel_reader_analysis(analysis_id: str):
+    session = find_reader_analysis(analysis_id)
+    if not session:
+        return json_error("Three-Pass analysis not found.", 404)
+    if session.status in {"ready", "failed", "cancelled"} and not session.busy:
+        return json_error("This analysis has no active turn to cancel.", 409)
+    manager = get_api_three_pass_manager() if session.backend == "api" else three_pass_manager
+    manager.cancel(session)
+    return jsonify(session.snapshot()), 202
+
+
+@app.post("/api/reader/analyses/<analysis_id>/messages")
+def create_reader_analysis_message(analysis_id: str):
+    session = find_reader_analysis(analysis_id)
+    if not session:
+        return json_error("Three-Pass analysis not found.", 404)
+    data = request.get_json(silent=True) or {}
+    question = str(data.get("question") or "").strip()
+    if not question or len(question) > 12000:
+        return json_error("问题必须包含 1 到 12,000 个字符。")
+    try:
+        manager = get_api_three_pass_manager() if session.backend == "api" else three_pass_manager
+        manager.ask(session, question)
+    except ValueError as exc:
+        return json_error(str(exc), 409)
+    return jsonify(session.snapshot()), 202
+
+
+@app.get("/api/reader/analyses/<analysis_id>/report")
+def download_reader_analysis_report(analysis_id: str):
+    session = find_reader_analysis(analysis_id)
+    if not session or not session.report_path.is_file():
+        return json_error("Three-Pass report not found.", 404)
+    safe_title = secure_filename(session.document_title) or "paper"
+    return send_file(session.report_path, mimetype="text/markdown", as_attachment=True, download_name=f"{safe_title}_three-pass.md")
 
 
 @app.get("/api/reader/config")
@@ -7983,6 +8704,8 @@ def create_reader_llm_preset():
             data.get("apiKey"),
             data.get("model"),
             data.get("concurrency", 1),
+            data.get("protocol", "auto"),
+            data.get("contextWindow"),
         )
     except (ValueError, OSError) as exc:
         return json_error(str(exc))
@@ -8000,6 +8723,8 @@ def edit_llm_preset(preset_id: str):
             data.get("apiKey"),
             data.get("model"),
             data.get("concurrency"),
+            data.get("protocol"),
+            data.get("contextWindow"),
         )
     except (ValueError, OSError) as exc:
         return json_error(str(exc), 404 if "does not exist" in str(exc) else 400)
@@ -8748,6 +9473,11 @@ def main() -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("[toolbox] Stopped.", flush=True)
+    finally:
+        research_gap_service.shutdown_imports()
+        stop = getattr(three_pass_manager.runtime, "stop", None)
+        if callable(stop):
+            stop()
 
 
 if __name__ == "__main__":

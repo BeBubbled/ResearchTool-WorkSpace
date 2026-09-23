@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 import hashlib
 import ipaddress
 import json
@@ -19,6 +20,7 @@ import time
 from typing import Any, Callable
 from urllib.parse import quote, urljoin, urlsplit
 import uuid
+import xml.etree.ElementTree as ET
 
 import requests
 from bs4 import BeautifulSoup
@@ -31,6 +33,7 @@ except ImportError:
 
 
 SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org/graph/v1"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 SEMANTIC_SCHOLAR_FIELDS = (
     "paperId,title,abstract,year,venue,authors,url,externalIds,openAccessPdf,"
     "publicationDate,citationCount,referenceCount"
@@ -38,8 +41,11 @@ SEMANTIC_SCHOLAR_FIELDS = (
 MAX_PDF_BYTES = 50 * 1024 * 1024
 MAX_ANALYSIS_CHARS = 96_000
 ANALYSIS_CHUNK_CHARS = 10_000
+MIN_FULLTEXT_CHARS = 2_000
 VALID_RELATIONS = {"proposes", "addresses", "partially_solves", "solves", "fails_on"}
 VALID_REVIEWS = {"pending", "accepted", "rejected"}
+IMPORT_ITEM_STATUSES = {"pending", "processing", "imported", "duplicate", "skipped", "failed"}
+IMPORT_TERMINAL_STATUSES = {"imported", "duplicate", "skipped", "failed"}
 VALID_FACT_KINDS = {
     "problem", "task", "method", "dataset", "metric", "contribution",
     "limitation", "failure_condition", "gap",
@@ -146,10 +152,37 @@ def split_text(text: str, chunk_chars: int = ANALYSIS_CHUNK_CHARS) -> list[str]:
     return chunks[:max_chunks]
 
 
-def extract_pdf_text(path: Path) -> tuple[str, int]:
+def pdf_metadata_authors(value: Any) -> list[str]:
+    raw = clean_text(value, 2_000)
+    if not raw:
+        return []
+    return list(dict.fromkeys(
+        author for author in (clean_text(item, 300) for item in re.split(r"\s*(?:;|\band\b)\s*", raw, flags=re.I))
+        if author
+    ))[:50]
+
+
+def valid_pdf_title(value: Any, fallback: str) -> str:
+    title = clean_text(value, 1_000)
+    generic = {"untitled", "document", "pdf", "microsoft word", "acrobat distiller"}
+    if not title or normalized_title(title) in generic:
+        return clean_text(fallback, 1_000) or "未命名论文"
+    return title
+
+
+def extract_pdf_document(path: Path) -> tuple[str, int, str, list[str]]:
     if PdfReader is None:
         raise RuntimeError("pypdf is required to extract PDF text.")
     reader = PdfReader(str(path), strict=False)
+    if reader.is_encrypted:
+        try:
+            if reader.decrypt("") == 0:
+                raise ValueError("PDF 已加密，无法读取。")
+        except Exception as exc:
+            raise ValueError("PDF 已加密，无法读取。") from exc
+    metadata = reader.metadata
+    title = valid_pdf_title(getattr(metadata, "title", "") if metadata else "", path.stem)
+    authors = pdf_metadata_authors(getattr(metadata, "author", "") if metadata else "")
     pages: list[str] = []
     for index, page in enumerate(reader.pages):
         content = clean_multiline(page.extract_text() or "", 100_000)
@@ -157,7 +190,20 @@ def extract_pdf_text(path: Path) -> tuple[str, int]:
             pages.append(f"[Page {index + 1}]\n{content}")
         if sum(len(item) for item in pages) >= MAX_ANALYSIS_CHARS:
             break
-    return "\n\n".join(pages)[:MAX_ANALYSIS_CHARS], len(reader.pages)
+    return "\n\n".join(pages)[:MAX_ANALYSIS_CHARS], len(reader.pages), title, authors
+
+
+def extract_pdf_text(path: Path) -> tuple[str, int]:
+    text, page_count, _title, _authors = extract_pdf_document(path)
+    return text, page_count
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def extract_local_text(path: Path, render_kind: str) -> tuple[str, str]:
@@ -267,7 +313,8 @@ class ResearchGapStore:
                     year INTEGER, venue TEXT NOT NULL DEFAULT '', external_url TEXT NOT NULL DEFAULT '',
                     pdf_url TEXT NOT NULL DEFAULT '', citation_count INTEGER NOT NULL DEFAULT 0,
                     reference_count INTEGER NOT NULL DEFAULT 0, evidence_level TEXT NOT NULL DEFAULT 'abstract',
-                    content_path TEXT, locator_mode TEXT NOT NULL DEFAULT 'abstract', status TEXT NOT NULL DEFAULT 'ready',
+                    content_path TEXT, source_path TEXT, source_relative_path TEXT, content_sha256 TEXT,
+                    locator_mode TEXT NOT NULL DEFAULT 'abstract', status TEXT NOT NULL DEFAULT 'ready',
                     error TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', analyzed_at REAL,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL,
                     UNIQUE(project_id, source_key)
@@ -299,21 +346,71 @@ class ResearchGapStore:
                 );
                 CREATE TABLE IF NOT EXISTS analysis_jobs (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                    paper_ids_json TEXT NOT NULL, preset_id TEXT NOT NULL, status TEXT NOT NULL,
+                    paper_ids_json TEXT NOT NULL, preset_id TEXT NOT NULL, backend TEXT NOT NULL DEFAULT 'api',
+                    model TEXT, effort TEXT, status TEXT NOT NULL,
                     stage TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
                     current_paper_id TEXT, logs_json TEXT NOT NULL DEFAULT '[]', error TEXT,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL, finished_at REAL
                 );
+                CREATE TABLE IF NOT EXISTS paper_import_jobs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    folder_path TEXT NOT NULL, recursive INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL, stage TEXT NOT NULL, total INTEGER NOT NULL DEFAULT 0,
+                    completed INTEGER NOT NULL DEFAULT 0, imported INTEGER NOT NULL DEFAULT 0,
+                    duplicates INTEGER NOT NULL DEFAULT 0, skipped INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0, current_relative_path TEXT,
+                    pause_requested INTEGER NOT NULL DEFAULT 0, error TEXT,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL, finished_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS paper_import_items (
+                    id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES paper_import_jobs(id) ON DELETE CASCADE,
+                    relative_path TEXT NOT NULL, source_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    file_size INTEGER, modified_at REAL, content_sha256 TEXT,
+                    paper_id TEXT REFERENCES papers(id) ON DELETE SET NULL, title TEXT, error TEXT,
+                    created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                    UNIQUE(job_id, relative_path)
+                );
                 CREATE INDEX IF NOT EXISTS facts_paper_idx ON facts(paper_id);
                 CREATE INDEX IF NOT EXISTS relations_gap_idx ON relations(gap_id);
                 CREATE INDEX IF NOT EXISTS papers_project_idx ON papers(project_id);
+                CREATE INDEX IF NOT EXISTS paper_import_jobs_project_idx ON paper_import_jobs(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS paper_import_items_job_idx ON paper_import_items(job_id, status, relative_path);
                 """
             )
+            paper_columns = {row[1] for row in db.execute("PRAGMA table_info(papers)")}
+            if "source_path" not in paper_columns:
+                db.execute("ALTER TABLE papers ADD COLUMN source_path TEXT")
+            if "source_relative_path" not in paper_columns:
+                db.execute("ALTER TABLE papers ADD COLUMN source_relative_path TEXT")
+            if "content_sha256" not in paper_columns:
+                db.execute("ALTER TABLE papers ADD COLUMN content_sha256 TEXT")
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS papers_project_content_sha_idx "
+                "ON papers(project_id, content_sha256) "
+                "WHERE content_sha256 IS NOT NULL AND content_sha256!=''"
+            )
+            job_columns = {row[1] for row in db.execute("PRAGMA table_info(analysis_jobs)")}
+            if "backend" not in job_columns:
+                db.execute("ALTER TABLE analysis_jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'api'")
+            if "model" not in job_columns:
+                db.execute("ALTER TABLE analysis_jobs ADD COLUMN model TEXT")
+            if "effort" not in job_columns:
+                db.execute("ALTER TABLE analysis_jobs ADD COLUMN effort TEXT")
             db.execute(
                 "UPDATE analysis_jobs SET status='interrupted', stage='interrupted', "
                 "error=COALESCE(error, '应用重启，任务已中断，可重新提交。'), updated_at=? "
                 "WHERE status IN ('queued','running')",
                 (now(),),
+            )
+            timestamp = now()
+            db.execute(
+                "UPDATE paper_import_items SET status='pending',updated_at=? WHERE status='processing'",
+                (timestamp,),
+            )
+            db.execute(
+                "UPDATE paper_import_jobs SET status='interrupted',stage='interrupted',pause_requested=0,updated_at=? "
+                "WHERE status IN ('queued','running')",
+                (timestamp,),
             )
 
     def project(self, project_id: str) -> sqlite3.Row | None:
@@ -412,6 +509,123 @@ class SemanticScholarClient:
         }
 
 
+class ArxivClient:
+    """Resolve exact paper titles against arXiv's public Atom API."""
+
+    atom = "{http://www.w3.org/2005/Atom}"
+    arxiv = "{http://arxiv.org/schemas/atom}"
+
+    def __init__(self, root: Path, session: requests.Session | None = None) -> None:
+        self.root = root
+        self.session = session or requests.Session()
+        self.lock = threading.Lock()
+        self.last_request = 0.0
+
+    def _request(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        cache_key = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
+        cache_path = self.root / "arxiv-cache" / f"{cache_key}.json"
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if now() - float(cached["cachedAt"]) < 7 * 24 * 60 * 60:
+                return list(cached["papers"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            pass
+        with self.lock:
+            delay = 3.0 - (time.monotonic() - self.last_request)
+            if delay > 0:
+                time.sleep(delay)
+            response = self.session.get(
+                ARXIV_API_URL,
+                params=params,
+                headers={"User-Agent": "ResearchToolkit/1.0 (local research client)"},
+                timeout=(10, 45),
+            )
+            self.last_request = time.monotonic()
+        response.raise_for_status()
+        papers = self._parse_feed(response.text)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps({"cachedAt": now(), "papers": papers}, ensure_ascii=False), encoding="utf-8"
+        )
+        return papers
+
+    def search_title(self, title: str, limit: int = 5) -> list[dict[str, Any]]:
+        escaped = title.replace('"', " ").strip()
+        return self._request({
+            "search_query": f'ti:"{escaped}"',
+            "start": 0,
+            "max_results": max(1, min(10, limit)),
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        })
+
+    def paper(self, arxiv_id: str) -> dict[str, Any] | None:
+        papers = self._request({"id_list": arxiv_id, "start": 0, "max_results": 1})
+        return papers[0] if papers else None
+
+    def resolve_title(self, title: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        identifier = parse_external_identifier(title)
+        if identifier and identifier[0] == "ARXIV":
+            paper = self.paper(identifier[1])
+            return paper, [paper] if paper else []
+        candidates = self.search_title(title)
+        target = normalized_title(title)
+        if not target:
+            return None, candidates
+        scored = sorted(
+            candidates,
+            key=lambda item: SequenceMatcher(None, target, normalized_title(item.get("title") or "")).ratio(),
+            reverse=True,
+        )
+        if not scored:
+            return None, candidates
+        best = scored[0]
+        score = SequenceMatcher(None, target, normalized_title(best.get("title") or "")).ratio()
+        if normalized_title(best.get("title") or "") == target or score >= 0.92:
+            return best, candidates
+        return None, scored
+
+    @classmethod
+    def _parse_feed(cls, text: str) -> list[dict[str, Any]]:
+        root = ET.fromstring(text)
+        papers: list[dict[str, Any]] = []
+        for entry in root.findall(f"{cls.atom}entry"):
+            entry_url = clean_text(entry.findtext(f"{cls.atom}id"), 2_000)
+            path_match = re.search(r"/(?:abs|pdf)/(.+)$", urlsplit(entry_url).path, re.I)
+            arxiv_id = path_match.group(1).strip("/") if path_match else entry_url.rstrip("/").rsplit("/", 1)[-1]
+            title = clean_text(entry.findtext(f"{cls.atom}title"), 1_000)
+            if not arxiv_id or not title:
+                continue
+            authors = [
+                clean_text(author.findtext(f"{cls.atom}name"), 200)
+                for author in entry.findall(f"{cls.atom}author")
+                if clean_text(author.findtext(f"{cls.atom}name"), 200)
+            ]
+            pdf_url = ""
+            for link in entry.findall(f"{cls.atom}link"):
+                if link.attrib.get("title") == "pdf" or link.attrib.get("type") == "application/pdf":
+                    pdf_url = clean_text(link.attrib.get("href"), 2_000)
+                    break
+            published = clean_text(entry.findtext(f"{cls.atom}published"), 50)
+            doi = clean_text(entry.findtext(f"{cls.arxiv}doi"), 500)
+            papers.append({
+                "paperId": f"arxiv:{arxiv_id}",
+                "title": title,
+                "abstract": clean_multiline(entry.findtext(f"{cls.atom}summary"), 100_000),
+                "year": int(published[:4]) if re.fullmatch(r"\d{4}", published[:4]) else None,
+                "venue": "arXiv",
+                "authors": authors,
+                "url": entry_url or f"https://arxiv.org/abs/{arxiv_id}",
+                "doi": doi,
+                "arxivId": arxiv_id,
+                "pdfUrl": pdf_url or f"https://arxiv.org/pdf/{arxiv_id}",
+                "publicationDate": published[:10],
+                "citationCount": 0,
+                "referenceCount": 0,
+            })
+        return papers
+
+
 class ResearchGapService:
     def __init__(
         self,
@@ -419,18 +633,33 @@ class ResearchGapService:
         llm_request: Callable[[str, list[dict[str, str]]], str],
         llm_presets: Callable[[], list[dict[str, Any]]],
         reader_source: Callable[[str], dict[str, Any] | None],
+        codex_request: Callable[[list[dict[str, str]], str, str], str] | None = None,
+        codex_status: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self.store = ResearchGapStore(root / "research_gaps.sqlite3")
         self.semantic_scholar = SemanticScholarClient(root)
+        self.arxiv = ArxivClient(root)
         self.llm_request = llm_request
         self.llm_presets = llm_presets
         self.reader_source = reader_source
+        self.codex_request = codex_request
+        self.codex_status = codex_status
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="research-gap")
+        self.import_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="research-gap-import")
 
     def _paper_dir(self, project_id: str, paper_id: str) -> Path:
         return self.root / "projects" / project_id / "papers" / paper_id
+
+    def shutdown_imports(self) -> None:
+        """Cooperatively stop folder imports so application shutdown stays bounded."""
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE paper_import_jobs SET pause_requested=1,updated_at=? WHERE status IN ('queued','running')",
+                (now(),),
+            )
+        self.import_executor.shutdown(wait=True, cancel_futures=True)
 
     def create_project(self, name: Any, topic: Any, query: Any = "") -> dict[str, Any]:
         project_name = clean_text(name, 120)
@@ -500,9 +729,81 @@ class ResearchGapService:
     def import_semantic_paper(self, project_id: str, identifier: str) -> tuple[dict[str, Any], bool]:
         self.get_project(project_id)
         metadata = self.semantic_scholar.paper(identifier)
+        return self._import_remote_paper(project_id, metadata, "semantic_scholar", f"s2:{metadata.get('paperId') or ''}")
+
+    def import_arxiv_title(self, project_id: str, title: str) -> tuple[dict[str, Any], bool, list[dict[str, Any]]]:
+        self.get_project(project_id)
+        metadata, candidates = self.arxiv.resolve_title(title)
+        if not metadata:
+            return {}, False, candidates
+        arxiv_key = re.sub(r"v\d+$", "", str(metadata.get("arxivId") or ""), flags=re.I)
+        paper, created = self._import_remote_paper(
+            project_id,
+            metadata,
+            "arxiv",
+            f"arxiv:{arxiv_key}",
+        )
+        return paper, created, candidates
+
+    def import_arxiv_titles(self, project_id: str, titles: list[str]) -> dict[str, Any]:
+        self.get_project(project_id)
+        cleaned = list(dict.fromkeys(clean_text(item, 1_000) for item in titles if clean_text(item, 1_000)))
+        if not cleaned:
+            raise ValueError("请按每行一个标题输入至少一篇论文。")
+        if len(cleaned) > 50:
+            raise ValueError("单次最多批量导入 50 篇论文。")
+        results: list[dict[str, Any]] = []
+        imported = existing = failed = 0
+        for title in cleaned:
+            try:
+                paper, created, candidates = self.import_arxiv_title(project_id, title)
+                if paper:
+                    status = "imported" if created else "existing"
+                    imported += int(created)
+                    existing += int(not created)
+                    results.append({
+                        "inputTitle": title,
+                        "status": status,
+                        "paper": paper,
+                        "matchedTitle": paper["title"],
+                    })
+                else:
+                    failed += 1
+                    results.append({
+                        "inputTitle": title,
+                        "status": "not_found",
+                        "error": "arXiv 未找到足够精确的标题匹配。",
+                        "candidates": [
+                            {"title": item.get("title"), "arxivId": item.get("arxivId")}
+                            for item in candidates[:3]
+                        ],
+                    })
+            except Exception as exc:
+                failed += 1
+                results.append({
+                    "inputTitle": title,
+                    "status": "error",
+                    "error": clean_text(exc, 500),
+                })
+        return {
+            "requested": len(cleaned),
+            "imported": imported,
+            "existing": existing,
+            "failed": failed,
+            "results": results,
+        }
+
+    def _import_remote_paper(
+        self,
+        project_id: str,
+        metadata: dict[str, Any],
+        source_kind: str,
+        source_key: str,
+    ) -> tuple[dict[str, Any], bool]:
         if not metadata["paperId"] or not metadata["title"]:
             raise ValueError("论文元数据缺少稳定 ID 或标题。")
-        source_key = f"s2:{metadata['paperId']}"
+        if not source_key.split(":", 1)[-1]:
+            raise ValueError("论文元数据缺少稳定来源 ID。")
         with self.store.connect() as db:
             existing = db.execute("SELECT id FROM papers WHERE project_id=? AND source_key=?", (project_id, source_key)).fetchone()
         if existing:
@@ -517,7 +818,8 @@ class ResearchGapService:
                 evidence_level,content_path,locator_mode,status,error,metadata_json,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    paper_id, project_id, "semantic_scholar", source_key, metadata["paperId"], metadata["doi"],
+                    paper_id, project_id, source_kind, source_key,
+                    metadata["paperId"] if source_kind == "semantic_scholar" else None, metadata["doi"],
                     metadata["arxivId"], metadata["title"], metadata["abstract"],
                     json.dumps(metadata["authors"], ensure_ascii=False), metadata["year"], metadata["venue"],
                     metadata["url"], metadata["pdfUrl"], metadata["citationCount"], metadata["referenceCount"],
@@ -583,6 +885,360 @@ class ResearchGapService:
             db.execute("UPDATE projects SET updated_at=? WHERE id=?", (timestamp, project_id))
         return self.get_paper(paper_id, project_id), True
 
+    def create_paper_import(self, project_id: str, folder_path: Any, recursive: bool = True) -> dict[str, Any]:
+        self.get_project(project_id)
+        raw_path = str(folder_path or "").strip()
+        if not raw_path:
+            raise ValueError("请输入 PDF 文件夹的本地绝对路径。")
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            raise ValueError("PDF 文件夹必须使用本地绝对路径。")
+        if candidate.is_symlink():
+            raise ValueError("PDF 文件夹不能是符号链接。")
+        try:
+            folder = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise ValueError("PDF 文件夹不存在或无法访问。") from exc
+        if not folder.is_dir():
+            raise ValueError("指定路径不是文件夹。")
+        if folder.parent == folder:
+            raise ValueError("为避免意外扫描整个磁盘，请选择更具体的 PDF 文件夹。")
+        with self.store.connect() as db:
+            active = db.execute(
+                "SELECT id FROM paper_import_jobs WHERE project_id=? AND folder_path=? "
+                "AND status IN ('queued','running','paused','interrupted') ORDER BY created_at DESC LIMIT 1",
+                (project_id, str(folder)),
+            ).fetchone()
+        if active:
+            raise ValueError("该文件夹已有未完成的导入任务，请恢复现有任务。")
+        job_id, timestamp = new_id("import"), now()
+        with self.store.connect() as db:
+            db.execute(
+                """INSERT INTO paper_import_jobs(
+                id,project_id,folder_path,recursive,status,stage,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (job_id, project_id, str(folder), int(bool(recursive)), "queued", "queued", timestamp, timestamp),
+            )
+        self.import_executor.submit(self._run_paper_import, job_id)
+        return self.get_paper_import(job_id)
+
+    def list_paper_imports(self, project_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        self.get_project(project_id)
+        bounded = max(1, min(50, int(limit or 10)))
+        with self.store.connect() as db:
+            rows = db.execute(
+                "SELECT * FROM paper_import_jobs WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+                (project_id, bounded),
+            ).fetchall()
+        return [self._paper_import_json(row) for row in rows]
+
+    def get_paper_import(self, job_id: str) -> dict[str, Any]:
+        with self.store.connect() as db:
+            row = db.execute("SELECT * FROM paper_import_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise KeyError("PDF 文件夹导入任务不存在。")
+        return self._paper_import_json(row)
+
+    @staticmethod
+    def _paper_import_json(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"], "projectId": row["project_id"], "folderPath": row["folder_path"],
+            "recursive": bool(row["recursive"]), "status": row["status"], "stage": row["stage"],
+            "total": int(row["total"]), "completed": int(row["completed"]),
+            "imported": int(row["imported"]), "duplicates": int(row["duplicates"]),
+            "skipped": int(row["skipped"]), "failed": int(row["failed"]),
+            "currentRelativePath": row["current_relative_path"],
+            "pauseRequested": bool(row["pause_requested"]), "error": row["error"],
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"], "finishedAt": row["finished_at"],
+            "retryable": row["status"] in {"paused", "interrupted", "failed"},
+        }
+
+    def list_paper_import_items(
+        self,
+        job_id: str,
+        *,
+        status: str = "",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        self.get_paper_import(job_id)
+        query = "SELECT * FROM paper_import_items WHERE job_id=?"
+        values: list[Any] = [job_id]
+        if status:
+            if status not in IMPORT_ITEM_STATUSES:
+                raise ValueError("无效的导入明细状态。")
+            query += " AND status=?"
+            values.append(status)
+        with self.store.connect() as db:
+            total = int(db.execute(query.replace("SELECT *", "SELECT COUNT(*)"), values).fetchone()[0])
+            rows = db.execute(
+                query + " ORDER BY relative_path COLLATE NOCASE LIMIT ? OFFSET ?",
+                [*values, max(1, min(200, int(limit or 50))), max(0, int(offset or 0))],
+            ).fetchall()
+        return {
+            "items": [{
+                "id": row["id"], "jobId": row["job_id"], "relativePath": row["relative_path"],
+                "status": row["status"], "fileSize": row["file_size"],
+                "contentSha256": row["content_sha256"], "paperId": row["paper_id"],
+                "title": row["title"], "error": row["error"], "updatedAt": row["updated_at"],
+            } for row in rows],
+            "total": total,
+            "offset": max(0, int(offset or 0)),
+            "limit": max(1, min(200, int(limit or 50))),
+        }
+
+    def pause_paper_import(self, job_id: str) -> dict[str, Any]:
+        job = self.get_paper_import(job_id)
+        if job["status"] not in {"queued", "running"}:
+            raise ValueError("当前导入任务不在运行中。")
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE paper_import_jobs SET pause_requested=1,updated_at=? WHERE id=?",
+                (now(), job_id),
+            )
+        return self.get_paper_import(job_id)
+
+    def resume_paper_import(self, job_id: str) -> dict[str, Any]:
+        job = self.get_paper_import(job_id)
+        if job["status"] not in {"paused", "interrupted", "failed"}:
+            raise ValueError("当前导入任务无法恢复。")
+        folder = Path(job["folderPath"])
+        if not folder.is_dir() or folder.is_symlink():
+            raise ValueError("原 PDF 文件夹不存在或无法访问。")
+        timestamp = now()
+        with self.store.connect() as db:
+            db.execute(
+                "UPDATE paper_import_items SET status='pending',updated_at=? WHERE job_id=? AND status='processing'",
+                (timestamp, job_id),
+            )
+            db.execute(
+                """UPDATE paper_import_jobs SET status='queued',stage='queued',pause_requested=0,
+                current_relative_path=NULL,error=NULL,finished_at=NULL,updated_at=? WHERE id=?""",
+                (timestamp, job_id),
+            )
+        self.import_executor.submit(self._run_paper_import, job_id)
+        return self.get_paper_import(job_id)
+
+    def _import_job_update(self, job_id: str, **values: Any) -> None:
+        if not values:
+            return
+        values["updated_at"] = now()
+        assignments = ",".join(f"{key}=?" for key in values)
+        with self.store.connect() as db:
+            db.execute(f"UPDATE paper_import_jobs SET {assignments} WHERE id=?", [*values.values(), job_id])
+
+    def _import_pause_requested(self, job_id: str) -> bool:
+        with self.store.connect() as db:
+            row = db.execute("SELECT pause_requested FROM paper_import_jobs WHERE id=?", (job_id,)).fetchone()
+        return not row or bool(row["pause_requested"])
+
+    def _scan_paper_import(self, job_id: str, folder: Path, recursive: bool) -> None:
+        timestamp = now()
+        records: list[tuple[Any, ...]] = []
+        for current, directory_names, filenames in os.walk(folder, followlinks=False):
+            current_path = Path(current)
+            directory_names[:] = sorted(
+                name for name in directory_names if not (current_path / name).is_symlink()
+            )
+            for filename in sorted(filenames, key=str.casefold):
+                source = current_path / filename
+                if source.suffix.lower() != ".pdf" or source.is_symlink() or not source.is_file():
+                    continue
+                relative = source.relative_to(folder).as_posix()
+                try:
+                    stat = source.stat()
+                    item_status, file_size, modified_at, error = "pending", stat.st_size, stat.st_mtime, None
+                except OSError as exc:
+                    item_status, file_size, modified_at = "failed", None, None
+                    error = f"无法读取文件信息：{clean_text(exc, 500)}"
+                records.append((
+                    new_id("import_item"), job_id, relative, str(source), item_status,
+                    file_size, modified_at, error, timestamp, timestamp,
+                ))
+            if not recursive:
+                directory_names[:] = []
+        with self.store.connect() as db:
+            db.executemany(
+                """INSERT OR IGNORE INTO paper_import_items(
+                id,job_id,relative_path,source_path,status,file_size,modified_at,error,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                records,
+            )
+        self._sync_import_counts(job_id)
+        if not records:
+            raise ValueError("指定文件夹中没有找到 PDF 文件。")
+
+    def _sync_import_counts(self, job_id: str) -> None:
+        with self.store.connect() as db:
+            counts = {
+                row["status"]: int(row["count"])
+                for row in db.execute(
+                    "SELECT status,COUNT(*) count FROM paper_import_items WHERE job_id=? GROUP BY status",
+                    (job_id,),
+                ).fetchall()
+            }
+            total = sum(counts.values())
+            completed = sum(counts.get(status, 0) for status in IMPORT_TERMINAL_STATUSES)
+            db.execute(
+                """UPDATE paper_import_jobs SET total=?,completed=?,imported=?,duplicates=?,skipped=?,failed=?,updated_at=?
+                WHERE id=?""",
+                (total, completed, counts.get("imported", 0), counts.get("duplicate", 0),
+                 counts.get("skipped", 0), counts.get("failed", 0), now(), job_id),
+            )
+
+    def _finish_import_item(
+        self,
+        item_id: str,
+        status: str,
+        *,
+        content_sha256: str | None = None,
+        paper_id: str | None = None,
+        title: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        with self.store.connect() as db:
+            current = db.execute(
+                "SELECT job_id,status FROM paper_import_items WHERE id=?", (item_id,)
+            ).fetchone()
+            if not current:
+                return
+            db.execute(
+                """UPDATE paper_import_items SET status=?,content_sha256=?,paper_id=?,title=?,error=?,updated_at=?
+                WHERE id=?""",
+                (status, content_sha256, paper_id, title, clean_text(error, 1_000) or None, now(), item_id),
+            )
+            if current["status"] not in IMPORT_TERMINAL_STATUSES and status in IMPORT_TERMINAL_STATUSES:
+                counter = {"imported": "imported", "duplicate": "duplicates", "skipped": "skipped", "failed": "failed"}[status]
+                db.execute(
+                    f"UPDATE paper_import_jobs SET completed=completed+1,{counter}={counter}+1,updated_at=? WHERE id=?",
+                    (now(), current["job_id"]),
+                )
+
+    def _process_import_item(self, job_id: str, project_id: str, row: sqlite3.Row) -> None:
+        source = Path(row["source_path"])
+        relative = row["relative_path"]
+        digest: str | None = None
+        try:
+            if source.is_symlink() or not source.is_file():
+                raise FileNotFoundError("原 PDF 已移动、删除或不可访问。")
+            digest = sha256_file(source)
+            with self.store.connect() as db:
+                existing = db.execute(
+                    "SELECT id,title FROM papers WHERE project_id=? AND content_sha256=?",
+                    (project_id, digest),
+                ).fetchone()
+            if existing:
+                self._finish_import_item(
+                    row["id"], "duplicate", content_sha256=digest,
+                    paper_id=existing["id"], title=existing["title"], error="项目中已有相同内容的 PDF。",
+                )
+                return
+            text, page_count, title, authors = extract_pdf_document(source)
+            if len(clean_text(text, len(text) + 1)) < MIN_FULLTEXT_CHARS:
+                self._finish_import_item(
+                    row["id"], "skipped", content_sha256=digest, title=title,
+                    error=f"可提取正文少于 {MIN_FULLTEXT_CHARS} 字符，可能是扫描件或文字层不可用。",
+                )
+                return
+            paper_id = new_id("paper")
+            directory = self._paper_dir(project_id, paper_id)
+            directory.mkdir(parents=True, exist_ok=False)
+            text_path = directory / "source.txt"
+            temporary = directory / f".{uuid.uuid4().hex}.tmp"
+            try:
+                temporary.write_text(text, encoding="utf-8")
+                os.replace(temporary, text_path)
+                timestamp = now()
+                metadata = {
+                    "sourcePath": str(source), "sourceRelativePath": relative,
+                    "contentSha256": digest, "pageCount": page_count,
+                    "fileSize": row["file_size"], "modifiedAt": row["modified_at"],
+                }
+                with self.store.connect() as db:
+                    db.execute(
+                        """INSERT INTO papers(
+                        id,project_id,source_kind,source_key,title,authors_json,evidence_level,content_path,
+                        source_path,source_relative_path,content_sha256,locator_mode,status,error,metadata_json,
+                        created_at,updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (paper_id, project_id, "local_pdf", f"local-pdf:{digest}", title,
+                         json.dumps(authors, ensure_ascii=False), "fulltext", str(text_path), str(source),
+                         relative, digest, "page", "ready", None,
+                         json.dumps(metadata, ensure_ascii=False), timestamp, timestamp),
+                    )
+                    db.execute("UPDATE projects SET updated_at=? WHERE id=?", (timestamp, project_id))
+            except Exception:
+                shutil.rmtree(directory, ignore_errors=True)
+                raise
+            self._finish_import_item(
+                row["id"], "imported", content_sha256=digest, paper_id=paper_id, title=title,
+            )
+        except sqlite3.IntegrityError:
+            with self.store.connect() as db:
+                existing = db.execute(
+                    "SELECT id,title FROM papers WHERE project_id=? AND content_sha256=?",
+                    (project_id, digest),
+                ).fetchone()
+            if existing:
+                self._finish_import_item(
+                    row["id"], "duplicate", content_sha256=digest,
+                    paper_id=existing["id"], title=existing["title"], error="项目中已有相同内容的 PDF。",
+                )
+            else:
+                self._finish_import_item(row["id"], "failed", content_sha256=digest, error="论文记录写入冲突。")
+        except Exception as exc:
+            self._finish_import_item(
+                row["id"], "failed", content_sha256=digest,
+                title=source.stem, error=clean_text(exc, 1_000) or "PDF 导入失败。",
+            )
+
+    def _run_paper_import(self, job_id: str) -> None:
+        try:
+            job = self.get_paper_import(job_id)
+            folder = Path(job["folderPath"])
+            self._import_job_update(job_id, status="running", stage="scanning", error=None)
+            with self.store.connect() as db:
+                item_count = int(db.execute(
+                    "SELECT COUNT(*) FROM paper_import_items WHERE job_id=?", (job_id,)
+                ).fetchone()[0])
+            if not item_count:
+                self._scan_paper_import(job_id, folder, job["recursive"])
+            self._import_job_update(job_id, stage="importing")
+            with self.store.connect() as db:
+                rows = db.execute(
+                    "SELECT * FROM paper_import_items WHERE job_id=? AND status='pending' "
+                    "ORDER BY relative_path COLLATE NOCASE",
+                    (job_id,),
+                ).fetchall()
+            for row in rows:
+                if self._import_pause_requested(job_id):
+                    self._import_job_update(
+                        job_id, status="paused", stage="paused", current_relative_path=None, pause_requested=0,
+                    )
+                    return
+                with self.store.connect() as db:
+                    db.execute(
+                        "UPDATE paper_import_items SET status='processing',updated_at=? WHERE id=?",
+                        (now(), row["id"]),
+                    )
+                self._import_job_update(job_id, current_relative_path=row["relative_path"])
+                self._process_import_item(job_id, job["projectId"], row)
+            self._sync_import_counts(job_id)
+            current = self.get_paper_import(job_id)
+            if current["completed"] < current["total"]:
+                self._import_job_update(job_id, status="interrupted", stage="interrupted", current_relative_path=None)
+                return
+            self._import_job_update(
+                job_id, status="completed", stage="completed", current_relative_path=None,
+                pause_requested=0, finished_at=now(),
+            )
+        except Exception as exc:
+            self._sync_import_counts(job_id)
+            self._import_job_update(
+                job_id, status="failed", stage="failed", current_relative_path=None,
+                error=clean_text(exc, 1_000), finished_at=now(),
+            )
+
     def get_paper(self, paper_id: str, project_id: str | None = None) -> dict[str, Any]:
         query, values = "SELECT * FROM papers WHERE id=?", [paper_id]
         if project_id:
@@ -624,6 +1280,7 @@ class ResearchGapService:
 
     @staticmethod
     def _paper_json(row: sqlite3.Row) -> dict[str, Any]:
+        source_path = row["source_path"] if "source_path" in row.keys() else None
         return {
             "id": row["id"], "projectId": row["project_id"], "sourceKind": row["source_kind"],
             "semanticScholarId": row["semantic_scholar_id"], "doi": row["doi"], "arxivId": row["arxiv_id"],
@@ -632,6 +1289,10 @@ class ResearchGapService:
             "url": row["external_url"], "pdfUrl": row["pdf_url"], "citationCount": row["citation_count"],
             "referenceCount": row["reference_count"], "evidenceLevel": row["evidence_level"],
             "locatorMode": row["locator_mode"], "status": row["status"], "error": row["error"],
+            "sourcePath": source_path,
+            "sourceRelativePath": row["source_relative_path"] if "source_relative_path" in row.keys() else None,
+            "contentSha256": row["content_sha256"] if "content_sha256" in row.keys() else None,
+            "sourceAvailable": bool(source_path and Path(source_path).is_file()),
             "analyzedAt": row["analyzed_at"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         }
 
@@ -647,11 +1308,46 @@ class ResearchGapService:
         if target.resolve().parent == (self.root / "projects" / project_id / "papers").resolve():
             shutil.rmtree(target, ignore_errors=True)
 
-    def submit_analysis(self, project_id: str, paper_ids: list[str], preset_id: str) -> dict[str, Any]:
+    def submit_analysis(
+        self,
+        project_id: str,
+        paper_ids: list[str],
+        preset_id: str,
+        *,
+        backend: str = "api",
+        model: str = "",
+        effort: str = "",
+    ) -> dict[str, Any]:
         self.get_project(project_id)
-        available = {item["id"] for item in self.llm_presets()}
-        if preset_id not in available:
-            raise ValueError("请选择有效的 LLM 预设。")
+        backend = clean_text(backend, 20).lower() or "api"
+        if backend == "api":
+            available = {item["id"] for item in self.llm_presets()}
+            if preset_id not in available:
+                raise ValueError("请选择有效的 LLM 预设。")
+            selected_model, selected_effort = "", ""
+        elif backend == "codex":
+            if not self.codex_request or not self.codex_status:
+                raise RuntimeError("当前服务未启用 Codex 分析。")
+            status = self.codex_status()
+            if not status.get("chatgptAuthenticated"):
+                raise ValueError(status.get("error") or "Codex 尚未通过 ChatGPT 登录。")
+            models = {str(item.get("id")): item for item in status.get("models", []) if item.get("id")}
+            # Codex model and effort are application-wide preferences. Ignore legacy
+            # per-request overrides so every consumer follows the settings panel.
+            selected_model = clean_text(status.get("defaultModel"), 200)
+            if selected_model not in models:
+                raise ValueError("请先在“AI、语音与 GitHub”中设置可用的 Codex 模型。")
+            supported = [str(item) for item in models[selected_model].get("supportedEfforts", []) if item]
+            selected_effort = (
+                clean_text(status.get("defaultReasoningEffort"), 30)
+                or clean_text(models[selected_model].get("defaultEffort"), 30)
+                or "high"
+            )
+            if supported and selected_effort not in supported:
+                raise ValueError("全局 Codex 模型不支持当前默认推理强度，请在设置中重新选择。")
+            preset_id = ""
+        else:
+            raise ValueError("分析后端必须是 codex 或 api。")
         unique_ids = list(dict.fromkeys(clean_text(item, 100) for item in paper_ids if clean_text(item, 100)))
         if not unique_ids:
             unique_ids = [item["id"] for item in self.list_papers(project_id)]
@@ -662,11 +1358,14 @@ class ResearchGapService:
         job_id, timestamp = new_id("job"), now()
         with self.store.connect() as db:
             db.execute(
-                """INSERT INTO analysis_jobs(id,project_id,paper_ids_json,preset_id,status,stage,total,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
-                (job_id, project_id, json.dumps(unique_ids), preset_id, "queued", "queued", len(unique_ids), timestamp, timestamp),
+                """INSERT INTO analysis_jobs(id,project_id,paper_ids_json,preset_id,backend,model,effort,status,stage,total,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (job_id, project_id, json.dumps(unique_ids), preset_id, backend, selected_model, selected_effort,
+                 "queued", "queued", len(unique_ids), timestamp, timestamp),
             )
-        self.executor.submit(self._run_analysis, job_id, project_id, unique_ids, preset_id)
+        self.executor.submit(
+            self._run_analysis, job_id, project_id, unique_ids, backend, preset_id, selected_model, selected_effort
+        )
         return self.get_job(job_id)
 
     def _job_update(self, job_id: str, **values: Any) -> None:
@@ -684,14 +1383,23 @@ class ResearchGapService:
             logs.append(f"{datetime.now(timezone.utc).strftime('%H:%M:%S')} {message}")
             db.execute("UPDATE analysis_jobs SET logs_json=?,updated_at=? WHERE id=?", (json.dumps(logs[-200:], ensure_ascii=False), now(), job_id))
 
-    def _run_analysis(self, job_id: str, project_id: str, paper_ids: list[str], preset_id: str) -> None:
+    def _run_analysis(
+        self,
+        job_id: str,
+        project_id: str,
+        paper_ids: list[str],
+        backend: str,
+        preset_id: str,
+        model: str,
+        effort: str,
+    ) -> None:
         self._job_update(job_id, status="running", stage="extracting")
         try:
             for index, paper_id in enumerate(paper_ids):
                 paper = self.get_paper(paper_id, project_id)
                 self._job_update(job_id, current_paper_id=paper_id, stage="extracting", completed=index)
                 self._job_log(job_id, f"正在分析：{paper['title']}")
-                self._analyze_paper(project_id, paper, preset_id, job_id)
+                self._analyze_paper(project_id, paper, backend, preset_id, model, effort, job_id)
                 self._job_update(job_id, completed=index + 1)
             self._job_update(job_id, status="completed", stage="completed", current_paper_id=None, finished_at=now())
             self._job_log(job_id, "分析完成。")
@@ -708,7 +1416,30 @@ class ResearchGapService:
                 return path.read_text(encoding="utf-8", errors="replace")[:MAX_ANALYSIS_CHARS]
         return clean_multiline(row["abstract"] if row else paper.get("abstract"), MAX_ANALYSIS_CHARS)
 
-    def _analyze_paper(self, project_id: str, paper: dict[str, Any], preset_id: str, job_id: str) -> None:
+    def _model_request(
+        self,
+        backend: str,
+        preset_id: str,
+        model: str,
+        effort: str,
+        messages: list[dict[str, str]],
+    ) -> str:
+        if backend == "codex":
+            if not self.codex_request:
+                raise RuntimeError("当前服务未启用 Codex 分析。")
+            return self.codex_request(messages, model, effort)
+        return self.llm_request(preset_id, messages)
+
+    def _analyze_paper(
+        self,
+        project_id: str,
+        paper: dict[str, Any],
+        backend: str,
+        preset_id: str,
+        model: str,
+        effort: str,
+        job_id: str,
+    ) -> None:
         source_text = self._paper_text(paper)
         if not clean_text(source_text):
             raise ValueError(f"{paper['title']} 没有可分析的正文或摘要。")
@@ -716,12 +1447,16 @@ class ResearchGapService:
         chunks = split_text(source_text)
         for index, chunk in enumerate(chunks):
             self._job_update(job_id, stage=f"extracting {index + 1}/{len(chunks)}")
-            response = self.llm_request(preset_id, self._extraction_messages(paper, chunk, index + 1, len(chunks)))
+            response = self._model_request(
+                backend, preset_id, model, effort, self._extraction_messages(paper, chunk, index + 1, len(chunks))
+            )
             payload = extract_json_object(response)
             candidates.extend(self._validated_candidates(payload, chunk, paper["evidenceLevel"]))
         if candidates:
             self._job_update(job_id, stage="consolidating")
-            response = self.llm_request(preset_id, self._consolidation_messages(paper, candidates))
+            response = self._model_request(
+                backend, preset_id, model, effort, self._consolidation_messages(paper, candidates)
+            )
             consolidated = self._validated_candidates(extract_json_object(response), source_text, paper["evidenceLevel"])
             if consolidated:
                 candidates = consolidated
@@ -738,7 +1473,7 @@ class ResearchGapService:
                      item["confidence"], item["evidence"], item["locator"], "pending", timestamp, timestamp),
                 )
         gap_candidates = [item for item in candidates if item["kind"] == "gap"]
-        self._normalize_gaps(project_id, paper, gap_candidates, preset_id)
+        self._normalize_gaps(project_id, paper, gap_candidates, backend, preset_id, model, effort)
         with self.store.connect() as db:
             db.execute("UPDATE papers SET status='analyzed',analyzed_at=?,updated_at=?,error=NULL WHERE id=?", (now(), now(), paper["id"]))
             db.execute("DELETE FROM gaps WHERE project_id=? AND id NOT IN (SELECT DISTINCT gap_id FROM relations)", (project_id,))
@@ -800,7 +1535,16 @@ class ResearchGapService:
             })
         return result[:120]
 
-    def _normalize_gaps(self, project_id: str, paper: dict[str, Any], candidates: list[dict[str, Any]], preset_id: str) -> None:
+    def _normalize_gaps(
+        self,
+        project_id: str,
+        paper: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        backend: str,
+        preset_id: str,
+        model: str,
+        effort: str,
+    ) -> None:
         if not candidates:
             return
         existing = self.list_gaps(project_id)
@@ -821,7 +1565,7 @@ class ResearchGapService:
                 }, ensure_ascii=False)},
             ]
             try:
-                payload = extract_json_object(self.llm_request(preset_id, messages))
+                payload = extract_json_object(self._model_request(backend, preset_id, model, effort, messages))
                 assignments = [item for item in payload.get("assignments", []) if isinstance(item, dict)]
             except Exception:
                 assignments = []
@@ -1060,7 +1804,8 @@ class ResearchGapService:
             raise KeyError("分析任务不存在。")
         return {
             "id": row["id"], "projectId": row["project_id"], "paperIds": json.loads(row["paper_ids_json"]),
-            "presetId": row["preset_id"], "status": row["status"], "stage": row["stage"],
+            "presetId": row["preset_id"], "backend": row["backend"], "model": row["model"],
+            "effort": row["effort"], "status": row["status"], "stage": row["stage"],
             "completed": row["completed"], "total": row["total"], "currentPaperId": row["current_paper_id"],
             "logs": json.loads(row["logs_json"] or "[]"), "error": row["error"],
             "createdAt": row["created_at"], "updatedAt": row["updated_at"], "finishedAt": row["finished_at"],
@@ -1092,7 +1837,17 @@ def create_research_gap_blueprint(service: ResearchGapService) -> Blueprint:
 
     @bp.get("/config")
     def config():
-        return jsonify({"llmPresets": service.llm_presets(), "semanticScholarApiKeyConfigured": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip())})
+        codex = None
+        if service.codex_status:
+            try:
+                codex = service.codex_status()
+            except Exception as exc:
+                codex = {"available": False, "chatgptAuthenticated": False, "models": [], "error": str(exc)}
+        return jsonify({
+            "llmPresets": service.llm_presets(),
+            "codex": codex,
+            "semanticScholarApiKeyConfigured": bool(os.getenv("SEMANTIC_SCHOLAR_API_KEY", "").strip()),
+        })
 
     @bp.get("/projects")
     def projects_list():
@@ -1160,6 +1915,76 @@ def create_research_gap_blueprint(service: ResearchGapService) -> Blueprint:
         except Exception as exc:
             return error_response(exc)
 
+    @bp.post("/projects/<project_id>/papers/batch-arxiv")
+    def papers_batch_arxiv(project_id: str):
+        data = body()
+        raw = data.get("titles")
+        if isinstance(raw, str):
+            titles = raw.splitlines()
+        elif isinstance(raw, list):
+            titles = [str(item) for item in raw]
+        else:
+            titles = []
+        try:
+            return jsonify(service.import_arxiv_titles(project_id, titles))
+        except Exception as exc:
+            return error_response(exc)
+
+    @bp.post("/projects/<project_id>/paper-imports")
+    def paper_imports_create(project_id: str):
+        data = body()
+        recursive = data.get("recursive", True)
+        if not isinstance(recursive, bool):
+            return jsonify({"error": "recursive 必须是布尔值。"}), 400
+        try:
+            return jsonify({"job": service.create_paper_import(
+                project_id, data.get("folderPath"), recursive=recursive,
+            )}), 202
+        except Exception as exc:
+            return error_response(exc)
+
+    @bp.get("/projects/<project_id>/paper-imports")
+    def paper_imports_list(project_id: str):
+        try:
+            return jsonify({"jobs": service.list_paper_imports(
+                project_id, int(request.args.get("limit") or 10),
+            )})
+        except Exception as exc:
+            return error_response(exc)
+
+    @bp.get("/paper-imports/<job_id>")
+    def paper_imports_get(job_id: str):
+        try:
+            return jsonify({"job": service.get_paper_import(job_id)})
+        except Exception as exc:
+            return error_response(exc)
+
+    @bp.get("/paper-imports/<job_id>/items")
+    def paper_import_items_get(job_id: str):
+        try:
+            return jsonify(service.list_paper_import_items(
+                job_id,
+                status=clean_text(request.args.get("status"), 30),
+                offset=int(request.args.get("offset") or 0),
+                limit=int(request.args.get("limit") or 50),
+            ))
+        except Exception as exc:
+            return error_response(exc)
+
+    @bp.post("/paper-imports/<job_id>/pause")
+    def paper_imports_pause(job_id: str):
+        try:
+            return jsonify({"job": service.pause_paper_import(job_id)}), 202
+        except Exception as exc:
+            return error_response(exc)
+
+    @bp.post("/paper-imports/<job_id>/resume")
+    def paper_imports_resume(job_id: str):
+        try:
+            return jsonify({"job": service.resume_paper_import(job_id)}), 202
+        except Exception as exc:
+            return error_response(exc)
+
     @bp.delete("/projects/<project_id>/papers/<paper_id>")
     def papers_delete(project_id: str, paper_id: str):
         try:
@@ -1173,7 +1998,12 @@ def create_research_gap_blueprint(service: ResearchGapService) -> Blueprint:
         data = body()
         try:
             paper_ids = data.get("paperIds") if isinstance(data.get("paperIds"), list) else []
-            return jsonify({"job": service.submit_analysis(project_id, paper_ids, clean_text(data.get("presetId"), 100))}), 202
+            return jsonify({"job": service.submit_analysis(
+                project_id,
+                paper_ids,
+                clean_text(data.get("presetId"), 100),
+                backend=clean_text(data.get("backend"), 20) or "api",
+            )}), 202
         except Exception as exc:
             return error_response(exc)
 

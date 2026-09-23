@@ -1,4 +1,4 @@
-const state = { tools: [], active: null, view: "tool", files: [], anki: null, captions: { titles: [], captions: [] }, poller: null, currentJob: null, translationSource: "", llmPreset: "", llmPresets: [], editingLlmId: null, mathpixConfig: null, speechConfig: null, githubConfig: null, settingsTab: "llm" };
+const state = { tools: [], active: null, view: "tool", files: [], anki: null, captions: { titles: [], captions: [] }, poller: null, currentJob: null, translationSource: "", llmPreset: "", llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, settingsTab: "llm" };
 const nav = document.querySelector("#toolNav");
 const form = document.querySelector("#toolForm");
 const llmSettingsNav = document.querySelector("#llmSettingsNav");
@@ -77,7 +77,7 @@ function renderTool() {
 function settingsTabFromHash() {
   if (location.hash === "#llm-settings") return "llm";
   const tab = location.hash.replace(/^#settings\//, "");
-  return ["llm", "mathpix", "speech", "github"].includes(tab) ? tab : null;
+  return ["llm", "mathpix", "codex", "three-pass", "speech", "github"].includes(tab) ? tab : null;
 }
 
 async function openLlmSettings(updateHash = true, requestedTab = null) {
@@ -89,12 +89,12 @@ async function openLlmSettings(updateHash = true, requestedTab = null) {
   taskPanel.classList.add("hidden");
   category.textContent = "全局设置";
   title.textContent = "AI、OCR、语音与 GitHub 配置";
-  description.textContent = "统一管理 OpenAI-compatible 模型、Mathpix OCR、Azure Speech 与 Markdown 图片发布仓库。";
+  description.textContent = "统一管理 API 模型、Mathpix OCR、Codex 额度、Three-Pass 篇幅、Azure Speech 及 Markdown 图片发布仓库。";
   availability.textContent = "本机全局";
   availability.className = "badge ok";
   form.innerHTML = `<div class="llm-manager-loading">正在读取本机全局配置…</div>`;
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig()]);
     renderLlmManager();
   } catch (error) {
     form.innerHTML = `<p class="message">${escapeHtml(error.message)}</p><button type="button" data-retry-llm>重新加载</button>`;
@@ -108,6 +108,21 @@ async function loadGlobalLlmPresets() {
   if (!response.ok) throw new Error(data.error || "无法读取 LLM 配置。");
   state.llmPresets = data.presets || [];
   syncGlobalLlmPresets();
+}
+
+async function loadGlobalCodexConfig(forceRefresh = false) {
+  const response = await fetch(forceRefresh ? "/api/codex/status/refresh" : "/api/codex/status", forceRefresh ? { method:"POST" } : undefined);
+  const data = await response.json();
+  state.codexConfig = data || { available:false, models:[], rateLimits:null };
+  return state.codexConfig;
+}
+
+async function loadGlobalThreePassConfig() {
+  const response = await fetch("/api/three-pass-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Three-Pass 篇幅设置。");
+  state.threePassConfig = data.threePass;
+  return state.threePassConfig;
 }
 
 async function loadGlobalSpeechConfig() {
@@ -159,6 +174,79 @@ function syncGlobalLlmPresets() {
   if (!state.llmPresets.some(item => item.id === state.llmPreset)) state.llmPreset = state.llmPresets[0]?.id || "";
 }
 
+function codexEffortsForModel(model, preferred = "") {
+  const efforts = model?.supportedEfforts?.length
+    ? [...model.supportedEfforts]
+    : [model?.defaultEffort || preferred || "high"];
+  return {
+    efforts,
+    selected: efforts.includes(preferred) ? preferred : (model?.defaultEffort || efforts[0]),
+  };
+}
+
+function codexEffortLabel(model, effort) {
+  return effort === "none" && ["gpt-5.6-sol", "gpt-5.6"].includes(model?.id)
+    ? "Instant（none）"
+    : effort;
+}
+
+function codexRateLimitSnapshots(rateLimits) {
+  if (!rateLimits || typeof rateLimits !== "object") return [];
+  if (Array.isArray(rateLimits.rateLimits)) return rateLimits.rateLimits;
+  if (rateLimits.rateLimitsByLimitId && typeof rateLimits.rateLimitsByLimitId === "object") return Object.values(rateLimits.rateLimitsByLimitId);
+  return rateLimits.rateLimit ? [rateLimits.rateLimit] : [];
+}
+
+function codexResetText(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "重置时间未知";
+  return new Intl.DateTimeFormat("zh-CN", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }).format(new Date(timestamp * 1000));
+}
+
+function renderCodexQuotaCards(rateLimits) {
+  const cards = [];
+  codexRateLimitSnapshots(rateLimits).forEach((snapshot, snapshotIndex) => {
+    if (!snapshot || typeof snapshot !== "object") return;
+    const name = snapshot.limitName || snapshot.limitId || (snapshotIndex ? `额度 ${snapshotIndex + 1}` : "Codex 额度");
+    [["主要窗口", snapshot.primary], ["次要窗口", snapshot.secondary]].forEach(([windowName, window]) => {
+      if (!window || typeof window !== "object") return;
+      const used = Math.min(100, Math.max(0, Number(window.usedPercent) || 0));
+      const remaining = Math.max(0, 100 - used);
+      const duration = Number(window.windowDurationMins);
+      const durationText = Number.isFinite(duration) && duration > 0 ? ` · ${duration < 60 ? `${duration} 分钟` : `${Math.round(duration / 60)} 小时`}窗口` : "";
+      cards.push(`<article class="codex-quota-card"><div><span>${escapeHtml(name)} · ${windowName}</span><strong>${remaining}%</strong><small>剩余${durationText} · ${escapeHtml(codexResetText(window.resetsAt))}重置</small></div><div class="codex-quota-track" role="progressbar" aria-label="${escapeHtml(name)}剩余额度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div></article>`);
+    });
+  });
+  return cards.length ? cards.join("") : `<div class="llm-empty-state codex-quota-empty"><strong>暂时无法读取额度</strong><p>账户或当前 Codex 版本可能未返回额度窗口；可稍后刷新。</p></div>`;
+}
+
+const THREE_PASS_PHASE_LABELS = {
+  pass1: "Pass 1 · 快速定位",
+  pass2: "Pass 2 · 结构与证据",
+  pass3: "Pass 3 · 重点深读",
+  synthesis: "综合报告",
+};
+
+function renderThreePassLengthCard(phase, config) {
+  const item = config.phases?.[phase] || { level:"medium", target:config.presets?.[phase]?.medium || 0 };
+  const preset = config.presets?.[phase] || {};
+  const custom = item.level === "custom";
+  return `<article class="three-pass-length-card" data-length-phase="${phase}">
+    <div class="three-pass-length-heading"><strong>${escapeHtml(THREE_PASS_PHASE_LABELS[phase])}</strong><span data-length-summary>约 ${escapeHtml(item.target)} 字 / words</span></div>
+    <label>篇幅
+      <select name="${phase}Level" data-length-level>
+        <option value="low" ${item.level === "low" ? "selected" : ""}>短 · ${escapeHtml(preset.low)}</option>
+        <option value="medium" ${item.level === "medium" ? "selected" : ""}>中 · ${escapeHtml(preset.medium)}</option>
+        <option value="long" ${item.level === "long" ? "selected" : ""}>长 · ${escapeHtml(preset.long)}</option>
+        <option value="custom" ${custom ? "selected" : ""}>自定义</option>
+      </select>
+    </label>
+    <label class="three-pass-custom-length ${custom ? "" : "hidden"}">自定义目标
+      <input name="${phase}Target" data-length-target type="number" min="${escapeHtml(config.limits.min)}" max="${escapeHtml(config.limits.max)}" step="${escapeHtml(config.limits.step)}" value="${escapeHtml(item.target)}" ${custom ? "required" : ""}>
+    </label>
+  </article>`;
+}
+
 function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   const editing = state.editingLlmId ? state.llmPresets.find(item => item.id === state.editingLlmId) : null;
   const speech = state.speechConfig || {
@@ -173,11 +261,16 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
     branch: "main",
     imageRoot: "images",
   };
+  const codex = state.codexConfig || { available:false, chatgptAuthenticated:false, models:[], rateLimits:null };
+  const codexModels = codex.models || [];
+  const codexModel = codexModels.find(item => item.id === codex.defaultModel) || codexModels[0] || null;
+  const codexEffortView = codexEffortsForModel(codexModel, codex.defaultReasoningEffort);
+  const codexReady = Boolean(codex.available && codex.chatgptAuthenticated && codexModel);
   const cards = state.llmPresets.map(preset => `
     <article class="llm-preset-card">
       <div class="llm-preset-copy">
         <div class="llm-preset-heading"><h3>${escapeHtml(preset.name)}</h3><span class="preset-id">${preset.id === "default" ? "默认配置" : escapeHtml(preset.id)}</span></div>
-        <p>${escapeHtml(preset.model)} · 并发 ${escapeHtml(preset.concurrency || 1)}</p>
+        <p>${escapeHtml(preset.model)} · ${escapeHtml(preset.protocol || "auto")} · 并发 ${escapeHtml(preset.concurrency || 1)}${preset.contextWindow ? ` · 上下文 ${escapeHtml(preset.contextWindow)}` : ""}</p>
         <code>${escapeHtml(preset.baseUrl)}</code>
       </div>
       <div class="llm-preset-actions">
@@ -192,6 +285,8 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
       <div class="settings-tabs" role="tablist" aria-label="全局配置类别">
         <button type="button" role="tab" data-settings-tab="llm">LLM</button>
         <button type="button" role="tab" data-settings-tab="mathpix">Mathpix</button>
+        <button type="button" role="tab" data-settings-tab="codex">Codex</button>
+        <button type="button" role="tab" data-settings-tab="three-pass">Three-Pass</button>
         <button type="button" role="tab" data-settings-tab="speech">Azure Speech</button>
         <button type="button" role="tab" data-settings-tab="github">GitHub</button>
       </div>
@@ -210,6 +305,40 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
             ${mathpix.configured ? `<button type="button" class="danger-button" data-delete-mathpix>移除配置</button>` : ""}
             <button type="submit" class="primary">保存 Mathpix</button>
           </div>
+        </form>
+      </section>
+      <section class="settings-tab-panel codex-manager" data-settings-panel="codex" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Codex 额度与默认设置</h3><span class="preset-id ${codexReady ? "" : "speech-unconfigured"}">${codexReady ? "已连接" : "不可用"}</span></div>
+            <p class="hint">用于本工具箱内消耗 ChatGPT/Codex 额度的任务；不会修改全局 Codex CLI 配置。</p>
+          </div>
+          <div class="codex-heading-actions">
+            ${codex.chatgptAuthenticated ? `<button type="button" class="danger-button" data-codex-logout>退出登录</button>` : `<button type="button" class="test-button" data-codex-login>浏览器登录</button>`}
+            <button type="button" class="test-button" data-refresh-codex>刷新账户与额度</button>
+          </div>
+        </div>
+        <p id="codexManagerStatus" class="manager-message ${messageTarget === "codex" ? escapeHtml(kind) : ""} ${message && messageTarget === "codex" ? "" : (codexReady ? "ok" : "warn")}" role="status">${messageTarget === "codex" && message ? escapeHtml(message) : escapeHtml(codexReady ? `ChatGPT ${codex.planType || "账户"} 已连接 · ${codexModels.length} 个可用模型` : (codex.error || "Codex 尚未通过 ChatGPT 登录。"))}</p>
+        <div class="codex-quota-heading"><div><span class="eyebrow">USAGE</span><h4>剩余额度</h4></div><span class="hint">额度是即时快照，刷新后更新</span></div>
+        <div class="codex-quota-grid">${renderCodexQuotaCards(codex.rateLimits)}</div>
+        <form id="codexConfigForm" class="llm-editor-form codex-editor-form">
+          <label>默认模型<select name="model" ${codexReady ? "" : "disabled"}>${codexModels.length ? codexModels.map(model => `<option value="${escapeHtml(model.id)}" ${model.id === codexModel?.id ? "selected" : ""}>${escapeHtml(model.displayName || model.id)}</option>`).join("") : `<option value="">当前无可用模型</option>`}</select><span class="hint">新建 Codex 论文分析时自动选中。</span></label>
+          <label>默认推理强度<select name="reasoningEffort" ${codexReady ? "" : "disabled"}>${codexEffortView.efforts.map(effort => `<option value="${escapeHtml(effort)}" ${effort === codexEffortView.selected ? "selected" : ""}>${escapeHtml(codexEffortLabel(codexModel, effort))}</option>`).join("")}</select><span class="hint">Instant 响应最快；强度越高通常越慢，也会使用更多 token。</span></label>
+          <div class="llm-editor-actions"><button type="submit" class="primary" ${codexReady ? "" : "disabled"}>保存 Codex 默认值</button></div>
+        </form>
+      </section>
+      <section class="settings-tab-panel three-pass-settings" data-settings-panel="three-pass" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Three-Pass 分阶段篇幅</h3><span class="preset-id">全局默认</span></div>
+            <p class="hint">同时用于 Codex 与直接 API。中文按目标字数、英文按目标 words 控制，实际输出允许约 ±${escapeHtml(state.threePassConfig?.tolerancePercent || 20)}% 浮动。</p>
+          </div>
+        </div>
+        <p id="threePassConfigStatus" class="manager-message ${messageTarget === "three-pass" ? escapeHtml(kind) : ""} ${message && messageTarget === "three-pass" ? "" : "hidden"}" role="status">${messageTarget === "three-pass" ? escapeHtml(message) : ""}</p>
+        <form id="threePassConfigForm">
+          <div class="three-pass-length-grid">${Object.keys(THREE_PASS_PHASE_LABELS).map(phase => renderThreePassLengthCard(phase, state.threePassConfig)).join("")}</div>
+          <p class="hint three-pass-length-note">这是可见报告的目标篇幅，不会机械截断。直接 API 的“最大输出 token”仍是独立安全上限。</p>
+          <div class="llm-editor-actions three-pass-length-actions"><button type="button" data-reset-three-pass>恢复推荐值</button><button type="submit" class="primary">保存 Three-Pass 篇幅</button></div>
         </form>
       </section>
       <section class="settings-tab-panel speech-manager" data-settings-panel="speech" role="tabpanel">
@@ -245,6 +374,8 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
           <label>Base URL<input name="baseUrl" value="${escapeHtml(editing?.baseUrl || "")}" required maxlength="500" placeholder="https://api.example.com/v1"></label>
           <label>API Key<input name="apiKey" type="password" autocomplete="new-password" ${editing ? "" : "required"} maxlength="1000" placeholder="${editing ? "留空表示保持当前密钥" : "仅保存到本机 .env"}"></label>
           <label>Model ID<input name="model" value="${escapeHtml(editing?.model || "")}" required maxlength="200" placeholder="例如：deepseek-chat"></label>
+          <label>API 协议<select name="protocol"><option value="auto" ${(editing?.protocol || "auto") === "auto" ? "selected" : ""}>自动识别</option><option value="responses" ${editing?.protocol === "responses" ? "selected" : ""}>Responses API</option><option value="chat_completions" ${editing?.protocol === "chat_completions" ? "selected" : ""}>Chat Completions</option></select><span class="hint">OpenAI 官方地址在自动模式下使用 Responses API。</span></label>
+          <label>上下文窗口（可选）<input name="contextWindow" type="number" value="${escapeHtml(editing?.contextWindow || "")}" min="8000" max="10000000" step="1000" placeholder="例如：128000"><span class="hint">用于长论文分块与调用次数预估。</span></label>
           <label>并发请求数<input name="concurrency" type="number" value="${escapeHtml(editing?.concurrency || 1)}" required min="1" max="64" step="1"><span class="hint">同一配置的所有 LLM 调用共享此上限（1–64）。</span></label>
           <div class="llm-editor-actions"><button type="submit" class="primary">${editing ? "保存修改" : "添加配置"}</button></div>
         </form>
@@ -280,6 +411,15 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   form.querySelectorAll("[data-edit-llm]").forEach(button => button.addEventListener("click", () => { state.editingLlmId = button.dataset.editLlm; renderLlmManager(); form.querySelector("#llmEditor")?.scrollIntoView({ behavior:"smooth", block:"start" }); }));
   form.querySelectorAll("[data-delete-llm]").forEach(button => button.addEventListener("click", () => removeGlobalLlmPreset(button.dataset.deleteLlm)));
   form.querySelector("#llmEditorForm")?.addEventListener("submit", saveGlobalLlmPreset);
+  form.querySelector("#codexConfigForm")?.addEventListener("submit", saveGlobalCodexConfig);
+  form.querySelector("#codexConfigForm [name=model]")?.addEventListener("change", updateGlobalCodexEfforts);
+  form.querySelector("[data-refresh-codex]")?.addEventListener("click", event => refreshGlobalCodexConfig(event.currentTarget));
+  form.querySelector("[data-codex-login]")?.addEventListener("click", event => startGlobalCodexLogin(event.currentTarget));
+  form.querySelector("[data-codex-logout]")?.addEventListener("click", event => logoutGlobalCodex(event.currentTarget));
+  form.querySelector("#threePassConfigForm")?.addEventListener("submit", saveGlobalThreePassConfig);
+  form.querySelectorAll("[data-length-level]").forEach(select => select.addEventListener("change", () => updateThreePassLengthCard(select.closest("[data-length-phase]"))));
+  form.querySelectorAll("[data-length-target]").forEach(input => input.addEventListener("input", () => updateThreePassLengthCard(input.closest("[data-length-phase]"))));
+  form.querySelector("[data-reset-three-pass]")?.addEventListener("click", resetGlobalThreePassConfig);
   form.querySelector("#speechConfigForm")?.addEventListener("submit", saveGlobalSpeechConfig);
   form.querySelector("[data-test-speech]")?.addEventListener("click", event => testGlobalSpeechConfig(event.currentTarget));
   form.querySelector("[data-delete-speech]")?.addEventListener("click", removeGlobalSpeechConfig);
@@ -292,7 +432,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
 }
 
 function activateSettingsTab(tab, updateHash = true) {
-  if (!["llm", "mathpix", "speech", "github"].includes(tab)) return;
+  if (!["llm", "mathpix", "codex", "three-pass", "speech", "github"].includes(tab)) return;
   state.settingsTab = tab;
   form.querySelectorAll("[data-settings-tab]").forEach(button => {
     const active = button.dataset.settingsTab === tab;
@@ -302,6 +442,181 @@ function activateSettingsTab(tab, updateHash = true) {
   });
   form.querySelectorAll("[data-settings-panel]").forEach(panel => panel.classList.toggle("hidden", panel.dataset.settingsPanel !== tab));
   if (updateHash) history.replaceState(null, "", `#settings/${tab}`);
+}
+
+function updateThreePassLengthCard(card) {
+  if (!card) return;
+  const phase = card.dataset.lengthPhase;
+  const level = card.querySelector("[data-length-level]").value;
+  const customLabel = card.querySelector(".three-pass-custom-length");
+  const targetInput = card.querySelector("[data-length-target]");
+  const isCustom = level === "custom";
+  customLabel.classList.toggle("hidden", !isCustom);
+  targetInput.required = isCustom;
+  const presetTarget = state.threePassConfig?.presets?.[phase]?.[level];
+  if (!isCustom && presetTarget) targetInput.value = presetTarget;
+  const target = isCustom ? targetInput.value : presetTarget;
+  card.querySelector("[data-length-summary]").textContent = `约 ${target || "—"} 字 / words`;
+}
+
+function threePassConfigFormPayload(formNode) {
+  const phases = {};
+  formNode.querySelectorAll("[data-length-phase]").forEach(card => {
+    const phase = card.dataset.lengthPhase;
+    const level = card.querySelector("[data-length-level]").value;
+    phases[phase] = { level };
+    if (level === "custom") phases[phase].target = Number(card.querySelector("[data-length-target]").value);
+  });
+  return { phases };
+}
+
+async function saveGlobalThreePassConfig(event) {
+  event.preventDefault();
+  const editor = event.currentTarget;
+  if (!editor.reportValidity()) return;
+  const submit = editor.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/three-pass-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(threePassConfigFormPayload(editor)),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Three-Pass 篇幅失败。");
+    state.threePassConfig = data.threePass;
+    renderLlmManager("Three-Pass 四个阶段的目标篇幅已保存。", "ok", "three-pass");
+  } catch (error) {
+    const status = form.querySelector("#threePassConfigStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+function resetGlobalThreePassConfig() {
+  form.querySelectorAll("[data-length-phase]").forEach(card => {
+    const phase = card.dataset.lengthPhase;
+    card.querySelector("[data-length-level]").value = "medium";
+    card.querySelector("[data-length-target]").value = state.threePassConfig.presets[phase].medium;
+    updateThreePassLengthCard(card);
+  });
+  const status = form.querySelector("#threePassConfigStatus");
+  status.textContent = "已恢复推荐的中等篇幅；点击保存后生效。";
+  status.className = "manager-message warn";
+}
+
+function updateGlobalCodexEfforts() {
+  const editor = form.querySelector("#codexConfigForm");
+  const modelId = editor?.querySelector("[name=model]")?.value;
+  const effortSelect = editor?.querySelector("[name=reasoningEffort]");
+  if (!effortSelect) return;
+  const model = (state.codexConfig?.models || []).find(item => item.id === modelId);
+  const view = codexEffortsForModel(model, model?.defaultEffort);
+  effortSelect.innerHTML = view.efforts.map(effort => `<option value="${escapeHtml(effort)}">${escapeHtml(codexEffortLabel(model, effort))}</option>`).join("");
+  effortSelect.value = view.selected;
+}
+
+async function saveGlobalCodexConfig(event) {
+  event.preventDefault();
+  const editor = event.currentTarget;
+  const submit = editor.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editor).entries());
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/codex-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Codex 默认设置失败。");
+    state.codexConfig = data.codex;
+    const model = data.codex.models?.find(item => item.id === data.codex.defaultModel);
+    renderLlmManager(`已保存：${model?.displayName || data.codex.defaultModel} · ${data.codex.defaultReasoningEffort}`, "ok", "codex");
+  } catch (error) {
+    const status = form.querySelector("#codexManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+async function refreshGlobalCodexConfig(button) {
+  button.disabled = true;
+  button.textContent = "刷新中…";
+  try {
+    await loadGlobalCodexConfig(true);
+    renderLlmManager("账户、可用模型与额度已刷新。", state.codexConfig?.chatgptAuthenticated ? "ok" : "warn", "codex");
+  } catch (error) {
+    const status = form.querySelector("#codexManagerStatus");
+    status.textContent = `刷新失败：${error.message}`;
+    status.className = "manager-message bad";
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "刷新账户与额度";
+    }
+  }
+}
+
+async function startGlobalCodexLogin(button) {
+  const status = form.querySelector("#codexManagerStatus");
+  const loginWindow = window.open("about:blank", "research-toolkit-codex-login");
+  if (loginWindow) loginWindow.opener = null;
+  button.disabled = true;
+  button.textContent = "正在启动…";
+  try {
+    const response = await fetch("/api/codex/login", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ flow:"browser" }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法启动 Codex 登录。");
+    if (data.authUrl && loginWindow) loginWindow.location.href = data.authUrl;
+    else if (data.authUrl) window.open(data.authUrl, "_blank", "noopener,noreferrer");
+    status.textContent = "已打开 ChatGPT 登录页；完成授权后，本页会自动刷新。";
+    status.className = "manager-message";
+    for (let index = 0; index < 90; index += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const progressResponse = await fetch(`/api/codex/login/${encodeURIComponent(data.loginId)}`);
+      const progress = await progressResponse.json();
+      if (progress.status === "failed") throw new Error(progress.error || "Codex 登录失败。");
+      if (progress.success) {
+        await loadGlobalCodexConfig(true);
+        renderLlmManager("Codex 登录成功，账户与额度已刷新。", "ok", "codex");
+        return;
+      }
+    }
+    throw new Error("等待登录超时；完成登录后请点击“刷新账户与额度”。");
+  } catch (error) {
+    const currentStatus = form.querySelector("#codexManagerStatus");
+    if (currentStatus) {
+      currentStatus.textContent = error.message;
+      currentStatus.className = "manager-message bad";
+    }
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "浏览器登录";
+    }
+  }
+}
+
+async function logoutGlobalCodex(button) {
+  if (!window.confirm("确定退出当前 Codex ChatGPT 登录吗？使用 Codex 额度的任务将暂时不可用。")) return;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/codex/logout", { method:"POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "退出 Codex 登录失败。");
+    await loadGlobalCodexConfig(true);
+    renderLlmManager("已退出 Codex 登录。", "ok", "codex");
+  } catch (error) {
+    const status = form.querySelector("#codexManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    if (button.isConnected) button.disabled = false;
+  }
 }
 
 async function testGlobalLlmPreset(presetId, button) {

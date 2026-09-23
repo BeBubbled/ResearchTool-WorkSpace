@@ -3,23 +3,32 @@
 
   const API = "/api/research-gaps";
   const state = {
-    config: { llmPresets: [] },
+    config: { llmPresets: [], codex: null },
     projects: [], project: null, papers: [], gaps: [], review: [], graph: { nodes: [], edges: [] },
     readerLibrary: [], tab: "gaps", selectedPapers: new Set(), activeJob: null, pollTimer: null,
+    folderImportJob: null, folderImportPollTimer: null, folderImportOffset: 0,
+    folderImportItemTotal: 0, folderImportPageSize: 50,
   };
   const dom = {};
   const ids = [
     "emptyState", "projectWorkspace", "projectSelect", "newProjectButton", "emptyCreateButton",
     "projectName", "projectTopic", "paperCount", "gapCount", "reviewCount", "editProjectButton",
-    "exportProjectLink", "deleteProjectButton", "semanticStatusText", "viewTitle", "llmPreset",
+    "exportProjectLink", "deleteProjectButton", "semanticStatusText", "viewTitle", "analysisBackend",
+    "analysisApiOptions", "llmPreset", "codexPanel", "codexStatus", "manageCodex",
     "importPaperButton", "analyzeButton", "jobPanel", "jobLabel", "jobProgress", "jobProgressBar",
     "jobLog", "gapTabCount", "paperTabCount", "reviewTabCount", "gapSearch", "gapStatusFilter",
     "gapSort", "gapList", "paperSearch", "selectAllPapers", "paperRows", "reviewSearch", "reviewList",
     "graphCanvas", "fitGraph", "drawerBackdrop", "detailDrawer", "drawerEyebrow", "drawerTitle",
     "drawerBody", "closeDrawer", "projectDialog", "projectForm", "projectDialogTitle", "projectEditId",
     "projectNameInput", "projectTopicInput", "projectQueryInput", "projectFormError", "importDialog",
-    "searchImportPanel", "localImportPanel", "paperSearchForm", "paperQuery", "paperSearchStatus",
-    "paperSearchResults", "localLibraryResults", "reviewDialog", "reviewForm", "reviewItemId",
+    "searchImportPanel", "batchImportPanel", "folderImportPanel", "localImportPanel", "paperSearchForm", "paperQuery", "paperSearchStatus",
+    "paperSearchResults", "batchImportForm", "batchPaperTitles", "batchImportButton", "batchImportStatus",
+    "batchImportResults", "folderImportForm", "folderPath", "folderImportButton", "folderImportJob",
+    "folderImportJobStatus", "folderImportJobProgress", "folderImportProgressBar", "folderImportCurrent",
+    "folderImportedCount", "folderDuplicateCount", "folderSkippedCount", "folderFailedCount",
+    "pauseFolderImport", "resumeFolderImport", "folderImportResultToolbar", "folderImportStatusFilter",
+    "folderImportPageStatus", "folderImportPrev", "folderImportNext", "folderImportResults",
+    "localLibraryResults", "reviewDialog", "reviewForm", "reviewItemId",
     "reviewItemType", "reviewTitleField", "reviewTitleInput", "reviewDetailField", "reviewDetailInput",
     "reviewRelationField", "reviewRelationInput", "reviewEvidence", "toast",
   ];
@@ -95,8 +104,30 @@
     dom.llmPreset.innerHTML = presets.length
       ? presets.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.model)}</option>`).join("")
       : '<option value="">未配置 LLM</option>';
-    dom.analyzeButton.disabled = !presets.length;
+    const codex = state.config.codex || { models: [] };
+    const model = (codex.models || []).find(item => item.id === codex.defaultModel);
+    const modelLabel = model?.displayName || codex.defaultModel || "未设置模型";
+    const effort = codex.defaultReasoningEffort || model?.defaultEffort || "未设置强度";
+    const effortLabel = effort === "none" && ["gpt-5.6-sol", "gpt-5.6"].includes(codex.defaultModel)
+      ? "Instant（none）"
+      : effort;
+    dom.codexStatus.textContent = codex.chatgptAuthenticated
+      ? `使用全局 Codex 默认值：${modelLabel} · ${effortLabel}`
+      : (codex.error || "Codex 尚未通过 ChatGPT 登录。");
+    dom.manageCodex.textContent = codex.chatgptAuthenticated
+      ? "在“AI、语音与 GitHub”中管理"
+      : "前往“AI、语音与 GitHub”登录并设置";
+    if (!codex.chatgptAuthenticated && presets.length) dom.analysisBackend.value = "api";
+    renderAnalysisBackend();
     dom.semanticStatusText.textContent = state.config.semanticScholarApiKeyConfigured ? "已配置独立 API Key" : "公开共享限流";
+  }
+
+  function renderAnalysisBackend() {
+    const codexSelected = dom.analysisBackend.value === "codex";
+    dom.analysisApiOptions.classList.toggle("hidden", codexSelected);
+    dom.codexPanel.classList.toggle("hidden", !codexSelected);
+    const codexReady = Boolean(state.config.codex?.chatgptAuthenticated && state.config.codex?.defaultModel);
+    dom.analyzeButton.disabled = codexSelected ? !codexReady : !(state.config.llmPresets || []).length;
   }
 
   function renderProjectSelect() {
@@ -114,7 +145,10 @@
 
   async function selectProject(projectId) {
     clearTimeout(state.pollTimer);
+    clearTimeout(state.folderImportPollTimer);
     state.activeJob = null;
+    state.folderImportJob = null;
+    state.folderImportOffset = 0;
     const payload = await api(`/projects/${encodeURIComponent(projectId)}`);
     state.project = payload.project;
     dom.projectSelect.value = projectId;
@@ -164,7 +198,7 @@
     else if (sort === "title") gaps.sort((a, b) => a.canonicalTitle.localeCompare(b.canonicalTitle, "zh-CN"));
     else gaps.sort((a, b) => b.updatedAt - a.updatedAt);
     if (!gaps.length) {
-      dom.gapList.innerHTML = showEmpty(state.papers.length ? "尚未发现符合条件的研究空白" : "先添加论文，再开始分析", state.papers.length ? "可调整筛选条件或分析更多论文。" : "支持 DOI、arXiv、标题检索和本地阅读库。 ");
+      dom.gapList.innerHTML = showEmpty(state.papers.length ? "尚未发现符合条件的研究空白" : "先添加论文，再开始分析", state.papers.length ? "可调整筛选条件或分析更多论文。" : "支持 DOI、arXiv、批量标题、本地 PDF 文件夹和阅读库。 ");
       return;
     }
     dom.gapList.innerHTML = gaps.map(item => {
@@ -293,8 +327,10 @@
   function openImportDialog() {
     dom.paperQuery.value = state.project?.query || "";
     dom.paperSearchResults.innerHTML = "";
+    dom.batchImportResults.innerHTML = "";
     renderLocalLibrary();
     dom.importDialog.showModal();
+    loadLatestFolderImport().catch(error => toast(error.message, true));
   }
 
   function renderLocalLibrary() {
@@ -303,6 +339,140 @@
     }
     const imported = new Set(state.papers.map(item => item.readerCacheKey).filter(Boolean));
     dom.localLibraryResults.innerHTML = state.readerLibrary.map(item => `<article class="import-result"><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.sourceName)} · ${item.renderKind.toUpperCase()}${item.useOcr ? " · OCR" : ""}</p></div><button class="button quiet" type="button" data-import-reader="${escapeHtml(item.id)}" ${imported.has(item.id) ? "disabled" : ""}>${imported.has(item.id) ? "已添加" : "添加"}</button></article>`).join("");
+  }
+
+  function folderImportStatusLabel(job) {
+    if (job.pauseRequested && ["queued", "running"].includes(job.status)) return "正在暂停";
+    return {
+      queued: "等待导入", running: job.stage === "scanning" ? "正在扫描目录" : "正在提取 PDF",
+      paused: "已暂停", interrupted: "已中断", completed: "导入完成", failed: "任务失败",
+    }[job.status] || job.status;
+  }
+
+  function renderFolderImportJob() {
+    const job = state.folderImportJob;
+    dom.folderImportJob.classList.toggle("hidden", !job);
+    dom.folderImportResultToolbar.classList.toggle("hidden", !job);
+    if (!job) {
+      dom.folderImportResults.innerHTML = showEmpty("尚无文件夹导入任务", "输入本机绝对路径后开始递归扫描。");
+      dom.folderImportButton.disabled = false;
+      return;
+    }
+    dom.folderImportJobStatus.textContent = folderImportStatusLabel(job);
+    dom.folderImportJobProgress.textContent = `${job.completed} / ${job.total}`;
+    dom.folderImportProgressBar.style.width = `${job.total ? Math.round(job.completed / job.total * 100) : 0}%`;
+    dom.folderImportCurrent.textContent = job.error || job.currentRelativePath || job.folderPath;
+    dom.folderImportCurrent.title = job.error || job.currentRelativePath || job.folderPath;
+    dom.folderImportedCount.textContent = job.imported;
+    dom.folderDuplicateCount.textContent = job.duplicates;
+    dom.folderSkippedCount.textContent = job.skipped;
+    dom.folderFailedCount.textContent = job.failed;
+    const active = ["queued", "running"].includes(job.status);
+    dom.pauseFolderImport.classList.toggle("hidden", !active);
+    dom.pauseFolderImport.disabled = job.pauseRequested;
+    dom.resumeFolderImport.classList.toggle("hidden", !["paused", "interrupted", "failed"].includes(job.status));
+    dom.folderImportButton.disabled = active;
+  }
+
+  async function loadLatestFolderImport() {
+    if (!state.project) return;
+    const payload = await api(`/projects/${encodeURIComponent(state.project.id)}/paper-imports?limit=1`);
+    state.folderImportJob = payload.jobs?.[0] || null;
+    state.folderImportOffset = 0;
+    renderFolderImportJob();
+    if (state.folderImportJob) {
+      await loadFolderImportItems();
+      if (["queued", "running"].includes(state.folderImportJob.status)) pollFolderImport();
+    }
+  }
+
+  async function loadFolderImportItems() {
+    const job = state.folderImportJob;
+    if (!job) return;
+    const status = dom.folderImportStatusFilter.value;
+    const params = new URLSearchParams({
+      offset: String(state.folderImportOffset), limit: String(state.folderImportPageSize),
+    });
+    if (status) params.set("status", status);
+    const payload = await api(`/paper-imports/${encodeURIComponent(job.id)}/items?${params}`);
+    state.folderImportItemTotal = payload.total || 0;
+    const labels = { imported: "已导入", duplicate: "重复", skipped: "已跳过", failed: "失败", pending: "待处理", processing: "处理中" };
+    dom.folderImportResults.innerHTML = payload.items?.length
+      ? payload.items.map(item => `<article class="import-result"><div><strong>${escapeHtml(item.title || item.relativePath)}</strong><p>${escapeHtml(item.relativePath)}</p>${item.error ? `<p>${escapeHtml(item.error)}</p>` : ""}</div><span class="tag folder-import-result-status ${escapeHtml(item.status)}">${escapeHtml(labels[item.status] || item.status)}</span></article>`).join("")
+      : showEmpty("没有符合条件的导入明细");
+    const start = payload.total ? state.folderImportOffset + 1 : 0;
+    const end = Math.min(state.folderImportOffset + state.folderImportPageSize, payload.total || 0);
+    dom.folderImportPageStatus.textContent = `${start}–${end} / ${payload.total || 0}`;
+    dom.folderImportPrev.disabled = state.folderImportOffset <= 0;
+    dom.folderImportNext.disabled = state.folderImportOffset + state.folderImportPageSize >= (payload.total || 0);
+  }
+
+  async function startFolderImport(event) {
+    event.preventDefault();
+    const folderPath = dom.folderPath.value.trim();
+    if (!folderPath) return;
+    dom.folderImportButton.disabled = true;
+    try {
+      const payload = await api(`/projects/${encodeURIComponent(state.project.id)}/paper-imports`, {
+        method: "POST", body: { folderPath, recursive: true },
+      });
+      state.folderImportJob = payload.job;
+      state.folderImportOffset = 0;
+      renderFolderImportJob();
+      await loadFolderImportItems();
+      pollFolderImport();
+      toast("PDF 文件夹已进入后台导入队列。");
+    } catch (error) {
+      dom.folderImportButton.disabled = false;
+      toast(error.message, true);
+    }
+  }
+
+  async function pollFolderImport() {
+    clearTimeout(state.folderImportPollTimer);
+    if (!state.folderImportJob) return;
+    const previousStatus = state.folderImportJob.status;
+    try {
+      const payload = await api(`/paper-imports/${encodeURIComponent(state.folderImportJob.id)}`);
+      state.folderImportJob = payload.job;
+      renderFolderImportJob();
+      await loadFolderImportItems();
+      if (["queued", "running"].includes(payload.job.status)) {
+        state.folderImportPollTimer = setTimeout(pollFolderImport, 1200);
+      } else {
+        await refreshProject();
+        if (["queued", "running"].includes(previousStatus)) {
+          const failed = payload.job.status === "failed";
+          toast(failed ? payload.job.error || "文件夹导入失败。" : `文件夹导入已${payload.job.status === "paused" ? "暂停" : "完成"}。`, failed);
+        }
+      }
+    } catch (error) {
+      state.folderImportPollTimer = setTimeout(pollFolderImport, 2500);
+      toast(error.message, true);
+    }
+  }
+
+  async function pauseFolderImport() {
+    if (!state.folderImportJob) return;
+    dom.pauseFolderImport.disabled = true;
+    try {
+      const payload = await api(`/paper-imports/${encodeURIComponent(state.folderImportJob.id)}/pause`, { method: "POST" });
+      state.folderImportJob = payload.job;
+      renderFolderImportJob();
+    } catch (error) { dom.pauseFolderImport.disabled = false; toast(error.message, true); }
+  }
+
+  async function resumeFolderImport() {
+    if (!state.folderImportJob) return;
+    dom.resumeFolderImport.disabled = true;
+    try {
+      const payload = await api(`/paper-imports/${encodeURIComponent(state.folderImportJob.id)}/resume`, { method: "POST" });
+      state.folderImportJob = payload.job;
+      renderFolderImportJob();
+      pollFolderImport();
+      toast("文件夹导入已恢复。");
+    } catch (error) { toast(error.message, true); }
+    finally { dom.resumeFolderImport.disabled = false; }
   }
 
   async function searchPapers(event) {
@@ -330,13 +500,54 @@
     } catch (error) { button.disabled = false; button.textContent = previous; toast(error.message, true); }
   }
 
+  async function batchImportPapers(event) {
+    event.preventDefault();
+    const titles = dom.batchPaperTitles.value.trim();
+    if (!titles) return;
+    const previous = dom.batchImportButton.textContent;
+    dom.batchImportButton.disabled = true;
+    dom.batchImportButton.textContent = "正在逐篇获取…";
+    dom.batchImportStatus.textContent = "正在查询 arXiv、核对标题并获取论文；批量较大时可能需要几分钟。";
+    dom.batchImportResults.innerHTML = "";
+    try {
+      const payload = await api(`/projects/${encodeURIComponent(state.project.id)}/papers/batch-arxiv`, {
+        method: "POST", body: { titles },
+      });
+      await refreshProject();
+      dom.batchImportStatus.textContent = `完成：新增 ${payload.imported}，已存在 ${payload.existing}，未导入 ${payload.failed}。`;
+      dom.batchImportResults.innerHTML = (payload.results || []).map(item => {
+        const ok = ["imported", "existing"].includes(item.status);
+        const label = item.status === "imported" ? "已添加" : item.status === "existing" ? "已存在" : "未导入";
+        const candidates = (item.candidates || []).map(candidate => candidate.title).filter(Boolean);
+        const detail = ok
+          ? `${label}${item.paper?.arxivId ? ` · arXiv:${item.paper.arxivId}` : ""}`
+          : `${item.error || "未找到"}${candidates.length ? ` 候选：${candidates.join("；")}` : ""}`;
+        return `<article class="import-result"><div><strong>${escapeHtml(item.matchedTitle || item.inputTitle)}</strong><p>${escapeHtml(detail)}</p></div><span class="tag ${ok ? "" : "provisional"}">${label}</span></article>`;
+      }).join("");
+      toast(payload.failed ? "批量导入完成，部分标题需要检查。" : "批量论文已从 arXiv 加入项目。", false);
+    } catch (error) {
+      dom.batchImportStatus.textContent = error.message;
+      toast(error.message, true);
+    } finally {
+      dom.batchImportButton.disabled = false;
+      dom.batchImportButton.textContent = previous;
+    }
+  }
+
   async function startAnalysis() {
     if (!state.papers.length) { openImportDialog(); return; }
-    if (!dom.llmPreset.value) { toast("请先配置一个 LLM 预设。", true); return; }
+    const backend = dom.analysisBackend.value;
+    if (backend === "api" && !dom.llmPreset.value) { toast("请先配置一个 LLM 预设。", true); return; }
+    if (backend === "codex" && !state.config.codex?.chatgptAuthenticated) { toast("请先登录 Codex。", true); return; }
     dom.analyzeButton.disabled = true;
     try {
       const paperIds = state.selectedPapers.size ? [...state.selectedPapers] : state.papers.map(item => item.id);
-      const payload = await api(`/projects/${encodeURIComponent(state.project.id)}/analysis`, { method: "POST", body: { paperIds, presetId: dom.llmPreset.value } });
+      const payload = await api(`/projects/${encodeURIComponent(state.project.id)}/analysis`, {
+        method: "POST",
+        body: {
+          paperIds, backend, presetId: dom.llmPreset.value,
+        },
+      });
       state.activeJob = payload.job;
       renderJob(); pollJob();
     } catch (error) { dom.analyzeButton.disabled = false; toast(error.message, true); }
@@ -361,7 +572,7 @@
       renderJob();
       if (["queued", "running"].includes(payload.job.status)) state.pollTimer = setTimeout(pollJob, 1300);
       else {
-        dom.analyzeButton.disabled = !(state.config.llmPresets || []).length;
+        renderAnalysisBackend();
         await refreshProject();
         toast(payload.job.status === "completed" ? "论文分析完成。" : payload.job.error || "分析任务失败。", payload.job.status !== "completed");
       }
@@ -413,7 +624,8 @@
 
   function openPaperDrawer(paper) {
     dom.drawerEyebrow.textContent = "PAPER"; dom.drawerTitle.textContent = paper.title;
-    dom.drawerBody.innerHTML = `<section class="drawer-section"><div class="tagline"><span class="evidence-level ${paper.evidenceLevel}">${paper.evidenceLevel === "fulltext" ? "全文证据" : "摘要/弱证据"}</span><span class="tag">${escapeHtml(paper.status)}</span></div><p>${escapeHtml(paper.abstract || paper.error || "没有摘要。")}</p></section><section class="drawer-section"><h3>元数据</h3><p>${escapeHtml((paper.authors || []).join(", ") || "未知作者")}<br>${escapeHtml([paper.year, paper.venue, paper.doi, paper.arxivId].filter(Boolean).join(" · ") || "本地文档")}</p></section>`;
+    const sourceSection = paper.sourcePath ? `<section class="drawer-section"><h3>本地来源</h3><p>${escapeHtml(paper.sourcePath)}<br>${paper.sourceAvailable ? "原文件当前可访问" : "原文件已移动、删除或不可访问；已提取文本仍可用于分析"}</p></section>` : "";
+    dom.drawerBody.innerHTML = `<section class="drawer-section"><div class="tagline"><span class="evidence-level ${paper.evidenceLevel}">${paper.evidenceLevel === "fulltext" ? "全文证据" : "摘要/弱证据"}</span><span class="tag">${escapeHtml(paper.status)}</span></div><p>${escapeHtml(paper.abstract || paper.error || "没有摘要。")}</p></section><section class="drawer-section"><h3>元数据</h3><p>${escapeHtml((paper.authors || []).join(", ") || "未知作者")}<br>${escapeHtml([paper.year, paper.venue, paper.doi, paper.arxivId].filter(Boolean).join(" · ") || "本地文档")}</p></section>${sourceSection}`;
     openDrawer();
   }
   function openFactDrawer(fact) {
@@ -433,6 +645,24 @@
     dom.projectSelect.addEventListener("change", () => selectProject(dom.projectSelect.value).catch(error => toast(error.message, true)));
     dom.importPaperButton.addEventListener("click", openImportDialog);
     dom.paperSearchForm.addEventListener("submit", searchPapers);
+    dom.batchImportForm.addEventListener("submit", batchImportPapers);
+    dom.folderImportForm.addEventListener("submit", startFolderImport);
+    dom.pauseFolderImport.addEventListener("click", pauseFolderImport);
+    dom.resumeFolderImport.addEventListener("click", resumeFolderImport);
+    dom.folderImportStatusFilter.addEventListener("change", () => {
+      state.folderImportOffset = 0;
+      loadFolderImportItems().catch(error => toast(error.message, true));
+    });
+    dom.folderImportPrev.addEventListener("click", () => {
+      state.folderImportOffset = Math.max(0, state.folderImportOffset - state.folderImportPageSize);
+      loadFolderImportItems().catch(error => toast(error.message, true));
+    });
+    dom.folderImportNext.addEventListener("click", () => {
+      if (state.folderImportOffset + state.folderImportPageSize >= state.folderImportItemTotal) return;
+      state.folderImportOffset += state.folderImportPageSize;
+      loadFolderImportItems().catch(error => toast(error.message, true));
+    });
+    dom.analysisBackend.addEventListener("change", renderAnalysisBackend);
     dom.analyzeButton.addEventListener("click", startAnalysis);
     dom.reviewForm.addEventListener("submit", saveReview);
     dom.closeDrawer.addEventListener("click", closeDrawer); dom.drawerBackdrop.addEventListener("click", closeDrawer);
@@ -441,6 +671,8 @@
     document.querySelectorAll("[data-import-tab]").forEach(button => button.addEventListener("click", () => {
       document.querySelectorAll("[data-import-tab]").forEach(item => item.classList.toggle("active", item === button));
       dom.searchImportPanel.classList.toggle("active", button.dataset.importTab === "search");
+      dom.batchImportPanel.classList.toggle("active", button.dataset.importTab === "batch");
+      dom.folderImportPanel.classList.toggle("active", button.dataset.importTab === "folder");
       dom.localImportPanel.classList.toggle("active", button.dataset.importTab === "local");
     }));
     [dom.gapSearch, dom.gapStatusFilter, dom.gapSort].forEach(input => input.addEventListener("input", renderGaps));

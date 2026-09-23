@@ -1,0 +1,9 @@
+interface:
+  display_name: "Three-Pass Paper Reader"
+  short_description: "用 Keshav 三遍法定位、验证证据并深度重构学术论文"
+  icon_small: "./assets/icon.svg"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#F59E42"
+  default_prompt: "Use $three-pass-paper-reader to read this paper with an evidence-grounded full Three-Pass analysis."
+policy:
+  allow_implicit_invocation: true

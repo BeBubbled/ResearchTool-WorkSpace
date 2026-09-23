@@ -50,11 +50,16 @@ const readerState = {
   notes: [],
   textFormats: [],
   notesUpdatedAt: 0,
-  assistantWidth: 345,
+  assistantWidth: 320,
   paperWidth: null,
   paperBaseWidth: null,
   readerAxisOffset: 0,
   showTableOfContents: true,
+  compactTableOfContents: false,
+  tableOfContentsOverlayOpen: false,
+  assistantOverlay: false,
+  assistantOverlayOpen: false,
+  pdfRenderWidth: 0,
   promptUnderlineLanes: new Map(),
   lastAnswer: null,
   liveTranslations: new Map(),
@@ -68,6 +73,14 @@ const readerState = {
   speechRequestId: 0,
   typography: { ...DEFAULT_TYPOGRAPHY },
   readingLayout: normalizeReadingLayout(),
+  codexStatus: null,
+  analysisProviders: null,
+  threePassAnalysis: null,
+  threePassEventSource: null,
+  threePassPoller: null,
+  codexLoginPoller: null,
+  apiModelRequestId: 0,
+  threePassPreview: "",
 };
 
 const $ = selector => document.querySelector(selector);
@@ -175,7 +188,7 @@ function normalizeReadingLayout(value = {}) {
 
 function normalizeAssistantWidth(value) {
   const width = Number(value);
-  return Number.isFinite(width) ? Math.min(2500, Math.max(300, Math.round(width))) : 345;
+  return Number.isFinite(width) ? Math.min(420, Math.max(280, Math.round(width))) : 320;
 }
 
 function normalizePaperWidth(value, fallback = 470) {
@@ -188,12 +201,137 @@ function normalizeReaderAxisOffset(value) {
   return Number.isFinite(offset) ? Math.min(1200, Math.max(-1200, Math.round(offset))) : 0;
 }
 
-function readerPaperColumnWidth(shellWidth, assistantWidth = 345) {
+function readerPaperColumnWidth(shellWidth, assistantWidth = 320) {
   const width = Number(shellWidth);
   return Math.max(
     470,
-    (Number.isFinite(width) ? width : 0) - 245 - 44 - normalizeAssistantWidth(assistantWidth),
+    (Number.isFinite(width) ? width : 0) - 220 - 36 - normalizeAssistantWidth(assistantWidth),
   );
+}
+
+function readerLayoutForWidth(width) {
+  const available = Number(width) || 0;
+  return {
+    compactTableOfContents: available > 0 && available < 1320,
+    assistantOverlay: available > 0 && available < 1120,
+  };
+}
+
+function responsiveReaderWidth(viewportWidth, shellWidth) {
+  const viewport = Number(viewportWidth);
+  if (Number.isFinite(viewport) && viewport > 0) return viewport;
+  const shell = Number(shellWidth);
+  return Number.isFinite(shell) && shell > 0 ? shell : 0;
+}
+
+function pdfReflowNeeded(currentWidth, renderedWidth, tolerance = 24) {
+  const current = Number(currentWidth);
+  const rendered = Number(renderedWidth);
+  const threshold = Number(tolerance);
+  if (!Number.isFinite(current) || current <= 0) return false;
+  if (!Number.isFinite(rendered) || rendered <= 0) return true;
+  return Math.abs(current - rendered) >= (Number.isFinite(threshold) && threshold > 0 ? threshold : 24);
+}
+
+function pdfFitScale(availableWidth, naturalWidth, zoom = 1) {
+  const available = Number(availableWidth);
+  const natural = Number(naturalWidth);
+  const multiplier = Number(zoom);
+  if (!Number.isFinite(available) || !Number.isFinite(natural) || natural <= 0) return 1;
+  return Math.max(0.1, available / natural) * (Number.isFinite(multiplier) ? multiplier : 1);
+}
+
+function closeResponsivePanels() {
+  readerState.tableOfContentsOverlayOpen = false;
+  readerState.assistantOverlayOpen = false;
+  applyResponsiveReaderLayout();
+}
+
+function applyResponsiveReaderLayout() {
+  const shell = $("#readerShell");
+  if (!shell) return;
+  // Viewport width is stable when a panel or the document scrollbar appears.
+  // Using shell.clientWidth here can bounce across a breakpoint and repeatedly
+  // show/hide Copilot, which in turn resizes and rerenders the entire paper.
+  const width = responsiveReaderWidth(window.innerWidth, shell.clientWidth);
+  const layout = readerLayoutForWidth(width);
+  readerState.compactTableOfContents = layout.compactTableOfContents;
+  readerState.assistantOverlay = layout.assistantOverlay;
+  if (!layout.compactTableOfContents) readerState.tableOfContentsOverlayOpen = false;
+  if (!layout.assistantOverlay) readerState.assistantOverlayOpen = false;
+  shell.classList.toggle("toc-compact", layout.compactTableOfContents);
+  shell.classList.toggle("toc-overlay-open", layout.compactTableOfContents && readerState.tableOfContentsOverlayOpen);
+  shell.classList.toggle("assistant-overlay", layout.assistantOverlay);
+  shell.classList.toggle("assistant-overlay-open", layout.assistantOverlay && readerState.assistantOverlayOpen);
+  const outlineExpanded = layout.compactTableOfContents
+    ? readerState.tableOfContentsOverlayOpen
+    : readerState.showTableOfContents;
+  $("#outlinePanel")?.setAttribute("aria-hidden", String(!outlineExpanded));
+  const assistantVisible = !layout.assistantOverlay || readerState.assistantOverlayOpen;
+  $("#assistantPanel")?.setAttribute("aria-hidden", String(!assistantVisible));
+  const outlineButton = $("#outlineToggle");
+  const outlineLabel = outlineExpanded ? "关闭文档目录" : "打开文档目录";
+  outlineButton?.setAttribute("aria-expanded", String(outlineExpanded));
+  outlineButton?.setAttribute("aria-label", outlineLabel);
+  if (outlineButton) outlineButton.title = outlineLabel;
+  const assistantButton = $("#assistantToggle");
+  const assistantExpanded = layout.assistantOverlay && readerState.assistantOverlayOpen;
+  const assistantLabel = assistantExpanded ? "关闭划词解读" : "打开划词解读";
+  assistantButton?.setAttribute("aria-expanded", String(assistantExpanded));
+  assistantButton?.setAttribute("aria-label", assistantLabel);
+  if (assistantButton) assistantButton.title = assistantLabel;
+  $("#readerPanelBackdrop")?.setAttribute("aria-hidden", String(!(readerState.tableOfContentsOverlayOpen || readerState.assistantOverlayOpen)));
+  applyAssistantWidth();
+}
+
+function schedulePdfReflow() {
+  if (!readerState.pdfDocument || !$("#paperContent")?.classList.contains("pdf-content")) return;
+  const width = $("#paperContent")?.clientWidth || 0;
+  if (!pdfReflowNeeded(width, readerState.pdfRenderWidth)) return;
+  clearTimeout(schedulePdfReflow.timer);
+  schedulePdfReflow.timer = setTimeout(() => {
+    const currentWidth = $("#paperContent")?.clientWidth || 0;
+    if (!pdfReflowNeeded(currentWidth, readerState.pdfRenderWidth)) return;
+    renderPaper();
+  }, 180);
+}
+
+function initResponsiveReaderLayout() {
+  const shell = $("#readerShell");
+  if (!shell) return;
+  if (typeof ResizeObserver !== "undefined") {
+    let observedWidth = Math.round(shell.getBoundingClientRect().width);
+    const observer = new ResizeObserver(entries => {
+      const nextWidth = Math.round(entries[0]?.contentRect?.width || shell.clientWidth || 0);
+      if (!nextWidth || nextWidth === observedWidth) return;
+      observedWidth = nextWidth;
+      schedulePdfReflow();
+    });
+    observer.observe(shell);
+  }
+  window.addEventListener("resize", applyResponsiveReaderLayout);
+  $("#outlineToggle")?.addEventListener("click", () => {
+    if (readerState.compactTableOfContents) {
+      readerState.tableOfContentsOverlayOpen = !readerState.tableOfContentsOverlayOpen;
+      readerState.assistantOverlayOpen = false;
+      applyResponsiveReaderLayout();
+      return;
+    }
+    readerState.showTableOfContents = !readerState.showTableOfContents;
+    applyTableOfContentsVisibility();
+    persistSelectionSettings(readerState.showTableOfContents ? "文档目录已显示。" : "文档目录已隐藏。 ");
+  });
+  $("#closeOutline")?.addEventListener("click", () => {
+    if (readerState.compactTableOfContents) closeResponsivePanels();
+  });
+  $("#assistantToggle")?.addEventListener("click", () => {
+    readerState.assistantOverlayOpen = !readerState.assistantOverlayOpen;
+    readerState.tableOfContentsOverlayOpen = false;
+    applyResponsiveReaderLayout();
+  });
+  $("#closeAssistant")?.addEventListener("click", closeResponsivePanels);
+  $("#readerPanelBackdrop")?.addEventListener("click", closeResponsivePanels);
+  applyResponsiveReaderLayout();
 }
 
 function applyTableOfContentsVisibility() {
@@ -201,23 +339,19 @@ function applyTableOfContentsVisibility() {
   const outline = $("#outlinePanel");
   const toggle = $("#showTableOfContents");
   shell?.classList.toggle("toc-hidden", !readerState.showTableOfContents);
-  outline?.setAttribute("aria-hidden", String(!readerState.showTableOfContents));
+  const visible = readerState.compactTableOfContents
+    ? readerState.tableOfContentsOverlayOpen
+    : readerState.showTableOfContents;
+  outline?.setAttribute("aria-hidden", String(!visible));
   if (toggle) toggle.checked = readerState.showTableOfContents;
+  applyResponsiveReaderLayout();
 }
 
 function lockReaderPaperWidth() {
   const shell = $("#readerShell");
-  if (
-    !shell
-    || shell.classList.contains("hidden")
-    || shell.classList.contains("reader-width-locked")
-    || window.innerWidth <= 1120
-  ) return;
-  readerState.paperBaseWidth = readerPaperColumnWidth(shell.clientWidth, readerState.assistantWidth);
-  readerState.paperWidth = normalizePaperWidth(readerState.paperWidth, readerState.paperBaseWidth);
-  shell.style.setProperty("--reader-paper-base-width", `${readerState.paperBaseWidth}px`);
-  shell.classList.add("reader-width-locked");
-  applyPaperWidth();
+  if (!shell) return;
+  unlockReaderPaperWidth();
+  applyResponsiveReaderLayout();
 }
 
 function unlockReaderPaperWidth() {
@@ -266,14 +400,7 @@ function applyReaderAxisOffset(offset = readerState.readerAxisOffset) {
 }
 
 function assistantWidthLimit() {
-  const shell = $("#readerShell");
-  if (
-    !shell
-    || shell.classList.contains("reader-width-locked")
-    || window.innerWidth <= 1120
-    || shell.clientWidth <= 0
-  ) return 2500;
-  return Math.max(300, Math.min(2500, shell.clientWidth - 245 - 470 - 44));
+  return 420;
 }
 
 function applyAssistantWidth(width = readerState.assistantWidth) {
@@ -281,18 +408,19 @@ function applyAssistantWidth(width = readerState.assistantWidth) {
   readerState.assistantWidth = Math.min(normalizeAssistantWidth(width), widthLimit);
   $("#readerShell")?.style.setProperty("--assistant-panel-width", `${readerState.assistantWidth}px`);
   $("#assistantResizeHandle")?.setAttribute("aria-valuenow", String(readerState.assistantWidth));
-  $("#assistantResizeHandle")?.setAttribute("aria-valuemax", "2500");
+  $("#assistantResizeHandle")?.setAttribute("aria-valuemax", String(widthLimit));
   const slider = $("#assistantWidthSlider");
   if (slider) {
     slider.max = String(widthLimit);
     slider.value = String(readerState.assistantWidth);
-    slider.disabled = window.innerWidth <= 1120;
+    slider.disabled = readerState.assistantOverlay;
   }
   const output = $("#assistantWidthValue");
   if (output) output.textContent = `${readerState.assistantWidth}px`;
   document.querySelectorAll("[data-assistant-width-delta]").forEach(button => {
-    button.disabled = window.innerWidth <= 1120;
+    button.disabled = readerState.assistantOverlay;
   });
+  schedulePdfReflow();
 }
 
 function initAssistantResize() {
@@ -307,7 +435,7 @@ function initAssistantResize() {
     if (wasResizing) persistSelectionSettings(`右侧解读栏宽度已设为 ${readerState.assistantWidth}px。`);
   };
   handle.addEventListener("pointerdown", event => {
-    if (window.innerWidth <= 1120) return;
+    if (readerState.assistantOverlay) return;
     startX = event.clientX;
     startWidth = readerState.assistantWidth;
     handle.setPointerCapture(event.pointerId);
@@ -321,7 +449,7 @@ function initAssistantResize() {
   handle.addEventListener("pointerup", finish);
   handle.addEventListener("pointercancel", finish);
   handle.addEventListener("keydown", event => {
-    if (!["ArrowLeft", "ArrowRight"].includes(event.key) || window.innerWidth <= 1120) return;
+    if (!["ArrowLeft", "ArrowRight"].includes(event.key) || readerState.assistantOverlay) return;
     applyAssistantWidth(readerState.assistantWidth + (event.key === "ArrowLeft" ? 20 : -20));
     persistSelectionSettings(`右侧解读栏宽度已设为 ${readerState.assistantWidth}px。`);
     event.preventDefault();
@@ -338,10 +466,8 @@ function initAssistantResize() {
     });
   });
   window.addEventListener("resize", () => {
-    lockReaderPaperWidth();
+    applyResponsiveReaderLayout();
     applyAssistantWidth();
-    if (readerState.paperWidth !== null) applyPaperWidth();
-    applyReaderAxisOffset();
   });
 }
 
@@ -660,6 +786,8 @@ function toggleSelectionSettings(force) {
   const shouldOpen = typeof force === "boolean" ? force : panel.classList.contains("hidden");
   panel.classList.toggle("hidden", !shouldOpen);
   button.setAttribute("aria-expanded", String(shouldOpen));
+  button.setAttribute("aria-label", shouldOpen ? "关闭阅读设置" : "打开阅读设置");
+  button.title = shouldOpen ? "关闭阅读设置" : "打开阅读设置";
 }
 
 function localAsset(url) {
@@ -1171,8 +1299,14 @@ function updateSpeechControl() {
   startButton.classList.toggle("hidden", !speechAvailable);
   startButton.classList.toggle("active", readerState.speechClickEnabled);
   startButton.setAttribute("aria-pressed", String(readerState.speechClickEnabled));
-  startButton.textContent = readerState.speechClickEnabled ? "🔊 点击朗读：开" : "🔇 点击朗读：关";
-  startButton.title = `${readerState.speechClickEnabled ? "关闭" : "开启"}点击段落朗读${
+  const speechEnabled = readerState.speechClickEnabled;
+  const speechAction = `${speechEnabled ? "关闭" : "开启"}点击段落朗读`;
+  const speechIcon = startButton.querySelector("[data-speech-icon]");
+  const speechLabel = startButton.querySelector("[data-speech-label]");
+  if (speechIcon) speechIcon.textContent = speechEnabled ? "🔊" : "🔇";
+  if (speechLabel) speechLabel.textContent = speechEnabled ? "点击朗读：开" : "点击朗读：关";
+  startButton.setAttribute("aria-label", speechAction);
+  startButton.title = `${speechAction}${
     speech?.configured ? "" : "（Azure Speech 尚未配置）"
   }`;
   rateControl.classList.toggle("hidden", !speechAvailable);
@@ -1416,8 +1550,9 @@ async function pdfOutlineEntries(pdf) {
 
 async function renderPdf(url) {
   const token = ++readerState.renderToken;
-  $("#paperContent").className = "paper-content pdf-content";
-  $("#paperContent").innerHTML = `<p class="pdf-loading">正在载入 PDF 文本层…</p>`;
+  const paperContent = $("#paperContent");
+  paperContent.className = "paper-content pdf-content";
+  paperContent.innerHTML = `<p class="pdf-loading">正在载入 PDF 文本层…</p>`;
   $("#zoomControls").classList.remove("hidden");
   $("#zoomLevel").textContent = `${Math.round(readerState.pdfScale * 100 / 1.15)}%`;
   $("#outline").innerHTML = "<p class=\"muted\">正在读取页码…</p>";
@@ -1435,11 +1570,17 @@ async function renderPdf(url) {
     const navigation = outline.length ? outline : pages.map(page => ({ title: `第 ${page} 页`, page, level: 1 }));
     $("#outline").innerHTML = navigation.map(item => `<button data-page="${item.page}" class="outline-level-${item.level}">${escapeHtml(item.title)}</button>`).join("");
     $("#outline").querySelectorAll("[data-page]").forEach(button => button.addEventListener("click", () => $(`[data-pdf-page="${button.dataset.page}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" })));
-    $("#paperContent").innerHTML = "";
+    const contentStyle = getComputedStyle(paperContent);
+    const horizontalPadding = (parseFloat(contentStyle.paddingLeft) || 0) + (parseFloat(contentStyle.paddingRight) || 0);
+    const availablePageWidth = Math.max(240, paperContent.clientWidth - horizontalPadding - 4);
+    readerState.pdfRenderWidth = paperContent.clientWidth;
+    paperContent.innerHTML = "";
     for (const pageNumber of pages) {
       if (token !== readerState.renderToken) return;
       const page = await readerState.pdfDocument.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: readerState.pdfScale });
+      const naturalViewport = page.getViewport({ scale: 1 });
+      const scale = pdfFitScale(availablePageWidth, naturalViewport.width, readerState.pdfScale / 1.15);
+      const viewport = page.getViewport({ scale });
       const pageElement = document.createElement("section");
       pageElement.className = "pdf-page";
       pageElement.dataset.pdfPage = String(pageNumber);
@@ -1457,7 +1598,7 @@ async function renderPdf(url) {
       textLayer.className = "textLayer";
       textLayer.style.setProperty("--total-scale-factor", viewport.scale);
       pageElement.appendChild(textLayer);
-      $("#paperContent").appendChild(pageElement);
+      paperContent.appendChild(pageElement);
       await Promise.all([
         page.render({
           canvasContext: canvas.getContext("2d"),
@@ -2100,6 +2241,8 @@ function locateReaderNotes(notes, message = "") {
   if (!ids.size) return;
   const list = $("#notesList");
   if (!list) return;
+  const panel = $("#notesPanel");
+  if (panel) panel.open = true;
   clearTimeout(locateReaderNotes.timer);
   list.querySelectorAll(".note-item.is-located").forEach(item => {
     item.classList.remove("is-located");
@@ -2155,6 +2298,7 @@ function addReaderNote(note) {
 function answerNoteIdentity(note) {
   return JSON.stringify({
     action: note.actionId || note.action || "",
+    analysisId: note.analysisId || "",
     question: note.question || "",
     anchor: note.anchor || null,
     selection: note.selection || "",
@@ -3050,6 +3194,11 @@ function captureSelection(sourceDocument = document, frame = null) {
 
 async function ask(action, { keepMenu = false } = {}) {
   if (!readerState.selection) return;
+  if (readerState.assistantOverlay) {
+    readerState.assistantOverlayOpen = true;
+    readerState.tableOfContentsOverlayOpen = false;
+    applyResponsiveReaderLayout();
+  }
   let llm;
   try {
     llm = llmForAction(action);
@@ -3197,16 +3346,518 @@ function renderAlignmentProgress(data = {}) {
   panel.classList.toggle("failed", view.failed);
 }
 
+const THREE_PASS_PHASES = ["pass1", "pass2", "pass3", "synthesis"];
+const THREE_PASS_ACTIVE = new Set(["queued", ...THREE_PASS_PHASES, "responding"]);
+
+function selectedThreePassModel() {
+  return (readerState.codexStatus?.models || []).find(model => model.id === $("#threePassModel")?.value);
+}
+
+function selectedThreePassBackend() {
+  return $("#threePassBackend")?.value || "codex";
+}
+
+function threePassBackendUsable() {
+  if (!readerState.document) return false;
+  if (selectedThreePassBackend() === "api") {
+    return Boolean($("#threePassApiPreset")?.value && $("#threePassBillingConfirmed")?.checked);
+  }
+  return Boolean(readerState.codexStatus?.chatgptAuthenticated && readerState.codexStatus?.models?.length);
+}
+
+function updateThreePassStartAvailability() {
+  const active = Boolean(readerState.threePassAnalysis && (THREE_PASS_ACTIVE.has(readerState.threePassAnalysis.status) || readerState.threePassAnalysis.busy));
+  $("#startThreePass").disabled = active || !threePassBackendUsable();
+}
+
+function threePassEffortView(model, preferred = "high") {
+  const efforts = model?.supportedEfforts?.length
+    ? [...model.supportedEfforts]
+    : [model?.defaultEffort || preferred || "high"];
+  return {
+    efforts,
+    selected: efforts.includes(preferred) ? preferred : (model?.defaultEffort || efforts[0]),
+  };
+}
+
+function threePassEffortLabel(model, effort) {
+  return effort === "none" && ["gpt-5.6-sol", "gpt-5.6"].includes(model?.id)
+    ? "Instant（none）"
+    : effort;
+}
+
+function renderThreePassEfforts(preferred = "high") {
+  const select = $("#threePassEffort");
+  const model = selectedThreePassModel();
+  const { efforts, selected } = threePassEffortView(model, preferred);
+  select.innerHTML = efforts.map(effort => `<option value="${escapeHtml(effort)}">${escapeHtml(threePassEffortLabel(model, effort))}</option>`).join("");
+  select.value = selected;
+}
+
+function compactRateLimitText(rateLimits) {
+  if (!rateLimits || typeof rateLimits !== "object") return "";
+  const snapshots = Array.isArray(rateLimits.rateLimits)
+    ? rateLimits.rateLimits
+    : rateLimits.rateLimitsByLimitId && typeof rateLimits.rateLimitsByLimitId === "object"
+      ? Object.values(rateLimits.rateLimitsByLimitId)
+      : rateLimits.rateLimit ? [rateLimits.rateLimit] : [];
+  const first = snapshots[0];
+  if (!first || typeof first !== "object") return "";
+  const windows = [first.primary, first.secondary].filter(Boolean);
+  if (!windows.length) return "";
+  return windows.map(window => `${Math.max(0, 100 - (Number(window.usedPercent) || 0))}% 剩余`).join(" · ");
+}
+
+async function loadCodexStatus(forceRefresh = false) {
+  const statusNode = $("#codexStatus");
+  statusNode.textContent = "正在检查本机 Codex…";
+  try {
+    const response = await fetch(forceRefresh ? "/api/codex/status/refresh" : "/api/codex/status", forceRefresh ? { method: "POST" } : undefined);
+    const data = await response.json();
+    readerState.codexStatus = data;
+    const usable = response.ok && data.chatgptAuthenticated && (data.models || []).length;
+    updateThreePassStartAvailability();
+    if (!usable) {
+      statusNode.textContent = data.error || "Codex 尚未通过 ChatGPT 登录。请运行 codex login。";
+      $("#threePassModel").innerHTML = "<option value=\"\">不可用</option>";
+      renderThreePassEfforts();
+      return;
+    }
+    $("#threePassModel").innerHTML = data.models.map(model => (
+      `<option value="${escapeHtml(model.id)}">${escapeHtml(model.displayName || model.id)}</option>`
+    )).join("");
+    $("#threePassModel").value = data.defaultModel || data.models[0].id;
+    renderThreePassEfforts(data.defaultReasoningEffort || "high");
+    const quota = compactRateLimitText(data.rateLimits);
+    statusNode.textContent = `ChatGPT ${data.planType || "账户"} 已连接${quota ? ` · ${quota}` : ""}`;
+  } catch (error) {
+    readerState.codexStatus = null;
+    updateThreePassStartAvailability();
+    statusNode.textContent = `Codex 不可用：${error.message}`;
+  }
+}
+
+function renderThreePassApiPresets() {
+  const presets = readerState.analysisProviders?.api?.presets || [];
+  const select = $("#threePassApiPreset");
+  const previous = select.value;
+  select.innerHTML = presets.length
+    ? presets.map(preset => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)} · ${escapeHtml(preset.model)} · ${escapeHtml(preset.resolvedProtocol)}</option>`).join("")
+    : "<option value=\"\">尚无 API 预设</option>";
+  if (presets.some(item => item.id === previous)) select.value = previous;
+  const selected = presets.find(item => item.id === select.value);
+  $("#threePassApiStatus").textContent = selected
+    ? `${selected.resolvedProtocol === "responses" ? "Responses API" : "Chat Completions"} · 并发 ${selected.concurrency || 1}${selected.contextWindow ? ` · 上下文 ${selected.contextWindow}` : " · 未声明上下文，使用保守分块预算"}`
+    : "请先在全局设置中添加 API 预设。";
+  $("#threePassApiModel").placeholder = selected ? `留空使用 ${selected.model}` : "留空使用预设模型";
+  if (selectedThreePassBackend() === "api") loadThreePassApiModels().catch(() => {});
+  updateThreePassStartAvailability();
+}
+
+async function loadThreePassApiModels() {
+  const presetId = $("#threePassApiPreset").value;
+  const requestId = ++readerState.apiModelRequestId;
+  const list = $("#threePassApiModels");
+  const selected = (readerState.analysisProviders?.api?.presets || []).find(item => item.id === presetId);
+  list.innerHTML = selected ? `<option value="${escapeHtml(selected.model)}"></option>` : "";
+  if (!presetId) return;
+  try {
+    const response = await fetch(`/api/llm-presets/${encodeURIComponent(presetId)}/models`);
+    const data = await response.json();
+    if (requestId !== readerState.apiModelRequestId) return;
+    if (!response.ok) throw new Error(data.error || "模型列表不可用");
+    list.innerHTML = (data.models || []).map(model => `<option value="${escapeHtml(model)}"></option>`).join("");
+  } catch (error) {
+    if (requestId === readerState.apiModelRequestId && selected) {
+      $("#threePassApiStatus").textContent += ` · 动态模型列表不可用，仍可手动输入（${error.message}）`;
+    }
+  }
+}
+
+function renderThreePassBackend() {
+  const api = selectedThreePassBackend() === "api";
+  $("#threePassCodexOptions").classList.toggle("hidden", api);
+  $("#threePassApiOptions").classList.toggle("hidden", !api);
+  $("#threePassMessage").textContent = api
+    ? "API 分析将使用本地预设并产生独立费用。"
+      : "Codex 分析使用当前 ChatGPT/Codex 套餐额度。";
+  if (api) loadThreePassApiModels().catch(() => {});
+  updateThreePassStartAvailability();
+}
+
+function threePassLengthSummary(config, language = "zh-CN") {
+  if (!config?.phases) return "";
+  const names = { pass1:"P1", pass2:"P2", pass3:"P3", synthesis:"综合" };
+  const unit = language === "en-US" ? "words" : "字";
+  const summary = Object.entries(names).map(([phase, name]) => `${name} ${config.phases[phase]?.target || "—"}`).join(" · ");
+  return `全局目标：${summary} ${unit}（约 ±${config.tolerancePercent || 20}%）`;
+}
+
+function renderThreePassLengthSummary() {
+  const config = readerState.analysisProviders?.threePass;
+  const node = $("#threePassLengthSummary");
+  if (!node || !config?.phases) return;
+  const summary = threePassLengthSummary(config, $("#threePassLanguage")?.value);
+  node.innerHTML = `${escapeHtml(summary)} · <a href="/#settings/three-pass">调整篇幅 →</a>`;
+}
+
+async function loadAnalysisProviders() {
+  try {
+    const response = await fetch("/api/reader/analysis-providers");
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法读取 Three-Pass 后端。 ");
+    readerState.analysisProviders = data;
+    readerState.codexStatus = data.codex;
+    renderThreePassApiPresets();
+    renderThreePassLengthSummary();
+  } catch (error) {
+    readerState.analysisProviders = { api: { presets: readerState.config?.llmPresets || [] } };
+    renderThreePassApiPresets();
+    $("#threePassMessage").textContent = error.message;
+  }
+}
+
+async function startCodexLogin(flow = "browser") {
+  const loginWindow = flow === "browser" ? window.open("about:blank", "paper-lens-codex-login") : null;
+  if (loginWindow) loginWindow.opener = null;
+  const response = await fetch("/api/codex/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ flow }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法启动 Codex 登录。 ");
+  const details = $("#codexLoginDetails");
+  details.classList.remove("hidden");
+  if (flow === "browser") {
+    details.textContent = "已打开 ChatGPT 登录页面；完成后此处会自动刷新。";
+    if (data.authUrl && loginWindow) loginWindow.location.href = data.authUrl;
+    else if (data.authUrl) window.open(data.authUrl, "_blank", "noopener");
+  } else {
+    details.innerHTML = `打开 <a href="${escapeHtml(data.verificationUrl || "https://auth.openai.com/codex/device")}" target="_blank" rel="noopener">设备登录页面</a>，输入代码：<strong>${escapeHtml(data.userCode || "")}</strong>`;
+  }
+  clearInterval(readerState.codexLoginPoller);
+  readerState.codexLoginPoller = setInterval(async () => {
+    try {
+      const progressResponse = await fetch(`/api/codex/login/${encodeURIComponent(data.loginId)}`);
+      const progress = await progressResponse.json();
+      if (progress.status === "pending") return;
+      clearInterval(readerState.codexLoginPoller);
+      readerState.codexLoginPoller = null;
+      if (!progress.success) throw new Error(progress.error || "Codex 登录失败。 ");
+      details.textContent = "登录成功。";
+      await loadCodexStatus();
+      await loadAnalysisProviders();
+    } catch (error) {
+      clearInterval(readerState.codexLoginPoller);
+      readerState.codexLoginPoller = null;
+      details.textContent = error.message;
+    }
+  }, 1500);
+}
+
+async function logoutCodex() {
+  const response = await fetch("/api/codex/logout", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Codex 登出失败。 ");
+  await loadCodexStatus();
+  await loadAnalysisProviders();
+}
+
+function threePassProgressState(analysis, phase) {
+  if (!analysis) return "waiting";
+  const effectivePhase = analysis.terminalPhase || analysis.phase;
+  const current = THREE_PASS_PHASES.indexOf(effectivePhase);
+  const target = THREE_PASS_PHASES.indexOf(phase);
+  if (analysis.status === "ready" || current > target || analysis.results?.[phase]) return "done";
+  if (["failed", "cancelled"].includes(analysis.status) && current === target) return analysis.status;
+  if (analysis.phase === phase) return "running";
+  return "waiting";
+}
+
+function threePassAnswerMarkdown(analysis) {
+  if (!analysis) return "";
+  const labels = {
+    pass1: "Pass 1 · 快速定位",
+    pass2: "Pass 2 · 结构与证据",
+    pass3: "Pass 3 · 深读与批判",
+  };
+  const sections = ["pass1", "pass2", "pass3"].flatMap(phase => {
+    const completed = String(analysis.results?.[phase] || "").trim();
+    const streaming = analysis.phase === phase ? String(analysis.preview || "").trim() : "";
+    const content = completed || streaming;
+    return content ? [`## ${labels[phase]}\n\n${content}`] : [];
+  });
+  if (!sections.length) return "";
+  return `# Three-Pass 结构化解读\n\n${sections.join("\n\n")}`;
+}
+
+function publishThreePassAnswer(analysis) {
+  const markdown = threePassAnswerMarkdown(analysis);
+  if (!markdown) return;
+  renderAnswer(markdown);
+  const complete = analysis?.status === "ready"
+    && ["pass1", "pass2", "pass3"].every(phase => String(analysis.results?.[phase] || "").trim());
+  if (!complete) return;
+  const existing = readerState.notes.find(note => note.kind === "answer" && note.analysisId === analysis.id);
+  if (existing?.text === markdown) return;
+  const cached = cacheAnswerNote({
+    analysisId: analysis.id,
+    actionId: "three_pass_document",
+    action: "整篇 Three-Pass",
+    selection: readerState.document?.title || "当前论文",
+    section: "全文分析",
+    view: "original",
+    question: "",
+    anchor: null,
+    text: markdown,
+  });
+  readerState.lastAnswer = cached?.note || null;
+  const saveButton = $("#saveAnswerNote");
+  if (saveButton) {
+    saveButton.disabled = true;
+    saveButton.textContent = cached?.persisted ? "Three-Pass 已保存到结构化阅读笔记" : "Three-Pass 已生成，但本地保存失败";
+  }
+}
+
+function renderThreePassMessages(messages = []) {
+  const target = $("#threePassMessages");
+  target.innerHTML = messages.map(item => `
+    <article class="three-pass-message-pair">
+      <strong>${escapeHtml(item.question || "追问")}</strong>
+      <div>${answerMarkdownHtml(item.answer || "")}</div>
+    </article>
+  `).join("");
+}
+
+function renderThreePassAnalysis(analysis) {
+  readerState.threePassAnalysis = analysis || null;
+  $("#threePassProgress").querySelectorAll("[data-analysis-phase]").forEach(item => {
+    const state = threePassProgressState(analysis, item.dataset.analysisPhase);
+    item.dataset.state = state;
+  });
+  const active = Boolean(analysis && (THREE_PASS_ACTIVE.has(analysis.status) || analysis.busy));
+  $("#cancelThreePass").disabled = !active;
+  $("#startThreePass").disabled = active || !threePassBackendUsable();
+  $("#threePassModel").disabled = active;
+  $("#threePassEffort").disabled = active;
+  $("#threePassLanguage").disabled = active;
+  $("#threePassBackend").disabled = active;
+  $("#threePassApiPreset").disabled = active;
+  const message = $("#threePassMessage");
+  if (!analysis) {
+    message.textContent = selectedThreePassBackend() === "api"
+      ? "选择 API 预设与关注点后开始；四阶段上下文保存在本机。"
+      : "选择模型与关注点后开始；四个阶段在同一个 Codex thread 中运行。";
+  } else if (analysis.error) {
+    message.textContent = analysis.error;
+  } else {
+    const provider = analysis.backend === "api" ? `API · ${analysis.providerName || analysis.providerId || analysis.protocol}` : "Codex";
+    const queue = analysis.status === "queued" && analysis.options?.queuePosition ? ` · 队列 ${analysis.options.queuePosition}` : "";
+    const warning = analysis.warnings?.length ? ` · ${analysis.warnings.at(-1)}` : "";
+    message.textContent = `${provider} · ${analysis.phaseLabel || analysis.status}${queue}${warning}`;
+  }
+  const report = analysis?.results?.synthesis;
+  const preview = report || analysis?.preview || readerState.threePassPreview;
+  const previewNode = $("#threePassPreview");
+  previewNode.classList.toggle("hidden", !preview);
+  if (preview) {
+    previewNode.innerHTML = report ? answerMarkdownHtml(report) : `<pre>${escapeHtml(preview)}</pre>`;
+  }
+  const reportActions = $("#threePassReportActions");
+  reportActions.classList.toggle("hidden", !analysis?.reportReady);
+  if (analysis?.reportUrl) $("#downloadThreePassReport").href = analysis.reportUrl;
+  $("#threePassFollowup").classList.toggle("hidden", analysis?.status !== "ready" || analysis?.busy);
+  renderThreePassMessages(analysis?.messages || []);
+  publishThreePassAnswer(analysis);
+}
+
+async function refreshThreePassAnalysis(analysisId = readerState.threePassAnalysis?.id) {
+  if (!analysisId) return;
+  const response = await fetch(`/api/reader/analyses/${encodeURIComponent(analysisId)}`);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Three-Pass 分析。 ");
+  readerState.threePassPreview = data.preview || "";
+  renderThreePassAnalysis(data);
+}
+
+function connectThreePassEvents(analysisId) {
+  readerState.threePassEventSource?.close();
+  clearInterval(readerState.threePassPoller);
+  readerState.threePassPoller = null;
+  readerState.threePassPreview = "";
+  const source = new EventSource(`/api/reader/analyses/${encodeURIComponent(analysisId)}/events`);
+  readerState.threePassEventSource = source;
+  const refresh = event => {
+    const data = JSON.parse(event.data);
+    readerState.threePassPreview = data.preview || readerState.threePassPreview;
+    renderThreePassAnalysis(data);
+    if (["ready", "failed", "cancelled"].includes(data.status) && !data.busy) {
+      source.close();
+      if (readerState.threePassEventSource === source) readerState.threePassEventSource = null;
+    }
+  };
+  source.addEventListener("snapshot", refresh);
+  source.addEventListener("phase", refresh);
+  source.addEventListener("completed", refresh);
+  source.addEventListener("cancelled", refresh);
+  source.addEventListener("followup_cancelled", refresh);
+  source.addEventListener("error", event => {
+    if (event.data) {
+      refresh(event);
+      return;
+    }
+    $("#threePassMessage").textContent = "实时连接中断，正在使用定时状态查询…";
+    source.close();
+    if (readerState.threePassEventSource === source) readerState.threePassEventSource = null;
+    if (!readerState.threePassPoller) {
+      readerState.threePassPoller = setInterval(() => {
+        refreshThreePassAnalysis(analysisId).then(() => {
+          const current = readerState.threePassAnalysis;
+          if (current && ["ready", "failed", "cancelled"].includes(current.status) && !current.busy) {
+            clearInterval(readerState.threePassPoller);
+            readerState.threePassPoller = null;
+          }
+        }).catch(error => { $("#threePassMessage").textContent = `状态查询失败：${error.message}`; });
+      }, 2500);
+    }
+  });
+  source.addEventListener("delta", event => {
+    const data = JSON.parse(event.data);
+    readerState.threePassPreview += data.delta || "";
+    const current = readerState.threePassAnalysis || { id: analysisId, status: data.phase, phase: data.phase };
+    renderThreePassAnalysis({ ...current, preview: readerState.threePassPreview });
+  });
+  source.addEventListener("phase_completed", () => refreshThreePassAnalysis(analysisId).catch(() => {}));
+  source.addEventListener("message", () => refreshThreePassAnalysis(analysisId).catch(() => {}));
+}
+
+async function loadThreePassAnalyses() {
+  if (!readerState.document) return;
+  try {
+    const response = await fetch(`/api/reader/documents/${encodeURIComponent(readerState.document.id)}/analyses`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法读取分析历史。 ");
+    const analyses = data.analyses || [];
+    const history = $("#threePassHistory");
+    history.innerHTML = analyses.length
+      ? analyses.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(new Date(item.createdAt * 1000).toLocaleString("zh-CN"))} · ${escapeHtml(item.backend === "api" ? `API/${item.providerName || item.providerId}` : "Codex")} · ${escapeHtml(item.model)} · ${escapeHtml(item.phaseLabel)}</option>`).join("")
+      : "<option value=\"\">尚无历史分析</option>";
+    if (analyses.length) {
+      renderThreePassAnalysis(analyses[0]);
+      connectThreePassEvents(analyses[0].id);
+    } else {
+      renderThreePassAnalysis(null);
+    }
+  } catch (error) {
+    $("#threePassMessage").textContent = error.message;
+  }
+}
+
+async function createThreePassRequest(confirmedChunkedCalls = false) {
+  const backend = selectedThreePassBackend();
+  const temperatureValue = $("#threePassTemperature").value.trim();
+  const common = {
+    backend,
+    language: $("#threePassLanguage").value,
+    focuses: [...$("#threePassFocus").querySelectorAll("input:checked")].map(input => input.value),
+    customFocus: $("#threePassCustomFocus").value.trim(),
+  };
+  if (backend === "api") {
+    return {
+      ...common,
+      codex: null,
+      api: {
+        presetId: $("#threePassApiPreset").value,
+        model: $("#threePassApiModel").value.trim() || null,
+        reasoningEffort: $("#threePassApiEffort").value,
+        maxOutputTokens: Number($("#threePassMaxOutput").value || 12000),
+        temperature: temperatureValue === "" ? null : Number(temperatureValue),
+        confirmedApiBilling: $("#threePassBillingConfirmed").checked,
+        confirmedChunkedCalls,
+      },
+    };
+  }
+  return {
+    ...common,
+    codex: { model: $("#threePassModel").value, reasoningEffort: $("#threePassEffort").value },
+    api: null,
+  };
+}
+
+async function startThreePassAnalysis(confirmedChunkedCalls = false) {
+  if (!readerState.document) return;
+  const focuses = [...$("#threePassFocus").querySelectorAll("input:checked")].map(input => input.value);
+  if (!focuses.length) {
+    $("#threePassMessage").textContent = "请至少选择一个第三遍关注重点。";
+    return;
+  }
+  $("#startThreePass").disabled = true;
+  $("#threePassMessage").textContent = "正在创建 Three-Pass 分析…";
+  try {
+    const response = await fetch(`/api/reader/documents/${encodeURIComponent(readerState.document.id)}/analyses`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(await createThreePassRequest(confirmedChunkedCalls)),
+    });
+    const data = await response.json();
+    if (response.status === 409 && data.requiresChunkConfirmation) {
+      const plan = data.chunkPlan || {};
+      const accepted = window.confirm(`这篇论文预计分为 ${plan.chunkCount || "多"} 块，约调用 API ${plan.estimatedCalls || "多"} 次。继续将产生额外 API 费用，是否确认？`);
+      if (accepted) return startThreePassAnalysis(true);
+      throw new Error("已取消分块 API 分析。 ");
+    }
+    if (!response.ok) throw new Error(data.error || "无法创建 Three-Pass 分析。 ");
+    $("#threePassPanel").open = true;
+    renderThreePassAnalysis(data);
+    await loadThreePassAnalyses();
+    $("#threePassHistory").value = data.id;
+  } catch (error) {
+    $("#threePassMessage").textContent = error.message;
+  } finally {
+    updateThreePassStartAvailability();
+  }
+}
+
+async function cancelThreePassAnalysis() {
+  const analysis = readerState.threePassAnalysis;
+  if (!analysis) return;
+  $("#cancelThreePass").disabled = true;
+  const response = await fetch(`/api/reader/analyses/${encodeURIComponent(analysis.id)}/cancel`, { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法取消分析。 ");
+  renderThreePassAnalysis(data);
+}
+
+async function submitThreePassFollowup(event) {
+  event.preventDefault();
+  const analysis = readerState.threePassAnalysis;
+  const question = $("#threePassQuestion").value.trim();
+  if (!analysis || !question) return;
+  const response = await fetch(`/api/reader/analyses/${encodeURIComponent(analysis.id)}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法发送追问。 ");
+  $("#threePassQuestion").value = "";
+  renderThreePassAnalysis(data);
+  connectThreePassEvents(data.id);
+}
+
 async function showReadyDocument(data, restoredFromCache = false) {
   readerState.document = data;
   renderAlignmentProgress(data);
   await loadDocumentNotes();
   $("#uploadCard").classList.add("hidden");
   $("#readerShell").classList.remove("hidden");
+  document.body.classList.add("reader-active");
   applyTableOfContentsVisibility();
   lockReaderPaperWidth();
   applyAssistantWidth();
   await loadContent();
+  await loadThreePassAnalyses();
   if (restoredFromCache) $("#readingStatus").textContent = "本地内容 · 最新功能";
 }
 
@@ -3595,6 +4246,12 @@ function setReaderTranslation(file) {
 function resetReader() {
   stopPolling();
   stopParagraphSpeech();
+  readerState.threePassEventSource?.close();
+  readerState.threePassEventSource = null;
+  clearInterval(readerState.threePassPoller);
+  readerState.threePassPoller = null;
+  readerState.threePassAnalysis = null;
+  readerState.threePassPreview = "";
   readerState.document = null;
   updateSpeechControl();
   ++readerState.renderToken;
@@ -3607,8 +4264,12 @@ function resetReader() {
   readerState.notes = [];
   readerState.textFormats = [];
   readerState.lastAnswer = null;
+  readerState.pdfRenderWidth = 0;
+  readerState.tableOfContentsOverlayOpen = false;
+  readerState.assistantOverlayOpen = false;
   unlockReaderPaperWidth();
   $("#readerShell").classList.add("hidden");
+  document.body.classList.remove("reader-active");
   $("#uploadCard").classList.remove("hidden");
   $("#uploadForm").reset();
   readerState.sourceFile = null;
@@ -3632,12 +4293,15 @@ async function initReader() {
   applyAssistantWidth();
   initAssistantResize();
   initPaperResize();
+  initResponsiveReaderLayout();
   const response = await fetch("/api/reader/config");
   readerState.config = await response.json();
   if (!response.ok) throw new Error(readerState.config.error || "无法读取阅读器配置。");
   refreshLlmConfigs();
   renderSelectionSettings();
   renderActions();
+  await loadCodexStatus();
+  await loadAnalysisProviders();
   await loadLocalLibrary();
   $("#sourceFile").addEventListener("change", event => setReaderSource(event.target.files[0]));
   $("#translationFile")?.addEventListener("change", event => setReaderTranslation(event.target.files[0]));
@@ -3662,6 +4326,34 @@ async function initReader() {
   $("#alignTranslation")?.addEventListener("change", updateProcessingControls);
   $("#refreshLocalLibrary").addEventListener("click", loadLocalLibrary);
   $("#uploadForm").addEventListener("submit", submitUpload);
+  $("#threePassModel").addEventListener("change", () => renderThreePassEfforts("high"));
+  $("#threePassBackend").addEventListener("change", renderThreePassBackend);
+  $("#threePassLanguage").addEventListener("change", renderThreePassLengthSummary);
+  $("#threePassApiPreset").addEventListener("change", renderThreePassApiPresets);
+  $("#threePassBillingConfirmed").addEventListener("change", updateThreePassStartAvailability);
+  $("#codexLogin").addEventListener("click", () => startCodexLogin("browser").catch(error => { $("#codexLoginDetails").classList.remove("hidden"); $("#codexLoginDetails").textContent = error.message; }));
+  $("#codexDeviceLogin").addEventListener("click", () => startCodexLogin("device_code").catch(error => { $("#codexLoginDetails").classList.remove("hidden"); $("#codexLoginDetails").textContent = error.message; }));
+  $("#refreshCodexStatus").addEventListener("click", () => loadCodexStatus(true).then(loadAnalysisProviders).catch(error => { $("#codexStatus").textContent = error.message; }));
+  $("#codexLogout").addEventListener("click", () => logoutCodex().catch(error => { $("#codexStatus").textContent = error.message; }));
+  $("#startThreePass").addEventListener("click", () => {
+    startThreePassAnalysis().catch(error => {
+      $("#threePassMessage").textContent = error.message || "Three-Pass 启动失败。";
+      updateThreePassStartAvailability();
+    });
+  });
+  $("#cancelThreePass").addEventListener("click", () => {
+    cancelThreePassAnalysis().catch(error => { $("#threePassMessage").textContent = error.message; });
+  });
+  $("#threePassHistory").addEventListener("change", event => {
+    const analysisId = event.target.value;
+    if (!analysisId) return renderThreePassAnalysis(null);
+    refreshThreePassAnalysis(analysisId)
+      .then(() => connectThreePassEvents(analysisId))
+      .catch(error => { $("#threePassMessage").textContent = error.message; });
+  });
+  $("#threePassFollowup").addEventListener("submit", event => {
+    submitThreePassFollowup(event).catch(error => { $("#threePassMessage").textContent = error.message; });
+  });
   $("#saveSelectionNote").addEventListener("click", saveCurrentSelectionNote);
   $("#copyNotes").addEventListener("click", copyNotesMarkdown);
   $("#exportNotes").addEventListener("click", exportNotesMarkdown);
@@ -3754,6 +4446,7 @@ async function initReader() {
     if (event.key === "Escape") {
       hideSelectionMenu();
       toggleSelectionSettings(false);
+      closeResponsivePanels();
     }
   });
   window.addEventListener("pagehide", () => {
@@ -3781,6 +4474,7 @@ async function initReader() {
     renderPaper();
   });
   $("#newPaper").addEventListener("click", resetReader);
+  renderThreePassBackend();
   updateProcessingControls();
   await openReaderDocumentFromQuery();
 }
@@ -3810,8 +4504,17 @@ if (typeof module !== "undefined" && module.exports) {
     normalizeSpeechPlaybackRate,
     notesToMarkdown,
     pdfParagraphGroups,
+    pdfFitScale,
+    pdfReflowNeeded,
     readerSpeechAvailable,
+    readerLayoutForWidth,
     readerPaperColumnWidth,
+    responsiveReaderWidth,
+    threePassEffortView,
+    threePassAnswerMarkdown,
+    threePassLengthSummary,
+    threePassProgressState,
+    compactRateLimitText,
     textFormatHasStyle,
   };
 }
