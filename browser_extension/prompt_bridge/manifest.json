@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Research Toolkit · Prompt Bridge",
+  "version": "1.0.2",
+  "description": "将本机 Prompt 工作台的文字与附件交接到 ChatGPT，保留发送前的检查步骤。",
+  "minimum_chrome_version": "112",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/prompts*", "http://localhost/prompts*"], "js": ["workbench.js"], "run_at": "document_start" },
+    { "matches": ["https://chatgpt.com/*"], "js": ["chatgpt.js"], "run_at": "document_idle" }
+  ]
+}

@@ -44,6 +44,7 @@ from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
 from research_gaps import ResearchGapService, create_research_gap_blueprint
+from prompt_workbench import PromptWorkbench, create_prompt_blueprint
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
@@ -135,6 +136,8 @@ app = Flask(__name__)
 # The desktop panel is a long-running local process. Reload templates on each
 # request so an updated reader.html cannot be paired with a newer static script.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
+prompt_workbench = PromptWorkbench(RUNTIME_DIR / "prompt-workbench", PROJECT_ROOT / "browser_extension" / "prompt_bridge")
+app.register_blueprint(create_prompt_blueprint(prompt_workbench))
 reader_cache_lock = threading.Lock()
 llm_config_lock = threading.Lock()
 three_pass_manager = ThreePassAnalysisManager(PROJECT_ROOT, THREE_PASS_SKILL_PATH)

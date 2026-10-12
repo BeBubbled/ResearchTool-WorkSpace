@@ -1,0 +1,2 @@
+Prompt 工作台测试附件。
+This disposable fixture verifies local file selection and byte-preserving handoff.

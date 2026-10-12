@@ -61,6 +61,21 @@ tools in `Potential_Scripts`. Select a tool, drag in files or folders, optionall
 reorder and rename their task-only working names, then submit a local background
 job. Results are downloaded from the panel; original files are never renamed.
 
+### Prompt 工作台
+
+从首页侧栏打开“Prompt 工作台”（`/prompts`），创建、编辑、分类和搜索常用 Prompt 模板。点击模板会将完整文字按点击顺序追加到可编辑文本框，同一模板在本次草稿中不会重复添加。手动删除某段模板文字后，对应按钮会恢复可点击，再次添加会追加到末尾；仅修改其中部分文字时仍保留已添加状态。清空文字后可以重新选择；已有草稿不会随模板编辑而被覆盖。模板库保存在 `.runtime/prompt-workbench/templates.json`，文字与已选顺序自动保存在当前浏览器。
+
+模板按分类分组展示。“三问学习法”单独包含“核心思维模型”“专家根本分歧”“理解诊断问题”三个中文提示词，正文来自引用的“调研人物与提示词”对话。可通过分类筛选只显示这一组，再按需要依次添加并补充具体领域或学科。
+
+支持选择或拖拽多个附件、按文件名/大小/修改时间去重以及单独移除；本工具每次最多 20 个、合计 100 MB，ChatGPT 的实际限制仍以网页和账户为准。刷新页面后需重新选择附件。
+
+“提交到 ChatGPT”使用配套 Chrome / Edge 扩展 `browser_extension/prompt_bridge/`：首次在工作台下载 ZIP 并解压，在 `chrome://extensions` 或 `edge://extensions` 开启开发者模式，加载包含 `manifest.json` 的文件夹，再刷新工作台。工作台与 ChatGPT 必须在同一浏览器中打开；支持 `localhost` 和 `127.0.0.1` 的任意端口。
+
+提交后扩展新开 ChatGPT 标签页，使用已有登录状态填入文字、添加附件，并把进度或失败原因显示在两侧。请检查文字、附件卡片及上传处理结果后在 ChatGPT 中点击发送。扩展不需要 API Key；提交凭证不出现在网址中。临时附件在交接结束时清理，未结束的传输在一小时后的下一次工作台访问时清理。ChatGPT 页面结构变化可能需要更新扩展；识别失败时可复制文字并手动补传附件。
+
+验证：`python -m unittest discover -s tests -p test_prompt_workbench.py`、`node tests/test_prompts.js` 和 `node tests/test_prompt_bridge.js`。
+浏览器交接夹具：运行 `python tests/prompt_browser_harness.py` 后访问 `http://127.0.0.1:8792/fixture?case=textarea`；`case` 还支持 `contenteditable`、`paste`、`existing`、`filename`。该夹具在真实浏览器中验证生产内容脚本的文字、附件字节和已有草稿保护，完全使用本地模拟页面，不向 ChatGPT 发送数据。
+
 ### 文档翻译与 PDF OCR
 
 - 自动生成的 Markdown/MMD 整篇译文会在交付前进行本地数学结构后处理：仅修复高置信度的粘连或缺失行间 `$$` 分隔符，并跳过围栏代码块和普通行内公式。HTML/HTM 译文保持原样。

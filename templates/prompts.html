@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#182a5b">
+  <title>Prompt 工作台 · 科研工具箱</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20261005">
+  <link rel="stylesheet" href="/static/prompts.css?v=20261005-bridge-101">
+</head>
+<body class="prompt-page">
+  <header class="prompt-topbar">
+    <a class="prompt-brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>科研工具箱<small>RESEARCH TOOLKIT</small></span></a>
+    <a href="/">← 返回工具箱</a>
+  </header>
+  <main class="prompt-main">
+    <header class="prompt-heading">
+      <div><p class="eyebrow">PROMPT WORKSPACE</p><h1>把想法，组合成好问题。</h1><p>选取模板，补充上下文，带上附件。一次准备，送到 ChatGPT。</p></div>
+      <span class="badge">模板保存在本机</span>
+    </header>
+    <div class="prompt-grid">
+      <section class="prompt-library panel" aria-labelledby="libraryTitle">
+        <div class="section-heading"><div><p class="eyebrow">01 / 选择模板</p><h2 id="libraryTitle">你的 Prompt 积木</h2></div><button id="newTemplate" type="button">＋ 新建</button></div>
+        <p class="hint">单击即可追加；已添加的模板不重复，删掉对应文字后可再次添加。</p>
+        <div class="template-filters field"><label class="sr-only" for="templateSearch">搜索模板</label><input id="templateSearch" type="search" placeholder="搜索名称或模板内容"><label class="sr-only" for="categoryFilter">模板分类</label><select id="categoryFilter"><option value="">全部分类</option></select></div>
+        <div id="templateList" class="template-list" aria-live="polite"><p class="hint">正在读取模板…</p></div>
+      </section>
+      <section class="prompt-composer panel" aria-labelledby="composerTitle">
+        <div class="section-heading"><div><p class="eyebrow">02 / 组织问题</p><h2 id="composerTitle">本次 Prompt</h2></div><button id="clearDraft" type="button">清空文字</button></div>
+        <div id="selectedTemplates" class="selected-templates" aria-label="模板添加顺序"><span class="hint">从左侧选择模板，或直接开始输入。</span></div>
+        <label class="sr-only" for="promptText">可编辑的 Prompt 正文</label>
+        <textarea id="promptText" maxlength="100000" placeholder="点击左侧模板，文字会按顺序追加在这里。&#10;&#10;也可以直接写下你的任务、背景和输出要求…"></textarea>
+        <div class="draft-meta"><span id="draftSaveStatus">文字草稿自动保存在当前浏览器</span><span id="charCount">0 / 100,000</span></div>
+        <div class="attachment-heading"><h3>附件 <span id="fileCount">0</span></h3><span class="hint">最多 20 个 · 合计 100 MB</span></div>
+        <div id="attachmentDrop" class="attachment-drop" role="button" tabindex="0" aria-label="点击或拖入附件">
+          <span class="attachment-icon" aria-hidden="true">＋</span><strong>拖入附件，或点击选择</strong><small>论文、图片、文档、代码等；最终支持范围以 ChatGPT 为准</small>
+        </div>
+        <input id="attachmentInput" type="file" multiple hidden>
+        <ul id="attachmentList" class="attachment-list" aria-label="本次附件"></ul>
+        <div class="prompt-submit-row"><button id="copyPrompt" type="button">复制文字</button><button id="submitPrompt" class="primary" type="button" disabled>提交到 ChatGPT ↗</button></div>
+        <p class="handoff-note">提交会打开 ChatGPT，填入文字并添加附件。请在 ChatGPT 中检查后发送。</p>
+        <div id="transferStatus" class="transfer-status" role="status" aria-live="polite" hidden></div>
+      </section>
+    </div>
+    <section class="bridge-panel" aria-labelledby="bridgeTitle">
+      <div class="section-heading"><div><p class="eyebrow">03 / 连接 CHATGPT</p><h2 id="bridgeTitle">浏览器连接</h2></div><span id="bridgeStatus" class="badge warn">检测扩展中…</span></div>
+      <p class="hint">首次使用时，在打开本工作台的 Chrome 或 Edge 中加载一次配套扩展。扩展沿用该浏览器的 ChatGPT 登录状态。</p>
+      <p id="bridgeDiagnostic" class="hint" role="status" aria-live="polite" hidden></p>
+      <details id="bridgeSetup"><summary>安装 / 更新 / 排查连接</summary><ol><li><a href="/api/prompts/extension.zip">下载配套扩展 ZIP</a>，解压到固定文件夹。</li><li>在地址栏输入 <code>chrome://extensions</code> 或 <code>edge://extensions</code>，开启“开发者模式”。</li><li>首次安装时，点击“加载已解压的扩展程序”，选择包含 <code>manifest.json</code> 的文件夹。更新时将文件覆盖到原目录，再点击扩展卡片上的“重新加载”。</li><li>刷新此页，并在同一浏览器中登录 <a href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">ChatGPT</a>。安装或重新加载扩展前已打开的工作台，也需要刷新一次。</li></ol><p class="hint">工作台地址需为 <code>http://127.0.0.1:端口/prompts</code> 或 <code>http://localhost:端口/prompts</code>。在扩展“详细信息”中确认允许访问此站点；Codex 内置浏览器无法使用装在 Chrome 或 Edge 中的扩展。</p><p class="hint">仅在点击提交时传递本次文字和附件。附件选择不会跨刷新保存；临时传输文件会在成功交接后清理，未完成的文件一小时后在下次访问时清理。</p></details>
+      <button id="checkBridge" type="button">重新检测连接</button>
+    </section>
+    <p id="pageMessage" class="page-message" role="status" aria-live="polite" hidden></p>
+  </main>
+  <dialog id="templateDialog">
+    <form id="templateForm">
+      <div class="section-heading"><h2 id="templateDialogTitle">新建模板</h2><button id="closeTemplate" type="button" aria-label="关闭模板编辑">×</button></div>
+      <div class="field"><label for="templateTitle">模板名称</label><input id="templateTitle" maxlength="80" required placeholder="例如：审查实验设计"></div>
+      <div class="field"><label for="templateCategory">分类</label><input id="templateCategory" maxlength="40" required value="通用" list="templateCategories"><datalist id="templateCategories"></datalist></div>
+      <div class="field"><label for="templateContent">模板内容</label><textarea id="templateContent" maxlength="100000" required placeholder="写下可以反复使用的提示词…"></textarea></div>
+      <p id="templateError" class="dialog-error" role="alert"></p>
+      <div class="template-actions"><button id="deleteTemplate" class="danger" type="button" hidden>删除模板</button><button id="saveTemplate" class="primary" type="submit">保存模板</button></div>
+    </form>
+  </dialog>
+  <script src="/static/prompts.js?v=20261005-bridge-101" defer></script>
+</body>
+</html>

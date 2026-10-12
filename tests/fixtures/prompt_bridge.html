@@ -1,0 +1,69 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Prompt Bridge browser fixture</title>
+<style>body{font:16px system-ui;padding:30px}form{border:1px solid #ccc;padding:20px;width:600px}textarea,[contenteditable]{display:block;min-height:160px;width:560px;border:1px solid #ccc;white-space:pre-wrap}#result{margin:20px 0;white-space:pre-wrap}</style>
+<h1>Prompt Bridge browser fixture</h1><p>本页只验证本地 DOM 交接，不向 ChatGPT 上传文件。</p>
+<form><div id="files"></div><div id="composer"></div><input id="upload" type="file" multiple hidden><button type="submit">Send</button></form>
+<pre id="result">Running…</pre>
+<script>
+  const testCase = new URLSearchParams(location.search).get("case") || "textarea";
+  const isEditable = ["contenteditable","paste","current-composer","composer-fallback","hidden-editor"].includes(testCase);
+  const composer = document.createElement(isEditable ? "div" : "textarea");
+  composer.id = isEditable ? "prompt-textarea" : "mobile-composer-prompt";
+  if (isEditable) composer.contentEditable = "true";
+  if (["current-composer","composer-fallback","hidden-editor"].includes(testCase)) {
+    composer.removeAttribute("id"); composer.setAttribute("role","textbox");
+    composer.setAttribute("aria-label","询问 ChatGPT"); composer.className = "ProseMirror";
+    if (testCase !== "composer-fallback") composer.setAttribute("data-composer-markdown","");
+    document.querySelector("form").setAttribute("data-chatgpt-composer", "");
+    // A visible extension textbox precedes ChatGPT's composer and must be ignored.
+    const decoy = document.createElement("div"); decoy.contentEditable = "true";
+    decoy.setAttribute("role","textbox"); decoy.textContent = "扩展搜索框";
+    decoy.id = "unrelated-editor"; document.querySelector("form").before(decoy);
+    if (testCase === "hidden-editor") {
+      const hidden = document.createElement("div"); hidden.setAttribute("aria-hidden","true");
+      hidden.innerHTML = '<div contenteditable="true" data-composer-markdown role="textbox">隐藏编辑器</div>';
+      document.querySelector("form").prepend(hidden);
+    }
+  }
+  if (testCase === "existing") composer.value = "已有草稿";
+  document.getElementById("composer").append(composer);
+  const prompt = testCase === "filename" ? "实验.txt" : "请解释公式 α = β²。\n\n保持第二段。";
+  const bytes = new TextEncoder().encode("fixture attachment\n中文\u0000binary");
+  const received = [], statuses = [];
+  let sends = 0;
+  document.querySelector("form").addEventListener("submit",event=>{event.preventDefault();sends++;});
+  async function receive(files) {
+    for (const file of files) {
+      received.push({name:file.name,bytes:[...new Uint8Array(await file.arrayBuffer())]});
+      const card = document.createElement("span"); card.textContent = file.name;
+      document.getElementById("files").append(card);
+    }
+  }
+  document.getElementById("upload").addEventListener("change",event=>receive(event.target.files));
+  if (testCase === "paste") {
+    document.getElementById("upload").remove();
+    composer.addEventListener("paste",event=>{event.preventDefault();receive(event.clipboardData.files);});
+  }
+  function verify(status) {
+    const text = isEditable ? composer.innerText : composer.value;
+    const pass = testCase === "existing" ? status === "error" && text === "已有草稿" && !received.length :
+      status === "completed" && text.trim() === prompt && received.length === 1 && received[0].name === "实验.txt" && JSON.stringify(received[0].bytes) === JSON.stringify([...bytes]);
+    const unrelatedPreserved = !document.getElementById("unrelated-editor") || document.getElementById("unrelated-editor").textContent === "扩展搜索框";
+    const passed = pass && sends === 0 && unrelatedPreserved;
+    document.getElementById("result").textContent = JSON.stringify({result:passed ? "PASS":"FAIL",case:testCase,text,received:received.map(file=>({name:file.name,size:file.bytes.length})),sends,statuses,unrelatedPreserved},null,2);
+    document.title = `${passed ? "PASS":"FAIL"}: ${testCase}`;
+  }
+  window.chrome = window.chrome || {};
+  window.chrome.runtime = {async sendMessage(message) {
+    if(message.type === "GET_TASK") return {ok:true,task:{prompt,files:[{index:0,name:"实验.txt",size:bytes.length,type:"text/plain"}]}};
+    if(message.type === "FILE_CHUNK") {
+      // Exercise multiple chunks, including a split in the middle of UTF-8 bytes.
+      const end = Math.min(message.offset+7,bytes.length);
+      return {ok:true,data:btoa(String.fromCharCode(...bytes.slice(message.offset,end))),nextOffset:end,done:end===bytes.length};
+    }
+    if(message.type === "STATUS") {
+      statuses.push(message.status);
+      if(["completed","error"].includes(message.status)) verify(message.status);
+    }
+    return {ok:true};
+  }};
+</script><script src="/fixture/chatgpt.js"></script></html>
