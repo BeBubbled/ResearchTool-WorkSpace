@@ -2,6 +2,36 @@
 
 This repository is a local research toolbox for literature processing, paper reading, document translation, reference management, experiment media processing, and presentation-ready outputs. Its tools run from one local web panel and keep task files on the current machine.
 
+## ResearchStudio
+
+侧栏的 **ResearchStudio**（`/researchstudio`）接入 [Microsoft ResearchStudio](https://github.com/microsoft/ResearchStudio) 两组工作流：
+
+- **Idea**：IdeaSpark 研究选题、跨来源文献搜索、Scoop Check 新颖性检查。填写研究问题，可附加 Research Gap Map 项目的当前快照或种子论文 PDF；未审核证据仍标记为暂定。
+- **Reel**：共享论文素材、海报、双语 Word 博客、PowerPoint + 讲解视频，以及完整 Reel 展示包。可上传 PDF 或复用论文库中保留的原始 PDF；只有 OCR/Markdown 的缓存不能代替原始 PDF。
+
+首次准备运行环境（在 ResearchTool 根目录，Python 3.11+、Git）：
+
+```powershell
+python scripts/setup_researchstudio.py --install-deps --video
+```
+
+脚本将三个上游仓库固定到指定 commit，保留原始许可证，安装在 `.runtime/researchstudio/`，Python 包使用该目录内的独立 `.venv`；Chromium 使用 Playwright 的浏览器缓存。省略 `--video` 可跳过额外视频技能，省略 `--install-deps` 则只下载源码。已有不同版本或被修改的 checkout 不会被覆盖。实际 Python 包版本记录在 `installed-requirements.txt`；上游源码固定不代表所有传递依赖都被锁定。没有调用上游安装器，也不改动全局 Codex 技能或权限配置。
+
+Poppler（`pdftotext`、`pdftoppm`）、LibreOffice（`soffice`）、FFmpeg（`ffmpeg`、`ffprobe`）和 Node.js 需另行安装并加入启动面板时的 `PATH`。也可将便携 LibreOffice 放在 `.runtime/researchstudio/native/libreoffice/`（其中 `program/soffice.exe` 会被自动发现），或用 `.env` 中的 `RESEARCHSTUDIO_TOOL_PATH` 指定额外工具目录，以操作系统路径分隔符分隔。博客完整 QA 与视频需要 LibreOffice；上游视频渲染的 Windows 支持仍处于 preview。页面按工作流检查基础依赖，缺失时禁止提交并列出原因。`RESEARCHSTUDIO_PYTHON` 可在 `.env` 中指定已有 Python 环境；默认为私有 `.venv`，其次为面板 Python。检查依赖存在不等于所有字体、外部文献服务和真实生成链路均已验证。
+
+任务复用全局 Codex 默认模型、推理强度和登录凭据，显式注入上游技能，通过独立线程运行，允许在任务工作目录内写文件及访问公开文献服务。暂不支持把技能直接作为普通 LLM API 请求执行。提交前需确认使用套餐额度；文献内容会交给模型，检索请求会发送到公开服务，默认 Edge TTS 也需要联网。原始文件、Gap Map 和全局设置不由生成任务修改。生成内容没有自动发布或自动写回 Gap Map。
+
+每个任务串行排队，支持停止，保存模型、原始要求、输入副本、项目快照、状态和产物。控制记录位于任务工作区之外；服务重启将未完成任务标记为中断，不会自动重跑消耗额度。两小时未完成会请求中止。产物缺失、博客/视频 QA 未通过或 IdeaSpark 明确标记失败的结果显示为“产物不完整”，可下载已生成文件核查。成果仍需人工审核，研究方案不代表创新性或实验有效性已经得到证明。
+
+下载可选单个文件或 ZIP，包含共享素材及上游质量报告。生成的 HTML 强制下载，不在面板的同源页面执行。Reel 解压后请按上游 `serve_reel.py` 说明通过支持 HTTP Range 的本地服务查看视频定位功能。
+
+集成回归测试（模拟 Codex，不消耗额度）：
+
+```powershell
+python -m unittest discover -s tests -p test_research_studio.py
+node --check static/researchstudio.js
+```
+
 ## Research Gap Map
 
 Open `/research-gaps` from the panel sidebar to create topic-based literature projects. The workspace can import papers from Semantic Scholar by title, DOI, arXiv ID, or supported link, can batch-resolve up to 50 newline-separated paper titles directly against arXiv, can recursively ingest a local folder containing 1,000+ PDFs, and can reuse documents already stored in the local paper reader. Batch arXiv import verifies close title agreement before adding a result. Open-access PDFs are downloaded and parsed locally when available; otherwise the paper is clearly marked as abstract-level evidence.

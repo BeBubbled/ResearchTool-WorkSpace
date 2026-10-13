@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#17334a">
+  <title>ResearchStudio · 科研工具箱</title>
+  <link rel="stylesheet" href="/static/researchstudio.css?v=20261012">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Research Toolkit <span>/ ResearchStudio</span></a>
+    <nav aria-label="工作台导航"><a href="/reader">论文库</a><a href="/research-gaps">研究空白地图</a><a href="/#settings/codex">AI 设置</a></nav>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">IDEA → PAPER → REEL</p>
+      <h1>把研究方向变成方案，把论文变成作品。</h1>
+      <p>接入 Microsoft ResearchStudio，在同一工作台完成选题、检索、创新性核查与论文成果生成。</p>
+    </section>
+    <div class="columns">
+      <section class="card">
+        <h2>创建任务</h2>
+        <form id="studioForm">
+          <label for="module">工作流</label>
+          <select id="module" name="module" required></select>
+          <p id="description" class="hint"></p>
+          <label for="query">研究方向与具体要求 <span id="queryOptional">（可选）</span></label>
+          <textarea id="query" name="query" maxlength="20000" rows="5" placeholder="例如：研究问题、已知方法、希望验证的创新点、计算预算，或海报风格、视频长度。"></textarea>
+          <label for="projectId">参考研究项目（可选）</label>
+          <select id="projectId" name="projectId"><option value="">不附加项目</option></select>
+          <p class="hint">附加研究空白地图的当前快照；保留证据的审核状态。</p>
+          <fieldset>
+            <legend>论文 PDF <span id="paperRequirement">（Reel 必填）</span></legend>
+            <label for="paperId">从本地论文库选择</label>
+            <select id="paperId" name="paperId"><option value="">不选择</option></select>
+            <label for="paper">或上传 PDF（最大 100 MB）</label>
+            <input id="paper" name="paper" type="file" accept=".pdf,application/pdf">
+          </fieldset>
+          <div id="availability" class="notice" aria-live="polite">正在检查环境…</div>
+          <label class="consent"><input id="confirmUsage" type="checkbox" required><span>使用全局 Codex 模型和套餐额度运行。论文内容会交给模型处理，检索会访问公开文献服务，语音默认使用 Edge TTS。</span></label>
+          <p class="hint">每个任务使用独立目录，输入文件保留原样。长流程可能需要较多时间与额度。</p>
+          <button id="submit" type="submit" disabled>开始生成</button>
+        </form>
+        <p id="formError" role="alert"></p>
+        <details class="setup">
+          <summary>安装与环境检查</summary>
+          <p>在 ResearchTool 目录运行以下命令，安装到项目独立环境：</p>
+          <code>python scripts/setup_researchstudio.py --install-deps</code>
+          <p>视频还需加上 <code>--video</code>。Poppler、LibreOffice、FFmpeg 与 Node.js 需在 PATH 中可用。</p>
+          <p>环境检查仅验证基础依赖；上游服务、字体和具体论文仍可能影响生成结果。</p>
+          <button id="refresh" class="secondary" type="button">重新检查</button>
+          <p><a href="https://github.com/microsoft/ResearchStudio" target="_blank" rel="noreferrer">上游代码与 MIT 许可证</a></p>
+        </details>
+      </section>
+      <section class="card results">
+        <div class="heading"><h2>任务与产物</h2><span id="jobCount" class="hint"></span></div>
+        <label for="jobSelect">历史任务</label>
+        <select id="jobSelect"><option value="">尚无任务</option></select>
+        <div id="empty" class="empty">选择工作流开始。任务记录和生成的文件保存在本机，刷新页面后仍可查看。</div>
+        <div id="jobDetail" hidden>
+          <div class="heading"><h3 id="jobTitle"></h3><span id="jobStatus" class="badge" role="status"></span></div>
+          <p id="jobModel" class="hint"></p>
+          <p id="jobError" role="alert"></p>
+          <pre id="jobLog" aria-live="polite"></pre>
+          <div class="actions"><button id="cancel" class="secondary" type="button">停止任务</button><a id="bundle" class="button" href="#">下载完整 ZIP</a></div>
+          <p class="hint">下载包含中间文件和质量报告。HTML 在下载后查看，Reel 视频定位需按上游说明使用 HTTP 服务。</p>
+          <ul id="artifacts" class="artifacts"></ul>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/researchstudio.js?v=20261012"></script>
+</body>
+</html>

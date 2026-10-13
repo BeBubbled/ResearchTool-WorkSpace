@@ -45,6 +45,7 @@ from werkzeug.utils import secure_filename
 
 from research_gaps import ResearchGapService, create_research_gap_blueprint
 from prompt_workbench import PromptWorkbench, create_prompt_blueprint
+from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
@@ -7759,6 +7760,43 @@ research_gap_service = ResearchGapService(
 app.register_blueprint(create_research_gap_blueprint(research_gap_service))
 
 
+def research_studio_paper_source(cache_key: str) -> Path | None:
+    """Use an original cached PDF, including PDFs whose reading view uses OCR."""
+    if not re.fullmatch(r"[0-9a-f]{64}", cache_key):
+        return None
+    manifest = read_reader_cache_manifest(cache_key)
+    document = manifest.get("document") or {}
+    for section in (document, manifest.get("ocr") or {}):
+        filename = str(section.get("sourceFilename") or section.get("sourceName") or "")
+        if Path(filename).suffix.lower() != ".pdf":
+            continue
+        for storage in ("source", "ocr"):
+            source = reader_cached_file(reader_cache_root(cache_key) / storage, filename)
+            if source:
+                return source
+    return None
+
+
+def research_studio_papers() -> list[dict[str, str]]:
+    return [{"id": entry["id"], "title": entry["title"]} for entry in reader_cache_library()
+            if research_studio_paper_source(entry["id"])]
+
+
+def research_studio_project_source(project_id: str) -> dict[str, Any] | None:
+    try:
+        return research_gap_service.export_project(project_id)
+    except KeyError:
+        return None
+
+
+research_studio_service = ResearchStudio(
+    RUNTIME_DIR / "researchstudio", StudioRunner(three_pass_manager.runtime), codex_status_with_preferences,
+    papers=research_studio_papers, paper_source=research_studio_paper_source,
+    projects=research_gap_service.list_projects, project_source=research_studio_project_source,
+)
+app.register_blueprint(create_research_studio_blueprint(research_studio_service))
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -9486,6 +9524,7 @@ def main() -> None:
         print("[toolbox] Stopped.", flush=True)
     finally:
         research_gap_service.shutdown_imports()
+        research_studio_service.shutdown()
         stop = getattr(three_pass_manager.runtime, "stop", None)
         if callable(stop):
             stop()
