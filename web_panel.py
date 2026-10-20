@@ -44,7 +44,7 @@ from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
 from research_gaps import ResearchGapService, create_research_gap_blueprint
-from prompt_workbench import PromptWorkbench, create_prompt_blueprint
+from prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_request_error
 from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
@@ -58,6 +58,7 @@ from codex_three_pass import (
     default_phase_lengths,
     infer_api_protocol,
     normalize_api_base_url,
+    read_text_with_retry,
     sse_events,
     validate_phase_lengths,
 )
@@ -145,6 +146,17 @@ three_pass_manager = ThreePassAnalysisManager(PROJECT_ROOT, THREE_PASS_SKILL_PAT
 research_gap_codex_runner = CodexTextRunner(PROJECT_ROOT, three_pass_manager.runtime)
 api_three_pass_manager: ApiThreePassAnalysisManager | None = None
 api_model_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+@app.before_request
+def local_only():
+    """Protect every panel route, including registered blueprints."""
+    error = local_request_error(allow_extension_transfers=True)
+    if error:
+        if request.path.startswith("/api/"):
+            return jsonify(error=error), 403
+        return Response(error, status=403, mimetype="text/plain")
+    return None
 
 
 class LlmConcurrencyRegistry:
@@ -5781,8 +5793,13 @@ def html_translation_parts_path(output: Path) -> Path:
     return output.with_name(f".{output.name}.parts")
 
 
+def short_temporary_path(output: Path) -> Path:
+    """Keep staging paths short and on the same filesystem for atomic replacement."""
+    return output.with_name(f".{uuid.uuid4().hex[:12]}.tmp")
+
+
 def write_durable_text(output: Path, text: str) -> None:
-    temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
+    temporary = short_temporary_path(output)
     try:
         with temporary.open("w", encoding="utf-8", newline="") as handle:
             handle.write(text)
@@ -6708,7 +6725,7 @@ def store_reader_source_cache(document: ReaderDocument, source: Path) -> None:
     with reader_cache_lock:
         cached_root.mkdir(parents=True, exist_ok=True)
         if not cached.exists():
-            temporary = cached_root / f".{cached_name}.{uuid.uuid4().hex}.tmp"
+            temporary = short_temporary_path(cached)
             try:
                 shutil.copyfile(source, temporary)
                 os.replace(temporary, cached)
@@ -6987,7 +7004,7 @@ def store_reader_ocr_cache(job: Job, document: ReaderDocument) -> None:
         manifest = read_reader_cache_manifest(document.cache_key)
         apply_reader_cached_title_override(document, manifest)
         if not cached_output.exists():
-            staging = cache_root / f".ocr-{uuid.uuid4().hex}.tmp"
+            staging = short_temporary_path(cached_output)
             cache_root.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.copytree(output, staging)
@@ -7067,7 +7084,7 @@ def store_reader_translation_cache(
     with reader_cache_lock:
         translation_root.mkdir(parents=True, exist_ok=True)
         if not cached.exists():
-            temporary = translation_root / f".{cached_name}.{uuid.uuid4().hex}.tmp"
+            temporary = short_temporary_path(cached)
             try:
                 shutil.copyfile(translated, temporary)
                 os.replace(temporary, cached)
@@ -7086,7 +7103,7 @@ def store_reader_translation_cache(
             if source:
                 source_filename = f"aligned-source{source.suffix.lower()}"
                 source_cached = translation_root / source_filename
-                temporary = translation_root / f".{source_filename}.{uuid.uuid4().hex}.tmp"
+                temporary = short_temporary_path(source_cached)
                 try:
                     shutil.copyfile(source, temporary)
                     os.replace(temporary, source_cached)
@@ -7884,7 +7901,8 @@ def reader_live_translation_cache_path(
     paragraph_key = hashlib.sha256(
         f"{READER_PAIRING_VERSION}\0{block_id}\0{source_text}".encode("utf-8")
     ).hexdigest()
-    return reader_cache_root(document.cache_key) / "live-translations" / model_key / f"{paragraph_key}.json"
+    # Retain 128 bits per hash while keeping paths below Windows' MAX_PATH limit.
+    return reader_cache_root(document.cache_key) / "live-translations" / model_key[:32] / f"{paragraph_key[:32]}.json"
 
 
 def read_reader_live_translation(
@@ -7999,7 +8017,7 @@ def find_reader_analysis(analysis_id: str):
     candidates.extend(JOBS_DIR.glob(f"reader-*/analyses/{analysis_id}/analysis.json"))
     for metadata in candidates:
         try:
-            payload = json.loads(metadata.read_text(encoding="utf-8"))
+            payload = json.loads(read_text_with_retry(metadata))
             manager = api_manager if str(payload.get("backend") or "codex") == "api" else three_pass_manager
             return manager.load(metadata.parent)
         except (OSError, ValueError, KeyError, json.JSONDecodeError):

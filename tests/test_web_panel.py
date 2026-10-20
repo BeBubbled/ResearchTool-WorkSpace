@@ -80,6 +80,109 @@ class ToolboxApiTest(unittest.TestCase):
             web_panel.reader_manager.documents.clear()
         self.temp_dir.cleanup()
 
+    def test_local_guard_rejects_cross_site_job_uploads(self) -> None:
+        for origin in ("https://evil.example", "null", "", "http://localhost:8765", "https://localhost"):
+            with self.subTest(origin=origin), patch.object(web_panel.job_manager, "cleanup") as cleanup:
+                response = self.client.post(
+                    "/api/jobs",
+                    data={"tool": "anki", "files": (io.BytesIO(b"front,back"), "cards.csv")},
+                    headers={"Origin": origin},
+                )
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.get_json(), {"error": "不允许跨站访问。"})
+                cleanup.assert_not_called()
+
+    def test_local_guard_rejects_rebound_hosts(self) -> None:
+        for host in ("evil.example", "localhost.evil.example", "127.0.0.1.evil.example"):
+            with self.subTest(host=host), patch.object(web_panel, "reader_cache_library") as library:
+                response = self.client.get("/api/reader/library", headers={"Host": host})
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.get_json(), {"error": "仅接受本机访问。"})
+                library.assert_not_called()
+
+    def test_local_guard_rejects_cross_site_fetch_metadata(self) -> None:
+        for origin_headers in ({}, {"Origin": "http://localhost"}):
+            with self.subTest(headers=origin_headers), patch.object(web_panel, "reader_cache_library") as library:
+                response = self.client.get(
+                    "/api/reader/library",
+                    headers={**origin_headers, "Sec-Fetch-Site": "cross-site"},
+                )
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.get_json(), {"error": "不允许跨站访问。"})
+                library.assert_not_called()
+
+    def test_local_guard_allows_local_and_same_origin_requests(self) -> None:
+        for base_url in ("http://localhost", "http://localhost:8765", "http://127.0.0.1:8765", "http://[::1]:8765"):
+            for headers in ({}, {"Origin": base_url, "Sec-Fetch-Site": "same-origin"}):
+                with self.subTest(base_url=base_url, headers=headers):
+                    response = self.client.get("/api/reader/library", base_url=base_url, headers=headers)
+                    self.assertEqual(response.status_code, 200)
+                    with patch.object(web_panel.job_manager, "cleanup") as cleanup:
+                        response = self.client.post("/api/jobs", base_url=base_url, headers=headers, data={})
+                    # Route validation proves POST reached the handler without a custom header.
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.get_json(), {"error": "Unknown tool."})
+                    cleanup.assert_called_once_with()
+
+    def test_local_guard_allows_extension_transfer_requests(self) -> None:
+        for fetch_headers in ({}, {"Sec-Fetch-Site": "cross-site"}):
+            with self.subTest(headers=fetch_headers), patch.object(web_panel.prompt_workbench, "cleanup"):
+                response = self.client.get(
+                    "/api/prompts/transfers/x",
+                    headers={"Origin": "chrome-extension://" + "a" * 32, **fetch_headers},
+                )
+                # The transfer handler rejects the missing capability, not the global guard.
+                self.assertEqual(response.status_code, 404)
+                self.assertIn("error", response.get_json())
+
+    def test_local_guard_limits_extension_exception_to_transfer_paths(self) -> None:
+        headers = {"Origin": "chrome-extension://" + "a" * 32, "Sec-Fetch-Site": "cross-site"}
+        for path in ("/api/jobs", "/api/prompts/templates", "/api/prompts/transfers", "/api/research-gaps/projects"):
+            with self.subTest(path=path):
+                response = self.client.post(path, headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.get_json(), {"error": "不允许跨站访问。"})
+
+    def test_local_guard_rejects_invalid_extension_origins_and_hosts(self) -> None:
+        for headers in (
+            {"Origin": "chrome-extension://" + "a" * 31},
+            {"Origin": "chrome-extension://" + "a" * 33},
+            {"Origin": "chrome-extension://" + "q" * 32},
+            {"Origin": "chrome-extension://" + "a" * 32 + "/"},
+            {"Origin": "chrome-extension://" + "a" * 32, "Host": "evil.example"},
+        ):
+            with self.subTest(headers=headers):
+                response = self.client.get("/api/prompts/transfers/x", headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertIn("error", response.get_json())
+
+    def test_local_guard_protects_research_gap_blueprint(self) -> None:
+        for headers in ({"Origin": "https://evil.example"}, {"Host": "evil.example"}, {"Sec-Fetch-Site": "cross-site"}):
+            with self.subTest(headers=headers), patch.object(web_panel.research_gap_service, "create_project") as create:
+                response = self.client.post(
+                    "/api/research-gaps/projects",
+                    json={"name": "Blocked project", "topic": "Blocked topic"},
+                    headers=headers,
+                )
+                self.assertEqual(response.status_code, 403)
+                self.assertIn("error", response.get_json())
+                create.assert_not_called()
+
+    def test_local_guard_returns_plain_forbidden_for_pages(self) -> None:
+        for path in ("/reader", "/prompts", "/researchstudio", "/static/reader.js"):
+            for headers in ({"Host": "evil.example"}, {"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"}):
+                with self.subTest(path=path, headers=headers):
+                    response = self.client.get(path, headers=headers)
+                    self.assertEqual(response.status_code, 403)
+                    self.assertEqual(response.mimetype, "text/plain")
+
+    def test_local_guard_preserves_blueprint_header_checks(self) -> None:
+        for path in ("/api/prompts/templates", "/api/researchstudio/jobs"):
+            with self.subTest(path=path):
+                response = self.client.post(path, headers={"Origin": "http://localhost"}, json={})
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.get_json(), {"error": "缺少工作台请求标识。"})
+
     def test_tools_are_listed(self) -> None:
         response = self.client.get("/api/tools")
         self.assertEqual(response.status_code, 200)
@@ -434,6 +537,28 @@ class ToolboxApiTest(unittest.TestCase):
             ),
             "Preface Chapter 1",
         )
+
+    def test_reader_live_translation_cache_path_stays_short(self) -> None:
+        document = web_panel.ReaderDocument(
+            "live-translation",
+            Path(self.temp_dir.name),
+            "paper",
+            "markdown",
+            "markdown_translate",
+            cache_key="a" * 64,
+        )
+        config = {"baseUrl": "https://llm.example/v1", "model": "model"}
+        web_panel.write_reader_cache_manifest(document.cache_key, {})
+
+        path = web_panel.reader_live_translation_cache_path(document, config, "b1", "Source paragraph.")
+
+        self.assertIsNotNone(path)
+        relative = path.relative_to(web_panel.READER_CACHE_DIR)
+        # Leaves room for the cache root within Windows' MAX_PATH limit.
+        self.assertLessEqual(len(str(relative)), 156)
+        temporary = web_panel.short_temporary_path(path)
+        self.assertEqual(temporary.parent, path.parent)
+        self.assertRegex(temporary.name, r"^\.[0-9a-f]{12}\.tmp$")
 
     def test_reader_translates_one_clicked_paragraph_and_reuses_its_cache(self) -> None:
         response = self.client.post(

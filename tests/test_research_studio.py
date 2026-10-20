@@ -184,6 +184,8 @@ class StudioTests(unittest.TestCase):
         response = self.submit()
         job_id = response.json["id"]
         self.wait(job_id)
+        # A real restart has no old worker left to write its trailing log entry.
+        self.service.executor.shutdown(wait=True)
         self.service.update(job_id, status="running")
         restarted = ResearchStudio(self.service.root, self.runner, self.account)
         self.assertEqual(restarted.read(job_id)["status"], "interrupted")

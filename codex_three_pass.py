@@ -133,11 +133,36 @@ class CodexProtocolError(RuntimeError):
     """Raised when app-server cannot complete a protocol operation."""
 
 
+def _retry_permission_error(operation: Callable[[], Any]) -> Any:
+    """Allow brief Windows file-sharing conflicts to clear without hiding failures."""
+    deadline = time.monotonic() + 1.0
+    delay = 0.01
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            remaining = deadline - time.monotonic()
+            if os.name != "nt" or remaining <= 0:
+                raise
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, 0.1)
+
+
+def read_text_with_retry(path: Path) -> str:
+    return _retry_permission_error(lambda: path.read_text(encoding="utf-8"))
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(f".{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _retry_permission_error(lambda: os.replace(temporary, path))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -177,6 +202,7 @@ class CodexAppServerClient:
         self.listeners: list[Callable[[dict[str, Any]], None]] = []
         self.next_id = 1
         self.generation = 0
+        self.disconnected = threading.Event()
         self.stderr_lines: deque[str] = deque(maxlen=40)
         self.reader_thread: threading.Thread | None = None
         self.stderr_thread: threading.Thread | None = None
@@ -268,9 +294,11 @@ class CodexAppServerClient:
         self.process = process
         self.generation += 1
         generation = self.generation
+        # Each reader owns its event so an old generation cannot stop a new one.
+        self.disconnected = disconnected = threading.Event()
         self.reader_thread = threading.Thread(
             target=self._read_stdout,
-            args=(process, generation),
+            args=(process, generation, disconnected),
             daemon=True,
             name="codex-app-server-reader",
         )
@@ -299,11 +327,10 @@ class CodexAppServerClient:
         self.prepared_runtime = None
 
     def ensure_started(self) -> None:
-        if self.process and self.process.poll() is None:
-            return
-        with self.start_lock:
-            if self.process and self.process.poll() is None:
+        with self.lifecycle_lock, self.start_lock:
+            if self.running:
                 return
+            self.stop()
             resolution = self.prepared_runtime or self._resolve_runtime()
             try:
                 self._start_runtime(resolution)
@@ -324,7 +351,17 @@ class CodexAppServerClient:
 
     @property
     def running(self) -> bool:
-        return bool(self.process and self.process.poll() is None)
+        with self.lifecycle_lock:
+            return bool(self.process and not self.disconnected.is_set() and self.process.poll() is None)
+
+    @staticmethod
+    def _close_pipe(pipe: Any) -> None:
+        if pipe:
+            try:
+                pipe.close()
+            except OSError:
+                # Closing stdin can flush buffered data into a dead Windows pipe.
+                pass
 
     def _read_stderr(self, process: subprocess.Popen[str]) -> None:
         if not process.stderr:
@@ -333,9 +370,11 @@ class CodexAppServerClient:
             for line in process.stderr:
                 self.stderr_lines.append(line.rstrip())
         finally:
-            process.stderr.close()
+            self._close_pipe(process.stderr)
 
-    def _read_stdout(self, process: subprocess.Popen[str], generation: int) -> None:
+    def _read_stdout(
+        self, process: subprocess.Popen[str], generation: int, disconnected: threading.Event
+    ) -> None:
         if not process.stdout:
             return
         try:
@@ -380,6 +419,15 @@ class CodexAppServerClient:
                         # A UI listener must never terminate the protocol reader.
                         continue
         finally:
+            # EOF is authoritative even while Windows still reports a live process.
+            # Publish it before waking callers that may immediately restart us.
+            disconnected.set()
+            self._close_pipe(process.stdout)
+            with self.write_lock:
+                self._close_pipe(process.stdin)
+            with self.active_turns_lock:
+                if self.process is process:
+                    self.active_turns.clear()
             detail = "\n".join(self.stderr_lines)[-3000:]
             error = CodexProtocolError("Codex App Server 已停止。" + (f"\n{detail}" if detail else ""))
             self._fail_generation(generation, error)
@@ -392,11 +440,6 @@ class CodexAppServerClient:
                     listener(stopped)
                 except Exception:
                     continue
-            process.stdout.close()
-            if process.stdin:
-                process.stdin.close()
-            with self.active_turns_lock:
-                self.active_turns.clear()
 
     def _record_notification(self, message: dict[str, Any]) -> None:
         if message.get("method") == "turn/completed":
@@ -430,15 +473,15 @@ class CodexAppServerClient:
             event.set()
 
     def _send(self, message: dict[str, Any]) -> None:
-        process = self.process
-        if not process or process.poll() is not None or not process.stdin:
-            raise CodexProtocolError("Codex App Server 未运行。")
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
         with self.write_lock:
+            process = self.process
+            if not process or self.disconnected.is_set() or process.poll() is not None or not process.stdin:
+                raise CodexProtocolError("Codex App Server 未运行。")
             try:
                 process.stdin.write(encoded + "\n")
                 process.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
+            except (OSError, ValueError) as exc:
                 raise CodexProtocolError("Codex App Server 连接已断开。") from exc
 
     def request(
@@ -459,7 +502,12 @@ class CodexAppServerClient:
                 event = threading.Event()
                 container: dict[str, Any] = {}
                 self.pending[request_id] = (event, container, generation)
-            self._send({"method": method, "id": request_id, "params": params or {}})
+            try:
+                self._send({"method": method, "id": request_id, "params": params or {}})
+            except Exception:
+                with self.pending_lock:
+                    self.pending.pop(request_id, None)
+                raise
         try:
             if not event.wait(timeout):
                 raise CodexProtocolError(f"Codex App Server 请求超时：{method}")
@@ -573,20 +621,36 @@ class CodexAppServerClient:
         self.request("account/logout", {}, timeout=20)
 
     def stop(self) -> None:
-        process, generation, self.process = self.process, self.generation, None
-        if not process:
-            return
-        try:
-            process.terminate()
-            process.wait(timeout=3)
-        except (OSError, subprocess.TimeoutExpired):
+        with self.lifecycle_lock:
+            process, generation = self.process, self.generation
+            if not process:
+                return
+            self.disconnected.set()
+            self._fail_generation(generation, CodexProtocolError("Codex App Server 已停止。"))
+            # Let the server exit on EOF before terminating a launcher. On Windows
+            # the venv launcher can exit while its child still holds our cwd open.
+            with self.write_lock:
+                self._close_pipe(process.stdin)
             try:
-                process.kill()
-            except OSError:
-                pass
-        self._fail_generation(generation, CodexProtocolError("Codex App Server 已停止。"))
-        with self.active_turns_lock:
-            self.active_turns.clear()
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.terminate()
+                    process.wait(timeout=3)
+                except (OSError, subprocess.TimeoutExpired):
+                    process.kill()
+                    process.wait()
+            for thread, pipe in (
+                (self.reader_thread, process.stdout),
+                (self.stderr_thread, process.stderr),
+            ):
+                if thread and thread is not threading.current_thread():
+                    thread.join(timeout=3)
+                if not thread or not thread.is_alive():
+                    self._close_pipe(pipe)
+            self.process = None
+            with self.active_turns_lock:
+                self.active_turns.clear()
 
 
 class CodexTextRunner:
@@ -765,6 +829,7 @@ class AnalysisSession:
     event_sequence: int = 0
     events: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=600))
     condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
+    _persist_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     @property
     def metadata_path(self) -> Path:
@@ -816,8 +881,11 @@ class AnalysisSession:
         }
 
     def persist(self) -> None:
-        self.updated_at = time.time()
-        atomic_write_json(self.metadata_path, self.metadata())
+        # Serialize snapshot creation as well as replacement, so an older writer
+        # cannot overwrite metadata already persisted by a newer caller.
+        with self._persist_lock:
+            self.updated_at = time.time()
+            atomic_write_json(self.metadata_path, self.metadata())
 
     def publish(self, event_type: str, data: dict[str, Any]) -> None:
         with self.condition:
@@ -836,7 +904,7 @@ class AnalysisSession:
 
     @classmethod
     def load(cls, root: Path) -> "AnalysisSession":
-        payload = json.loads((root / "analysis.json").read_text(encoding="utf-8"))
+        payload = json.loads(read_text_with_retry(root / "analysis.json"))
         session = cls(
             id=str(payload["id"]),
             root=root,
@@ -988,7 +1056,7 @@ class ThreePassAnalysisManager:
         sessions: list[AnalysisSession] = []
         for metadata in root.glob("*/analysis.json"):
             try:
-                payload = json.loads(metadata.read_text(encoding="utf-8"))
+                payload = json.loads(read_text_with_retry(metadata))
                 if str(payload.get("backend") or "codex") == "api":
                     continue
                 session = self.get(metadata.parent.name) or self.load(metadata.parent)
@@ -1645,7 +1713,7 @@ class ApiThreePassAnalysisManager:
         result = []
         for metadata in root.glob("*/analysis.json"):
             try:
-                payload = json.loads(metadata.read_text(encoding="utf-8"))
+                payload = json.loads(read_text_with_retry(metadata))
                 if str(payload.get("backend") or "codex") != "api":
                     continue
                 result.append(self.get(metadata.parent.name) or self.load(metadata.parent))

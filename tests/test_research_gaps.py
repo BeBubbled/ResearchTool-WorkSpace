@@ -298,7 +298,8 @@ class ResearchGapTest(unittest.TestCase):
             self.assertEqual(paused["status"], "paused")
             self.assertEqual(paused["imported"], 1)
             resumed = self.service.resume_paper_import(job["id"])
-            self.assertEqual(resumed["status"], "queued")
+            # The worker may pick the job up before resume reads it back.
+            self.assertIn(resumed["status"], {"queued", "running", "completed"})
             completed = self.wait_for_import(job["id"])
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["imported"], 3)

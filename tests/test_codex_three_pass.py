@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import codex_three_pass
 from codex_three_pass import (
     AnalysisSession,
     ApiThreePassAnalysisManager,
@@ -198,6 +201,241 @@ def wait_for(predicate, timeout=4):
     raise AssertionError("Timed out waiting for background Three-Pass work")
 
 
+def wait_for_event(session, event_type):
+    # Terminal state and messages become visible before their files are persisted.
+    def published():
+        with session.condition:
+            return any(item["event"] == event_type for item in session.events)
+
+    wait_for(published)
+
+
+class AnalysisPersistenceTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.session = AnalysisSession(
+            id="a" * 32,
+            root=self.root / "reader-persistence" / "analyses" / ("a" * 32),
+            document_id="document-persistence",
+            document_cache_key="b" * 64,
+            document_title="Persistence Paper",
+            model="test-model",
+            effort="high",
+            language="zh-CN",
+            focuses=[],
+            custom_focus="",
+            status="ready",
+            phase="ready",
+        )
+        self.session.persist()
+
+    def test_concurrent_persist_serializes_snapshot_and_write(self):
+        self.session.status = "synthesis"
+        writing = threading.Event()
+        release = threading.Event()
+        second_started = threading.Event()
+        second_snapshot = threading.Event()
+        snapshots = []
+        original_metadata = self.session.metadata
+        original_write = codex_three_pass.atomic_write_json
+
+        def metadata():
+            payload = original_metadata()
+            snapshots.append(payload["status"])
+            if len(snapshots) > 1:
+                second_snapshot.set()
+            return payload
+
+        def write(path, payload):
+            if payload["status"] == "synthesis":
+                writing.set()
+                if not release.wait(3):
+                    raise AssertionError("Timed out releasing the older snapshot")
+            original_write(path, payload)
+
+        def persist_newer():
+            second_started.set()
+            self.session.persist()
+
+        with (
+            patch.object(self.session, "metadata", side_effect=metadata),
+            patch.object(codex_three_pass, "atomic_write_json", side_effect=write),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            older = pool.submit(self.session.persist)
+            try:
+                self.assertTrue(writing.wait(2))
+                self.session.status = "ready"
+                newer = pool.submit(persist_newer)
+                self.assertTrue(second_started.wait(2))
+                self.assertFalse(second_snapshot.wait(0.1))
+            finally:
+                release.set()
+            older.result(timeout=3)
+            newer.result(timeout=3)
+
+        self.assertEqual(snapshots, ["synthesis", "ready"])
+        persisted = json.loads(self.session.metadata_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["status"], "ready")
+
+    def test_atomic_write_fsyncs_and_retries_with_a_short_temporary_name(self):
+        attempts = []
+        with (
+            patch.object(codex_three_pass, "os", wraps=os) as file_os,
+            patch.object(codex_three_pass.time, "sleep") as sleep,
+        ):
+            file_os.name = "nt"
+
+            def replace(source, destination):
+                file_os.fsync.assert_called_once()
+                self.assertEqual(source.read_text(encoding="utf-8"), "updated")
+                self.assertEqual(source.parent, destination.parent)
+                self.assertRegex(source.name, r"^\.[0-9a-f]{12}\.tmp$")
+                attempts.append(source)
+                if len(attempts) < 3:
+                    raise PermissionError("sharing violation")
+                os.replace(source, destination)
+
+            file_os.replace.side_effect = replace
+            codex_three_pass.atomic_write_text(self.session.metadata_path, "updated")
+
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(self.session.metadata_path.read_text(encoding="utf-8"), "updated")
+        self.assertEqual(list(self.session.root.glob("*.tmp")), [])
+
+    def test_atomic_write_stops_retrying_and_cleans_up_on_failure(self):
+        original = self.session.metadata_path.read_bytes()
+        elapsed = [0.0]
+        error = PermissionError("still locked")
+
+        def advance(delay):
+            elapsed[0] += delay
+
+        with (
+            patch.object(codex_three_pass, "os", wraps=os) as file_os,
+            patch.object(codex_three_pass.time, "monotonic", side_effect=lambda: elapsed[0]),
+            patch.object(codex_three_pass.time, "sleep", side_effect=advance),
+        ):
+            file_os.name = "nt"
+            file_os.replace.side_effect = error
+            with self.assertRaises(PermissionError) as raised:
+                codex_three_pass.atomic_write_text(self.session.metadata_path, "updated")
+            self.assertIs(raised.exception, error)
+            self.assertGreater(file_os.replace.call_count, 1)
+            self.assertLessEqual(file_os.replace.call_count, 20)
+
+        self.assertAlmostEqual(elapsed[0], 1.0)
+        self.assertEqual(self.session.metadata_path.read_bytes(), original)
+        self.assertEqual(list(self.session.root.glob("*.tmp")), [])
+
+    def test_atomic_write_cleans_up_when_fsync_fails(self):
+        original = self.session.metadata_path.read_bytes()
+        with patch.object(codex_three_pass, "os", wraps=os) as file_os:
+            file_os.fsync.side_effect = OSError("disk error")
+            with self.assertRaisesRegex(OSError, "disk error"):
+                codex_three_pass.atomic_write_text(self.session.metadata_path, "updated")
+            file_os.replace.assert_not_called()
+        self.assertEqual(self.session.metadata_path.read_bytes(), original)
+        self.assertEqual(list(self.session.root.glob("*.tmp")), [])
+
+    def test_atomic_write_does_not_retry_other_errors_or_platforms(self):
+        for platform, error in (("posix", PermissionError("denied")), ("nt", OSError("disk error"))):
+            with (
+                self.subTest(platform=platform),
+                patch.object(codex_three_pass, "os", wraps=os) as file_os,
+                patch.object(codex_three_pass.time, "sleep") as sleep,
+            ):
+                file_os.name = platform
+                file_os.replace.side_effect = error
+                with self.assertRaises(type(error)) as raised:
+                    codex_three_pass.atomic_write_text(self.session.metadata_path, "updated")
+                self.assertIs(raised.exception, error)
+                file_os.replace.assert_called_once()
+                sleep.assert_not_called()
+                self.assertEqual(list(self.session.root.glob("*.tmp")), [])
+
+    def test_analysis_json_read_errors_are_bounded_and_preserved(self):
+        cases = (
+            ("nt", PermissionError("still locked"), True),
+            ("posix", PermissionError("denied"), False),
+            ("nt", OSError("disk error"), False),
+        )
+        for platform, error, retries in cases:
+            elapsed = [0.0]
+
+            def advance(delay):
+                elapsed[0] += delay
+
+            with (
+                self.subTest(platform=platform, error=type(error).__name__),
+                patch.object(codex_three_pass, "os", wraps=os) as file_os,
+                patch.object(codex_three_pass.time, "monotonic", side_effect=lambda: elapsed[0]),
+                patch.object(codex_three_pass.time, "sleep", side_effect=advance) as sleep,
+                patch.object(Path, "read_text", side_effect=error) as read,
+            ):
+                file_os.name = platform
+                with self.assertRaises(type(error)) as raised:
+                    AnalysisSession.load(self.session.root)
+                self.assertIs(raised.exception, error)
+                if retries:
+                    self.assertGreater(read.call_count, 1)
+                    self.assertLessEqual(read.call_count, 20)
+                    self.assertAlmostEqual(elapsed[0], 1.0)
+                    self.assertTrue(all(0 < call.args[0] <= 0.1 for call in sleep.call_args_list))
+                else:
+                    read.assert_called_once()
+                    sleep.assert_not_called()
+
+    def test_analysis_json_readers_retry_sharing_violations(self):
+        codex_manager = ThreePassAnalysisManager(self.root, self.root / "SKILL.md", FakeRuntime())
+        api_manager = ApiThreePassAnalysisManager(
+            self.root, self.root / "SKILL.md", lambda _id: None, DirectApiExecutor(),
+        )
+        self.addCleanup(api_manager.pool.shutdown, wait=True)
+        original_read = Path.read_text
+        with (
+            patch.object(web_panel, "JOBS_DIR", self.root),
+            patch.object(web_panel, "READER_CACHE_DIR", self.root / "cache"),
+            patch.object(web_panel, "three_pass_manager", codex_manager),
+            patch.object(web_panel, "api_three_pass_manager", api_manager),
+            patch.object(codex_three_pass, "os", wraps=os) as file_os,
+        ):
+            file_os.name = "nt"
+            for backend, manager in (("codex", codex_manager), ("api", api_manager)):
+                self.session.backend = backend
+                self.session.persist()
+                readers = {
+                    "load": lambda: AnalysisSession.load(self.session.root),
+                    "list": lambda: manager.list_from_root(self.session.root.parent)[0],
+                    "find": lambda: web_panel.find_reader_analysis(self.session.id),
+                }
+                for name, read in readers.items():
+                    with self.subTest(backend=backend, reader=name):
+                        codex_manager.sessions.clear()
+                        api_manager.sessions.clear()
+                        attempts = []
+
+                        def read_text(path, *args, **kwargs):
+                            if path == self.session.metadata_path:
+                                attempts.append(path)
+                                if len(attempts) == 1:
+                                    raise PermissionError("sharing violation")
+                            return original_read(path, *args, **kwargs)
+
+                        with (
+                            patch.object(Path, "read_text", read_text),
+                            patch.object(codex_three_pass.time, "sleep") as sleep,
+                        ):
+                            loaded = read()
+                        self.assertEqual(loaded.id, self.session.id)
+                        self.assertEqual(loaded.status, "ready")
+                        self.assertEqual(loaded.backend, backend)
+                        sleep.assert_called_once()
+
+
 class ThreePassManagerTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -228,6 +466,7 @@ class ThreePassManagerTest(unittest.TestCase):
     def test_four_phases_persist_report_and_thread(self):
         session = self.create_session()
         wait_for(lambda: session.status == "ready")
+        wait_for_event(session, "completed")
         self.assertEqual(self.runtime.turn_count, 4)
         self.assertEqual(session.thread_id, "thread-test")
         self.assertTrue(session.report_path.is_file())
@@ -259,6 +498,7 @@ class ThreePassManagerTest(unittest.TestCase):
         self.assertEqual(session.options["phaseLengths"]["pass3"]["target"], 1600)
         self.assertIn("approximately 1600 visible English words", phase_length_rule(session, "pass3"))
         wait_for(lambda: session.status == "ready")
+        wait_for_event(session, "completed")
 
     def test_phase_length_validation_resolves_presets_and_rejects_invalid_values(self):
         configured = default_phase_lengths()
@@ -292,6 +532,7 @@ class ThreePassManagerTest(unittest.TestCase):
         wait_for(lambda: session.status == "ready")
         self.manager.ask(session, "复现风险是什么？")
         wait_for(lambda: len(session.messages) == 1 and session.status == "ready")
+        wait_for_event(session, "message")
         self.assertEqual(self.runtime.turn_count, 5)
         self.assertIn("Phase 5", session.messages[0]["answer"])
         self.assertTrue((session.root / "messages.jsonl").is_file())
@@ -312,12 +553,14 @@ class ThreePassManagerTest(unittest.TestCase):
             input_markdown="Readable paper " * 40,
         )
         wait_for(lambda: session.status == "failed")
+        wait_for_event(session, "error")
         self.assertIn("ChatGPT", session.error)
         self.assertEqual(runtime.turn_count, 0)
 
     def test_sse_history_contains_phase_and_completion_events(self):
         session = self.create_session()
         wait_for(lambda: session.status == "ready")
+        wait_for_event(session, "completed")
         event_types = [item["event"] for item in session.events]
         self.assertIn("phase", event_types)
         self.assertEqual(event_types.count("phase_completed"), 4)
@@ -339,6 +582,7 @@ class ThreePassManagerTest(unittest.TestCase):
             input_markdown="Readable paper " * 40,
         )
         wait_for(lambda: session.status == "failed")
+        wait_for_event(session, "error")
         self.assertEqual(runtime.turn_count, 1)
         self.assertIn("synthetic crash", session.error)
 
@@ -360,6 +604,7 @@ class ThreePassManagerTest(unittest.TestCase):
         wait_for(lambda: session.active_turn_id)
         manager.cancel(session)
         wait_for(lambda: session.status == "cancelled")
+        wait_for_event(session, "cancelled")
         self.assertEqual(runtime.interrupted, ["turn-1"])
 
     def test_cancelled_followup_returns_completed_analysis_to_ready(self):
@@ -382,6 +627,7 @@ class ThreePassManagerTest(unittest.TestCase):
         wait_for(lambda: session.active_turn_id == "turn-5")
         manager.cancel(session)
         wait_for(lambda: session.status == "ready" and not session.busy)
+        wait_for_event(session, "followup_cancelled")
         self.assertEqual(runtime.interrupted, ["turn-5"])
         self.assertEqual(session.messages, [])
 
@@ -470,6 +716,7 @@ class DirectApiThreePassTest(unittest.TestCase):
     def test_responses_pipeline_is_stateless_and_never_persists_key(self):
         session = self.create_session()
         wait_for(lambda: session.status == "ready")
+        wait_for_event(session, "completed")
         self.assertEqual(len(self.client.calls), 4)
         self.assertTrue(all(kind == "responses" for kind, _request in self.client.calls))
         self.assertTrue(all(request["store"] is False for _kind, request in self.client.calls))
@@ -483,6 +730,7 @@ class DirectApiThreePassTest(unittest.TestCase):
         self.assertTrue(all(kind == "chat_completions" for kind, _request in self.client.calls))
         self.manager.ask(session, "主要复现风险是什么？")
         wait_for(lambda: len(session.messages) == 1)
+        wait_for_event(session, "message")
         self.assertIn("Chat result", session.messages[0]["answer"])
 
     def test_optional_parameter_retry_happens_once(self):
@@ -604,6 +852,23 @@ for line in sys.stdin:
             encoding="utf-8",
         )
         self.server.chmod(0o755)
+        if os.name == "nt":
+            # Windows ignores shebangs: resolve the script path and run it with this interpreter.
+            server = str(self.server)
+            real_which, real_popen = codex_three_pass.shutil.which, codex_three_pass.subprocess.Popen
+
+            def which(command, *args, **kwargs):
+                return server if command == server else real_which(command, *args, **kwargs)
+
+            def popen(command, *args, **kwargs):
+                if command and command[0] == server:
+                    command = [sys.executable, server, *command[1:]]
+                return real_popen(command, *args, **kwargs)
+
+            for target, replacement in (("shutil.which", which), ("subprocess.Popen", popen)):
+                patcher = patch(f"codex_three_pass.{target}", replacement)
+                patcher.start()
+                self.addCleanup(patcher.stop)
         self.client = CodexAppServerClient(root, str(self.server))
 
     def tearDown(self):
@@ -729,7 +994,9 @@ class ThreePassApiTest(unittest.TestCase):
             json={"question": "What is the main reproducibility risk?"},
         )
         self.assertEqual(followup.status_code, 202)
-        wait_for(lambda: len(web_panel.three_pass_manager.get(analysis_id).messages) == 1)
+        session = web_panel.three_pass_manager.get(analysis_id)
+        wait_for(lambda: len(session.messages) == 1)
+        wait_for_event(session, "message")
 
     def test_direct_api_backend_runs_without_exposing_provider_key(self):
         provider = {

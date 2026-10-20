@@ -78,21 +78,32 @@ class PromptWorkbench:
             shutil.rmtree(self.root / "transfers" / transfer_id, ignore_errors=True)
 
 
+def local_request_error(*, allow_extension_transfers: bool = False) -> str | None:
+    """Check the local Host and browser request origin before any route runs."""
+    if urlsplit(request.host_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return "仅接受本机访问。"
+    origin = request.headers.get("Origin")
+    is_extension_transfer = bool(
+        allow_extension_transfers
+        and request.path.startswith("/api/prompts/transfers/")
+        and origin
+        and re.fullmatch(r"chrome-extension://[a-p]{32}", origin)
+    )
+    if origin is not None and origin != request.host_url.rstrip("/") and not is_extension_transfer:
+        return "不允许跨站访问。"
+    if request.headers.get("Sec-Fetch-Site") == "cross-site" and not is_extension_transfer:
+        return "不允许跨站访问。"
+    return None
+
+
 def create_prompt_blueprint(service: PromptWorkbench):
     bp = Blueprint("prompt_workbench", __name__)
 
     @bp.before_request
     def local_only():
-        host = urlsplit(request.host_url).hostname
-        if host not in {"localhost", "127.0.0.1", "::1"}:
-            abort(403, description="Prompt 工作台仅接受本机访问。")
-        origin = request.headers.get("Origin")
-        is_extension = bool(origin and re.fullmatch(r"chrome-extension://[a-p]{32}", origin))
-        if origin and origin != request.host_url.rstrip("/"):
-            if not (is_extension and request.path.startswith("/api/prompts/transfers/")):
-                abort(403, description="不允许跨站访问 Prompt 工作台。")
-        if request.headers.get("Sec-Fetch-Site") == "cross-site" and not is_extension:
-            abort(403, description="不允许跨站访问 Prompt 工作台。")
+        error = local_request_error(allow_extension_transfers=True)
+        if error:
+            abort(403, description=error)
         if request.method in {"POST", "PUT", "DELETE"} and request.headers.get("X-Prompt-Workbench") != "1":
             abort(403, description="缺少工作台请求标识。")
         limit = MAX_BYTES + 2 * 1024 * 1024 if request.path == "/api/prompts/transfers" else 512 * 1024

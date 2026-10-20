@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -17,7 +18,7 @@ import socket
 import sqlite3
 import threading
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from urllib.parse import quote, urljoin, urlsplit
 import uuid
 import xml.etree.ElementTree as ET
@@ -289,12 +290,18 @@ class ResearchGapStore:
         self._migrate_lock = threading.Lock()
         self.migrate()
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        # sqlite3's own context manager only commits; it never closes the handle.
         connection = sqlite3.connect(self.database, timeout=30)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA busy_timeout=30000")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def migrate(self) -> None:
         with self._migrate_lock, self.connect() as db:

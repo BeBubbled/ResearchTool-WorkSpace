@@ -13,11 +13,11 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from flask import Blueprint, abort, jsonify, render_template, request, send_file
 
-from codex_three_pass import atomic_write_json, atomic_write_text, CodexProtocolError
+from codex_three_pass import atomic_write_json, atomic_write_text, CodexProtocolError, read_text_with_retry
+from prompt_workbench import local_request_error
 
 
 UPSTREAM_URL = "https://github.com/microsoft/ResearchStudio"
@@ -189,7 +189,7 @@ class ResearchStudio:
         # Never replay a quota-consuming task after a process restart.
         for path in (self.root / "jobs").glob("*/job.json"):
             try:
-                job = json.loads(path.read_text(encoding="utf-8"))
+                job = json.loads(read_text_with_retry(path))
                 if job.get("status") in ACTIVE:
                     job.update(status="interrupted", error="服务曾重启，任务未自动重跑。已生成文件保留。")
                     atomic_write_json(path, job)
@@ -292,7 +292,7 @@ class ResearchStudio:
             path = self.job_root(job_id) / "job.json"
             if not path.is_file():
                 raise FileNotFoundError("任务不存在。")
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(read_text_with_retry(path))
 
     def update(self, job_id, **changes):
         with self.lock:
@@ -533,11 +533,9 @@ def create_research_studio_blueprint(service):
 
     @bp.before_request
     def local_only():
-        if urlsplit(request.host_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
-            abort(403, description="ResearchStudio 仅接受本机访问。")
-        origin = request.headers.get("Origin")
-        if (origin and origin != request.host_url.rstrip("/")) or request.headers.get("Sec-Fetch-Site") == "cross-site":
-            abort(403, description="不允许跨站访问。")
+        error = local_request_error()
+        if error:
+            abort(403, description=error)
         if request.method == "POST" and request.headers.get("X-ResearchStudio") != "1":
             abort(403, description="缺少工作台请求标识。")
         request.max_content_length = MAX_PDF_BYTES + 1024 * 1024
