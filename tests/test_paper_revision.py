@@ -178,6 +178,39 @@ class ParserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_text("Original ⟦L000000⟧", "Original ⟦L000000⟧[new option]")
 
+    def test_comments_are_never_prose_sentences_or_model_text(self):
+        source = ("\\section{Intro}\n% TODO rewrite the intro\nFirst sentence. Second one.\n"
+                  "% A whole commented sentence here.\nThird sentence.\n")
+        snap = parse_files([{"name": "a.tex", "text": source}])
+        self.assertEqual(source_files(snap)["a.tex"], source)
+        units = [u for b in snap["blocks"] for u in b["units"]]
+        for unit in units:
+            self.assertNotIn("TODO", unit["display_en"])
+            self.assertNotIn("commented", unit["display_en"])
+            self.assertNotIn("commented", paper_revision.model_source(unit["masked"], snap["tokens"]))
+            self.assertRegex(re.sub(TOKEN, "", unit["masked"]), r"[A-Za-z]{2,}")
+        comments = [v for v in snap["tokens"].values() if v.startswith("%")]
+        self.assertEqual(len(comments), 2)
+        self.assertTrue(all("TODO" not in paper_revision.describe_token(c, {}) for c in comments))
+
+    def test_sections_follow_latex_headings_without_blank_lines(self):
+        source = "\n".join([
+            r"\documentclass{article}", r"% \section{Commented in preamble}", r"\begin{document}",
+            r"\begin{abstract}", "Abstract words here.", r"\end{abstract}",
+            r"\section{Introduction}\label{sec:intro}", "Intro text one.", "",
+            "Intro text two.", r"% \section{Commented in body}", r"\section{Related Work}",
+            "Related text.", r"\subsection*{Setup}", "Setup text.", r"\end{document}", ""])
+        snap = parse_files([{"name": "main.tex", "text": source}])
+        self.assertEqual(source_files(snap)["main.tex"], source)
+        titles = snap["section_titles"]
+        named = [(titles[b["section"]]["title"], b["units"][0]["en"].split("\n")[0]) for b in snap["blocks"]]
+        self.assertEqual(named, [("Abstract", r"\begin{abstract}"),
+                                 ("Introduction", r"\section{Introduction}\label{sec:intro}"),
+                                 ("Introduction", "Intro text two."),
+                                 ("Related Work", r"\section{Related Work}"),
+                                 ("Setup", r"\subsection*{Setup}")])
+        self.assertEqual([t["level"] for t in titles.values()], [0, 0, 0, 1])
+
 
 class LineageTests(unittest.TestCase):
     ENTRY = {"revision": 2, "from_revision": 1, "comment_ids": ["a", "b"], "reason": "合并两条批注"}
@@ -271,6 +304,54 @@ class RevisionTests(unittest.TestCase):
         unit = block["units"][0]
         return self.service.add_comment(self.pid, {"revision": p["revision"], "text": "将绝对断言改为审慎描述", "scope": scope,
             "anchors": [{"unit_id": unit["id"], "block_id": block["id"], "start": 2, "end": 5, "quote": unit["zh"][2:5]}]})
+
+    def test_reparse_fixes_old_sections_and_keeps_chinese_and_comments(self):
+        self.translated()
+        self.comment()
+        p = self.service.read(self.pid)
+        # Simulate a project parsed by an older parser: every block lumped into one section.
+        path = self.service.folder(self.pid) / f"r{p['revision']}.json"
+        stale = json.loads(path.read_text(encoding="utf-8"))
+        for block in stale["blocks"]:
+            block["section"] = "f0:preamble"
+        stale["section_titles"] = {}
+        path.write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+        result = self.service.reparse(self.pid, {"revision": p["revision"]})
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["unplaced"], [])
+        p = self.service.read(self.pid)
+        self.assertEqual(p["history"][-1]["kind"], "reparse")
+        self.assertEqual(len(p["comments"]), 1)
+        snap = self.service.snapshot(self.pid)
+        self.assertEqual(source_files(snap)["main.tex"], SOURCE)
+        self.assertEqual(sorted(t["title"] for t in snap["section_titles"].values()), ["Introduction", "Results"])
+        self.assertTrue(all(u["zh"] for b in snap["blocks"] for u in b["units"]))
+        anchor = p["comments"][0]["anchors"][0]
+        unit = next(u for b in snap["blocks"] for u in b["units"] if u["id"] == anchor["unit_id"])
+        self.assertIn("always improves", unit["en"])
+        again = self.service.reparse(self.pid, {"revision": p["revision"]})
+        self.assertFalse(again["changed"])
+
+    def test_reparse_folds_old_comment_only_sentences_and_keeps_chinese(self):
+        source = "\\section{Intro}\nFirst sentence here.\n% An old note line.\nSecond sentence here.\n"
+        pid = self.service.create("C", [{"name": "main.tex", "text": source}])["id"]
+        path = self.service.folder(pid) / "r0.json"
+        snap = json.loads(path.read_text(encoding="utf-8"))
+        block = snap["blocks"][0]
+        # Old parser output: the comment line was its own sentence.
+        first, rest = block["units"][0], block["units"][1]
+        token = TOKEN.match(rest["masked"])
+        note, second = rest["masked"][:token.end()], rest["masked"][token.end():]
+        self.assertTrue(snap["tokens"][note].startswith("% An old note"))
+        block["units"] = [{**first, "zh": "第一句。"},
+                          {**rest, "id": block["id"] + ":s2", "masked": note, "en": snap["tokens"][note], "display_en": "", "zh": "注释译文"},
+                          {**rest, "id": block["id"] + ":s3", "masked": second, "en": second, "display_en": second, "zh": "第二句。"}]
+        path.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        result = self.service.reparse(pid, {"revision": 0})
+        self.assertTrue(result["changed"])
+        units = self.service.snapshot(pid)["blocks"][0]["units"]
+        self.assertEqual([u["zh"] for u in units], ["第一句。", "第二句。"])
+        self.assertEqual(source_files(self.service.snapshot(pid))["main.tex"], source)
 
     def test_full_multiround_workflow_preserves_latex_and_old_versions(self):
         self.translated()

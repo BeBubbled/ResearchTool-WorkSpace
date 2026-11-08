@@ -134,7 +134,10 @@ REQUEST_CHARS = {"claude": 480_000, "codex": 320_000, "api": 180_000}
 WHOLE_DOC_CHARS = 60_000
 GLOSSARY_MIN_UNITS = 20  # large translation requests also report the terminology they used
 TEXT_COMMANDS = {"emph", "textbf", "textit", "textrm", "textsf", "texttt", "underline",
-                 "section", "subsection", "subsubsection", "paragraph", "subparagraph", "title", "caption"}
+                 "chapter", "section", "subsection", "subsubsection", "paragraph", "subparagraph", "title", "caption"}
+# Sectioning commands that start a new section group (\paragraph is run-in text, not a group).
+HEADING_LEVELS = {"chapter": 0, "section": 1, "subsection": 2, "subsubsection": 3}
+HEADING_TOKEN = re.compile(r"\\(chapter|section|subsection|subsubsection)\*?\s*(?:\[.*\])?", re.S)
 TEXT_ENVS = {"document", "abstract", "itemize", "enumerate", "description", "quote", "quotation",
              "theorem", "lemma", "proposition", "corollary", "proof", "definition", "remark"}
 
@@ -271,10 +274,21 @@ def unmask(text, tokens):
     return TOKEN.sub(lambda m: tokens[m[0]], text)
 
 
+def is_comment(raw):
+    """A TeX comment (`% …` to end of line) or a comment environment: never prose."""
+    return raw.startswith("%") or raw.startswith("\\begin{comment}")
+
+
+def model_source(text, tokens):
+    """LaTeX shown to a model as context: like `unmask`, but comments are dropped so the model
+    never reads, translates or revises them (they stay untouched in the file)."""
+    return TOKEN.sub(lambda m: "" if is_comment(tokens[m[0]]) else tokens[m[0]], text)
+
+
 def display_text(text, tokens):
     def readable(match):
         raw = tokens[match[0]]
-        if (raw in {"{", "}"} or raw.startswith("%") or "\\begin{document}" in raw or
+        if (raw in {"{", "}"} or is_comment(raw) or "\\begin{document}" in raw or
                 raw.startswith("\\end{document}") or
                 re.fullmatch(r"\\(?:" + "|".join(TEXT_COMMANDS) + r")\*?(?:\[[\s\S]*\])?", raw)):
             return ""
@@ -323,6 +337,17 @@ def units_for(block, tokens):
         start = match.end()
     if start < len(text):
         parts.append(text[start:])
+    # A "sentence" with no prose of its own (a comment line, a lone \label …) rides along with
+    # its neighbour, so no unit ever asks for a translation of a comment.
+    merged = []
+    for part in parts:
+        if merged and not re.search(r"[A-Za-z]{2,}", TOKEN.sub("", part)):
+            merged[-1] += part
+        elif merged and not re.search(r"[A-Za-z]{2,}", TOKEN.sub("", merged[-1])):
+            merged[-1] += part
+        else:
+            merged.append(part)
+    parts = merged
     return [{"id": f"{block['id']}:s{i + 1}", "masked": part,
              "en": unmask(part, tokens), "display_en": display_text(part, tokens),
              "zh": ""} for i, part in enumerate(parts) if part]
@@ -407,6 +432,34 @@ def outline_for(blocks, tokens, budget=30_000):
     return outline[:max(1, budget // 80)]
 
 
+def heading_of(token_raw):
+    """(level, None) for a sectioning command token, (level, title) for the abstract, else None.
+    Comments and the preamble are separate tokens, so a commented-out or macro-defined
+    \\section never matches here."""
+    match = HEADING_TOKEN.fullmatch(token_raw.strip())
+    if match:
+        return HEADING_LEVELS[match[1]], None
+    if re.fullmatch(r"\\begin\{abstract\}\s*(?:\[.*\])?", token_raw.strip(), re.S):
+        return HEADING_LEVELS["section"], "Abstract"
+    return None
+
+
+def split_headings(part, tokens):
+    """Cut a blank-line paragraph so every heading starts its own part, even when the LaTeX has
+    no blank line around it. The cut goes at the start of the heading's line; the preamble
+    (one token ending with \\begin{document}) is cut off as well."""
+    cuts = set()
+    for match in TOKEN.finditer(part):
+        raw = tokens[match[0]]
+        if heading_of(raw):
+            line_start = part.rfind("\n", 0, match.start()) + 1
+            cuts.add(line_start if not part[line_start:match.start()].strip() else match.start())
+        elif re.search(r"\\begin\{document\}\s*$", raw):
+            cuts.add(match.end())
+    edges = [0] + sorted(c for c in cuts if 0 < c < len(part)) + [len(part)]
+    return [part[a:b] for a, b in zip(edges, edges[1:]) if a < b]
+
+
 def parse_files(files):
     snapshot = {"files": [], "blocks": [], "tokens": {}, "translated": False, "section_titles": {}}
     for file_index, item in enumerate(files):
@@ -416,20 +469,28 @@ def parse_files(files):
         masked = TOKEN.sub(lambda m: mapping[m[0]], masked)
         snapshot["tokens"].update({mapping[key]: value for key, value in local.items()})
         parts, section = [], f"f{file_index}:preamble"
-        for part in re.split(r"(\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*)", masked):
-            if not part:
-                continue
+        pieces = [piece for chunk in re.split(r"(\r?\n[ \t]*\r?\n(?:[ \t]*\r?\n)*)", masked) if chunk
+                  for piece in split_headings(chunk, snapshot["tokens"])]
+        for part in pieces:
             raw = unmask(part, snapshot["tokens"])
-            heading = re.search(r"\\((?:sub)*)section\*?(?:\[[^]]*\])?\s*\{", raw)
+            first = TOKEN.match(part.lstrip())
+            heading = heading_of(snapshot["tokens"][first[0]]) if first else None
             if heading:
-                section = f"section:{len(snapshot['blocks'])}"
-                try:
-                    title = raw[heading.end():group_end(raw, heading.end() - 1) - 1]
-                except ValueError:
-                    title = ""
-                title = re.sub(r"\\[A-Za-z]+\*?|[{}$~]", " ", title)
+                # Named after the block the heading opens (the page relies on this); a heading
+                # whose title has no editable text opens no block, so keep the id unique anyway.
+                section = base = f"section:{len(snapshot['blocks'])}"
+                while section in snapshot["section_titles"]:
+                    section = f"{base}:{len(snapshot['section_titles'])}"
+                level, title = heading
+                if title is None:
+                    brace = re.match(r"\s*\\[A-Za-z]+\*?\s*(?:\[[^\]]*\])?\s*(?=\{)", raw)
+                    try:
+                        title = raw[brace.end() + 1:group_end(raw, brace.end()) - 1] if brace else ""
+                    except ValueError:
+                        title = ""
+                    title = re.sub(r"\\[A-Za-z]+\*?|[{}$~]", " ", title)
                 snapshot["section_titles"][section] = {"title": re.sub(r"\s+", " ", title).strip()[:80],
-                                                       "level": len(heading.group(1)) // 3}
+                                                       "level": level}
             if not re.search(r"[A-Za-z]{2,}", TOKEN.sub("", part)):
                 parts.append({"literal": raw})
                 continue
@@ -439,6 +500,10 @@ def parse_files(files):
             snapshot["blocks"].append(block)
             parts.append({"block": bid})
         snapshot["files"].append({"name": item["name"], "bom": item.get("bom", False), "parts": parts})
+    # Indent relative to the top heading actually used (no \chapter → \section is level 0).
+    top = min((t["level"] for t in snapshot["section_titles"].values()), default=0)
+    for info in snapshot["section_titles"].values():
+        info["level"] = min(info["level"] - top, 2)
     if not snapshot["blocks"]:
         raise ValueError("未找到可改写的英文正文。请上传包含正文的 .tex 文件。")
     return snapshot
@@ -586,6 +651,8 @@ def used_tokens(snapshot, blocks):
 
 def describe_token(raw, macros, limit=160):
     """What a protected placeholder stands for, plus its displayed value when a macro expands."""
+    if is_comment(raw):
+        return "LaTeX comment in the source: not part of the text; do not translate or revise it, just keep the placeholder"
     shown = prettify(raw, macros)
     return raw[:limit] + (f" ⇒ {shown[:80]}" if shown != raw and shown.strip() else "")
 
@@ -936,6 +1003,51 @@ class PaperRevision:
             snapshot["translated"] = False
             self.commit_keep_comments(project, snapshot, {"kind": "clear_translation"})
             return self.read(pid)
+
+    def reparse(self, pid, data):
+        """“重新解析章节”: re-split the current LaTeX with the current parser (projects imported by an
+        older parser keep their old section/paragraph split). The source text is unchanged, so each
+        sentence keeps its Chinese and history, and pending comments are re-anchored by sentence."""
+        with self.lock:
+            project = self.editable(pid, data.get("revision"))
+            current = self.snapshot(pid)
+            fresh = self.build_snapshot(snapshot_files(current))
+            layout = lambda s: ([(b["section"], [u["masked"] for u in b["units"]]) for b in s["blocks"]],
+                                s.get("section_titles") or {})
+            if layout(fresh) == layout(current):
+                return {"project": project, "changed": False, "unplaced": []}
+            # Match sentences by their LaTeX without comments, so a sentence that now carries a
+            # formerly separate comment line still keeps its Chinese.
+            prose = lambda unit, tokens: model_source(unit["masked"], tokens).strip()
+            known = {}
+            for block in current["blocks"]:
+                for unit in block["units"]:
+                    known.setdefault(unit["en"], unit)
+                    known.setdefault(prose(unit, current["tokens"]), unit)
+            missing = 0
+            for block in fresh["blocks"]:
+                for unit in block["units"]:
+                    old = known.get(unit["en"]) or known.get(prose(unit, fresh["tokens"]))
+                    if old and old.get("zh"):
+                        unit["zh"] = old["zh"]
+                    else:
+                        missing += 1
+                    for key in HISTORY_KEYS:
+                        if old and old.get(key):
+                            unit[key] = copy.deepcopy(old[key])
+            for key in ("translation_glossary", "context"):
+                if current.get(key):
+                    fresh[key] = copy.deepcopy(current[key])
+            fresh["translated"] = current.get("translated", False) and not missing
+            pending = [portable_comment(c, current) for c in project["comments"]]
+            if project.get("claude_session"):
+                project["claude_session"]["seen"] = {}  # block ids changed: resend the whole paper
+            self.commit(project, fresh, {"kind": "reparse", "sections": len(fresh["section_titles"])})
+            result = {"project": self.read(pid), "imported": 0, "unplaced": []}
+            if pending:
+                result = self.import_comments(pid, {"revision": result["project"]["revision"],
+                                                    "data": {"format": "paper-revision-comments", "comments": pending}})
+            return {**result, "changed": True}
 
     def editable(self, pid, revision):
         project = self.read(pid)
@@ -1295,10 +1407,10 @@ class PaperRevision:
         indices = [i for i, b in enumerate(blocks) if b["id"] in batch_ids]
         nearby = {i for index in indices for i in range(max(0, index - 1), min(len(blocks), index + 2))}
         # Neighbouring paragraphs not already fully in this request, with their current Chinese.
-        payload["paragraph_context"] = [{"id": blocks[i]["id"], "en": unmask(blocks[i]["masked"], snapshot["tokens"]),
+        payload["paragraph_context"] = [{"id": blocks[i]["id"], "en": model_source(blocks[i]["masked"], snapshot["tokens"]),
                                          "zh": "".join(u["zh"] for u in blocks[i]["units"])}
                                         for i in sorted(nearby) if not all(u["id"] in todo for u in blocks[i]["units"])]
-        payload["references"] = references_for(snapshot, "\n".join(u["en"] for u in units))
+        payload["references"] = references_for(snapshot, "\n".join(model_source(u["masked"], snapshot["tokens"]) for u in units))
         kept = []
         for b in blocks:
             if b["id"] not in batch_ids:
@@ -1535,7 +1647,7 @@ class PaperRevision:
               "en": b["masked"]} for b in blocks],
              "protected": used_tokens(snapshot, blocks), "comments": enrich_comments(job["comments"], snapshot),
              "paper_context": context_brief(snapshot), "import_warnings": snapshot.get("import_warnings", []),
-             "references": references_for(snapshot, "\n".join(unmask(b["masked"], snapshot["tokens"]) for b in blocks)),
+             "references": references_for(snapshot, "\n".join(model_source(b["masked"], snapshot["tokens"]) for b in blocks)),
              "allowed_blocks": {k: sorted(v) for k, v in allowed.items()}, "context_mode": "full_text"}
         engine = job["config"]["stages"]["revise"]["engine"]
         fits = len(json.dumps(payload, ensure_ascii=False)) <= FULL_TEXT_CHARS.get(engine, 150_000)
@@ -1666,8 +1778,9 @@ class PaperRevision:
             excerpt = [b for i, b in enumerate(payload["blocks"]) if i in nearby]
             local = {**payload, "context_mode": "hierarchical", "blocks": excerpt,
                 "comments": local_comments, "allowed_blocks": local_allowed,
-                "protected": {k: snapshot["tokens"][k] for b in excerpt for k in TOKEN.findall(b["en"])},
-                "references": references_for(snapshot, "\n".join(unmask(b["en"], snapshot["tokens"]) for b in excerpt))}
+                "protected": {k: describe_token(snapshot["tokens"][k], snapshot.get("display_macros", {}), 400)
+                              for b in excerpt for k in TOKEN.findall(b["en"])},
+                "references": references_for(snapshot, "\n".join(model_source(b["en"], snapshot["tokens"]) for b in excerpt))}
             result = self.ask(job["config"], instruction, local)
             local_outcomes = result.get("outcomes", [])
             if (not isinstance(local_outcomes, list) or len(local_outcomes) != len(local_comments) or
@@ -1730,7 +1843,7 @@ class PaperRevision:
                 'this prevents the entire revision from being published.',
                 {"task": "audit", "paper_context": context_brief(snapshot), "changes": group,
                  "comments": [c for c in enrich_comments(job["comments"], snapshot) if c["id"] in comment_ids],
-                 "neighbors": [{"id": b["id"], "en": unmask(b["masked"], snapshot["tokens"])}
+                 "neighbors": [{"id": b["id"], "en": model_source(b["masked"], snapshot["tokens"])}
                                for i, b in enumerate(blocks) if i in nearby]}, stage="audit")
             if (type(result.get("ok")) is not bool or not isinstance(result.get("issues"), list) or
                     any(not isinstance(i, str) for i in result["issues"])):
@@ -1754,7 +1867,7 @@ class PaperRevision:
             snapshot = self.snapshot(pid, job["base_revision"])
             google = job["config"]["stages"]["translate"]["engine"] == "google"
             if not (job["kind"] == "translate" and (google or len(self.translation_plan(snapshot)) <= 1)):
-                build_context(self, pid, job, snapshot, unmask)
+                build_context(self, pid, job, snapshot, model_source)
             details, outcomes = [], []
             audit, previous, entries = [], None, None
             enabled = job.get("translate", True)
@@ -1764,7 +1877,7 @@ class PaperRevision:
                 previous = {b["id"]: copy.deepcopy(b["units"]) for b in snapshot["blocks"]}
                 changed, details, outcomes = self.revise(pid, job, snapshot)
                 audit = self.audit_changes(pid, job, snapshot, details)
-                build_context(self, pid, job, snapshot, unmask)
+                build_context(self, pid, job, snapshot, model_source)
                 entries = {d["block_id"]: {"revision": job["base_revision"] + 1, "from_revision": job["base_revision"],
                                            "comment_ids": list(d["comment_ids"]), "reason": d["reason"]} for d in details}
             report = self.translate(pid, job, snapshot, changed, previous, entries, enabled)
@@ -1960,6 +2073,10 @@ def create_paper_revision_blueprint(service):
     @bp.post("/api/paper-revision/projects/<pid>/retranslate")
     def retranslate(pid):
         return jsonify(service.clear_translation(pid, request.get_json()))
+
+    @bp.post("/api/paper-revision/projects/<pid>/reparse")
+    def reparse(pid):
+        return jsonify(service.reparse(pid, request.get_json()))
 
     @bp.post("/api/paper-revision/projects/<pid>/claude-session")
     def claude_session(pid):

@@ -112,6 +112,7 @@
     $('submit').title = $('usage').checked ? '' : '请先勾选左侧“提交时使用所选模型处理论文与批注”';
     $('translateToggle').checked = translateOn; $('translateToggle').disabled = busy || running;
     $('retranslate').hidden = !translateOn || !units.some(u => u.zh); $('retranslate').disabled = busy || running;
+    $('reparse').disabled = busy || running;
     $('projectSettings').disabled = busy || running;
     $('exportComments').href = `${base}/${project.id}/comments/export`;
     $('exportComments').classList.toggle('attention-soft', commentsUnexported());
@@ -376,7 +377,8 @@
     [...project.history].reverse().forEach(record => {
       const article = elem('article', 'history-record'), header = elem('header');
       const labels = {import: '导入原稿', translate: '生成中文', revise: '根据批注修订', restore: `恢复 v${record.from_revision}`,
-        sync: `从磁盘重新读取（${record.changed || 0} 句变化）`, clear_translation: '清空中文，准备重新翻译'};
+        sync: `从磁盘重新读取（${record.changed || 0} 句变化）`, clear_translation: '清空中文，准备重新翻译',
+        reparse: `重新解析章节（${record.sections || 0} 节）`};
       header.append(elem('strong', '', `v${record.revision} · ${labels[record.kind] || record.kind} · ${new Date(record.time * 1000).toLocaleString()}`));
       const actions = elem('div'); const download = elem('a', 'quiet', '下载此版本'); download.href = `${base}/${project.id}/export?revision=${record.revision}`; actions.append(download);
       if (record.revision !== project.revision) {
@@ -763,6 +765,18 @@
     clearError();
     try { await post('retranslate', {revision: project.revision}); await load(project.id); }
     catch (error) { fail(error); }
+  });
+  $('reparse').addEventListener('click', async () => {
+    if (!confirm('按 LaTeX 的 \\section 等标题重新划分章节和段落？\n源码不变；中文译文和待提交批注会尽量保留，生成一个新版本。')) return;
+    clearError(); $('reparse').disabled = true;
+    try {
+      const result = await post('reparse', {revision: project.revision});
+      visitNotes.push(!result.changed ? {kind: 'ok', text: '章节划分已是最新，无需重新解析。'}
+        : {kind: result.unplaced.length ? 'warn' : 'ok', text: '已按 LaTeX 标题重新解析章节。' +
+          (result.unplaced.length ? `${result.unplaced.length} 条批注无法重新定位：${result.unplaced.join('；').slice(0, 300)}` : '')});
+      await load(project.id);
+    } catch (error) { fail(error); }
+    finally { renderControls(); }
   });
   list().catch(fail);
 })();
