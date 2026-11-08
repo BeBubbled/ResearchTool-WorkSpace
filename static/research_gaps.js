@@ -23,7 +23,7 @@
     "projectNameInput", "projectTopicInput", "projectQueryInput", "projectFormError", "importDialog",
     "searchImportPanel", "batchImportPanel", "folderImportPanel", "localImportPanel", "paperSearchForm", "paperQuery", "paperSearchStatus",
     "paperSearchResults", "batchImportForm", "batchPaperTitles", "batchImportButton", "batchImportStatus",
-    "batchImportResults", "folderImportForm", "folderPath", "folderImportButton", "folderImportJob",
+    "batchImportResults", "folderImportForm", "folderPath", "browseFolderPath", "folderImportButton", "folderImportJob",
     "folderImportJobStatus", "folderImportJobProgress", "folderImportProgressBar", "folderImportCurrent",
     "folderImportedCount", "folderDuplicateCount", "folderSkippedCount", "folderFailedCount",
     "pauseFolderImport", "resumeFolderImport", "folderImportResultToolbar", "folderImportStatusFilter",
@@ -649,6 +649,12 @@
     dom.paperSearchForm.addEventListener("submit", searchPapers);
     dom.batchImportForm.addEventListener("submit", batchImportPapers);
     dom.folderImportForm.addEventListener("submit", startFolderImport);
+    dom.browseFolderPath.addEventListener("click", async () => {
+      try {
+        const result = await LocalPaths.pick({ kind: "folder", title: "选择 PDF 文件夹" });
+        if (result) dom.folderPath.value = result.path;
+      } catch (error) { toast(error.message, true); }
+    });
     dom.pauseFolderImport.addEventListener("click", pauseFolderImport);
     dom.resumeFolderImport.addEventListener("click", resumeFolderImport);
     dom.folderImportStatusFilter.addEventListener("change", () => {

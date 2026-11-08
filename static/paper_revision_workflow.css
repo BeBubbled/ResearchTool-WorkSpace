@@ -1,0 +1,17 @@
+/* Workflow editor (双语改稿): one row per step — label · engine · model / effort */
+.wf-editor { display:grid; gap:8px; }
+.wf-row { display:grid; grid-template-columns:minmax(150px, 1.1fr) minmax(150px, 1.2fr) minmax(0, 2fr); gap:8px; align-items:center; }
+.wf-row[hidden] { display:none; }
+.wf-label { font-size:13px; color:inherit; margin:0; }
+.wf-row select { min-width:0; width:100%; }
+.wf-detail { display:flex; gap:6px; align-items:center; min-width:0; }
+.wf-detail select { flex:1; }
+.wf-note { font-size:12px; opacity:.7; line-height:1.5; }
+.wf-row[data-stage="translate_fallback"] .wf-label { padding-left:14px; opacity:.85; }
+.wf-row[data-stage="translate_fallback"] .wf-label::before { content:"↳ "; }
+@media (max-width: 760px) {
+  .wf-row { grid-template-columns:1fr; gap:4px; padding:6px 0; border-bottom:1px dashed rgba(0,0,0,.08); }
+}
+/* Narrow containers (全局设置): label on its own line, engine + model below */
+.workflow-manager .wf-row { grid-template-columns:minmax(0, 1fr) minmax(0, 1.7fr); gap:4px 8px; padding:4px 0 8px; }
+.workflow-manager .wf-label { grid-column:1 / -1; font-weight:600; }

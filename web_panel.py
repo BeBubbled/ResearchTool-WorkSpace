@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from html import escape as html_escape, unescape as html_unescape
 import io
+import copy
 import json
 import math
 import os
@@ -46,6 +47,10 @@ from werkzeug.utils import secure_filename
 from research_gaps import ResearchGapService, create_research_gap_blueprint
 from prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_request_error
 from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
+from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint
+from claude_code_cli import ClaudeCodeRunner
+from google_translate import GoogleTranslator
+from local_paths import LocalPathService, create_local_paths_blueprint
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
@@ -140,6 +145,8 @@ app = Flask(__name__)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 prompt_workbench = PromptWorkbench(RUNTIME_DIR / "prompt-workbench", PROJECT_ROOT / "browser_extension" / "prompt_bridge")
 app.register_blueprint(create_prompt_blueprint(prompt_workbench))
+local_path_service = LocalPathService(RUNTIME_DIR / "local-paths.json")
+app.register_blueprint(create_local_paths_blueprint(local_path_service))
 reader_cache_lock = threading.Lock()
 llm_config_lock = threading.Lock()
 three_pass_manager = ThreePassAnalysisManager(PROJECT_ROOT, THREE_PASS_SKILL_PATH)
@@ -1685,6 +1692,28 @@ def create_stack_readme(work_dir: Path, options: dict[str, Any], rows: int, cols
     (work_dir / "readme.txt").write_text("\n".join(values + ["", ""] + cap_values) + "\n", encoding="utf-8")
 
 
+def write_grid_labels(work_dir: Path, options: dict[str, Any], rows: int, cols: int) -> Path | None:
+    """Write row/column titles and per-cell captions for the PPT grid tools; None when all are empty."""
+
+    def clean(key: str, count: int) -> list[str]:
+        values = options.get(key) or []
+        if not isinstance(values, list):
+            raise ValueError("Invalid title or caption data.")
+        items = [str(item).replace("\r", "").strip()[:500] for item in values[:count]]
+        return items + [""] * (count - len(items))
+
+    labels = {
+        "rowTitles": clean("rowTitles", rows),
+        "colTitles": clean("colTitles", cols),
+        "captions": clean("cellCaptions", rows * cols),
+    }
+    if not any(any(values) for values in labels.values()):
+        return None
+    path = work_dir / "grid_labels.json"
+    path.write_text(json.dumps(labels, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def add_artifact(job: Job, path: Path, kind: str, format_name: str) -> None:
     artifact_id = path.name
     translation_supported = kind in {"ocr", "ocr_legacy"} and path.suffix.lower() in OCR_TRANSLATABLE_SUFFIXES
@@ -1757,6 +1786,8 @@ def prepare_local_pdf_folder(job: Job) -> None:
         raise RuntimeError("The uploaded PDF could not be prepared for local saving.")
     if safe_output_stem(input_files[0].name) != safe_output_stem(source.name):
         raise ValueError("The selected upload and the local PDF path must have the same file name.")
+    if input_files[0].stat().st_size != source.stat().st_size or translation_source_hash(input_files[0]) != translation_source_hash(source):
+        raise ValueError("The selected upload and the local PDF path are different files.")
     destination.mkdir()
     try:
         shutil.copy2(input_files[0], destination / source.name)
@@ -7507,7 +7538,26 @@ def build_command(job: Job, files: list[Path]) -> tuple[list[str] | None, list[P
             if not frame_indexes:
                 raise ValueError("Provide at least one frame index.")
             command += ["--video-dir", str(ordered_dir), "--frame-idx", *frame_indexes]
-        command += ["--rows", str(rows), "--cols", str(cols), "--cell-size-cm", str(size), "--gap-px", str(gap), "--margin-cm", str(margin), "--fit", fit, "--sort", "name", "--out", str(output)]
+        command += ["--rows", str(rows), "--cols", str(cols)]
+        cell_width = number(options.get("cellWidth"), "Cell width", 0, 0, 100)
+        cell_height = number(options.get("cellHeight"), "Cell height", 0, 0, 100)
+        if cell_width > 0 or cell_height > 0:
+            command += ["--cell-width-cm", str(cell_width or size), "--cell-height-cm", str(cell_height or size)]
+        else:
+            command += ["--cell-size-cm", str(size)]
+        command += ["--gap-px", str(gap), "--margin-cm", str(margin), "--fit", fit, "--sort", "name", "--out", str(output)]
+        labels_file = write_grid_labels(job.root, options, rows, cols)
+        if labels_file:
+            command += ["--labels-json", str(labels_file)]
+            for key, flag, default, maximum in (
+                ("rowTitleWidth", "--row-title-width-cm", 2.5, 100), ("colTitleHeight", "--col-title-height-cm", 1.0, 100),
+                ("captionHeight", "--caption-height-cm", 0.8, 100), ("titleFont", "--title-font-pt", 14, 400),
+                ("captionFont", "--caption-font-pt", 11, 400),
+            ):
+                command += [flag, str(number(options.get(key), key, default, 0, maximum))]
+            font_name = option_text(options, "fontName")
+            if font_name:
+                command += ["--font-name", font_name]
         return command, [output]
     if tool_id == "stack_images":
         direction = option_text(options, "direction", "horizontal")
@@ -7533,6 +7583,10 @@ def build_command(job: Job, files: list[Path]) -> tuple[list[str] | None, list[P
             ("titleFont", "--title-fontsize", 26, 1, 1000), ("captionFont", "--rowcap-fontsize" if mode == "h" else "--colcap-fontsize", 30, 1, 1000),
         ):
             command += [flag, str(positive_int(options.get(key), key, default, minimum, maximum))]
+        if mode == "v":
+            # Row captions are only drawn in h mode; in v mode the row band is pure blank space
+            # (stack_cli defaults it to 150px), so collapse it.
+            command += ["--rowcap-band-px", "0"]
         audio = option_text(options, "audio", "first")
         if audio not in {"first", "none"}:
             raise ValueError("Audio must be first or none.")
@@ -7776,6 +7830,112 @@ research_gap_service = ResearchGapService(
 )
 app.register_blueprint(create_research_gap_blueprint(research_gap_service))
 
+# A whole-paper translation is one long request; allow up to 40 minutes.
+paper_revision_claude_runner = ClaudeCodeRunner(timeout=2400)
+GOOGLE_TRANSLATE_ENV_KEY = "GOOGLE_TRANSLATE_API_KEY"
+
+
+def write_env_values(values: dict[str, str]) -> None:
+    """Persist values to the project-local .env (empty value = remove) and the live process."""
+    with llm_config_lock:
+        if not ENV_FILE.exists():
+            ENV_FILE.touch(mode=0o600)
+        for key, value in values.items():
+            if value:
+                set_key(str(ENV_FILE), key, value, quote_mode="auto")
+                os.environ[key] = value
+            else:
+                unset_key(str(ENV_FILE), key)
+                os.environ.pop(key, None)
+
+
+paper_revision_google = GoogleTranslator(lambda: os.getenv(GOOGLE_TRANSLATE_ENV_KEY, ""))
+PAPER_REVISION_WORKFLOW_ENV_KEY = "PAPER_REVISION_WORKFLOW"
+
+
+def paper_revision_workflow_defaults() -> dict[str, Any]:
+    """Saved per-step engines (全局设置 → 双语改稿); first run uses the recommended workflow."""
+    raw = os.getenv(PAPER_REVISION_WORKFLOW_ENV_KEY, "").strip()
+    if raw:
+        try:
+            return json.loads(raw)
+        except ValueError:
+            pass
+    return copy.deepcopy(PAPER_REVISION_DEFAULT_WORKFLOW)
+
+
+def save_paper_revision_workflow(workflow: dict[str, Any]) -> None:
+    write_env_values({PAPER_REVISION_WORKFLOW_ENV_KEY: json.dumps(workflow, ensure_ascii=False, separators=(",", ":"))})
+paper_revision_service = PaperRevision(
+    RUNTIME_DIR / "paper-revision",
+    codex_request=research_gap_codex_runner.run,
+    codex_status=codex_status_with_preferences,
+    llm_request=research_gap_llm_request,
+    llm_presets=public_llm_presets,
+    claude_request=paper_revision_claude_runner.run,
+    claude_status=paper_revision_claude_runner.status,
+    google=paper_revision_google,
+    workflow_defaults=paper_revision_workflow_defaults,
+    workflow_saver=save_paper_revision_workflow,
+    claude_session_request=paper_revision_claude_runner.run_session,
+)
+
+
+@app.get("/api/google-translate-config")
+def get_google_translate_config():
+    return jsonify({"google": paper_revision_google.status()})
+
+
+@app.put("/api/google-translate-config")
+def update_google_translate_config():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("apiKey") or "").strip()
+    if not key or len(key) > 300 or any(c.isspace() for c in key):
+        return json_error("请输入有效的 Google Cloud Translation API Key。")
+    try:
+        paper_revision_google.check(key)  # one tiny Basic (v2) request: key valid + API enabled
+        write_env_values({GOOGLE_TRANSLATE_ENV_KEY: key})
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc))
+    return jsonify({"google": paper_revision_google.status()})
+
+
+@app.delete("/api/google-translate-config")
+def remove_google_translate_config():
+    try:
+        write_env_values({GOOGLE_TRANSLATE_ENV_KEY: ""})
+    except OSError as exc:
+        return json_error(str(exc))
+    return jsonify({"google": paper_revision_google.status()})
+
+
+@app.post("/api/google-translate-config/test")
+def test_google_translate_config():
+    try:
+        return jsonify({"google": paper_revision_google.status(), "test": paper_revision_google.test()})
+    except ValueError as exc:
+        return json_error(str(exc))
+
+
+@app.get("/api/claude-code-config")
+def get_claude_code_config():
+    return jsonify({"claude": paper_revision_claude_runner.status()})
+
+
+@app.post("/api/claude-code-config/refresh")
+def refresh_claude_code_config():
+    return jsonify({"claude": paper_revision_claude_runner.status(refresh=True)})
+
+
+@app.post("/api/claude-code-config/test")
+def test_claude_code_config():
+    try:
+        result = paper_revision_claude_runner.test()
+    except ValueError as exc:
+        return json_error(str(exc))
+    return jsonify({"claude": paper_revision_claude_runner.status(), "test": result})
+app.register_blueprint(create_paper_revision_blueprint(paper_revision_service))
+
 
 def research_studio_paper_source(cache_key: str) -> Path | None:
     """Use an original cached PDF, including PDFs whose reading view uses OCR."""
@@ -7817,6 +7977,11 @@ app.register_blueprint(create_research_studio_blueprint(research_studio_service)
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/settings")
+def settings_page():
+    return render_template("settings.html", embed=request.args.get("embed") == "1")
 
 
 @app.get("/reader")

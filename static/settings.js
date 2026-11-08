@@ -1,0 +1,989 @@
+/* 全局设置：LLM、Mathpix、Codex、Claude Code、Google 翻译、双语改稿工作流、Three-Pass、Azure Speech、GitHub。
+   Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
+(() => {
+"use strict";
+const SETTINGS_TABS = ["llm", "mathpix", "codex", "claude", "google", "workflow", "three-pass", "speech", "github"];
+const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, claudeConfig: null, workflowOptions: null, settingsTab: "llm" };
+const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+let form = null;
+let hooks = { onTabChange() {}, onChanged() {}, onSaved() {} };
+
+// Tools availability (Mathpix / GitHub) changed: let the host page refresh what it shows.
+async function reloadTools() { await hooks.onChanged(); }
+
+async function mount(root, options = {}) {
+  form = root;
+  hooks = { ...hooks, ...options };
+  state.settingsTab = SETTINGS_TABS.includes(options.tab) ? options.tab : state.settingsTab;
+  form.innerHTML = `<div class="llm-manager-loading">正在读取本机全局配置…</div>`;
+  try {
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalClaudeConfig(), loadGlobalWorkflowConfig()]);
+    renderLlmManager();
+  } catch (error) {
+    form.innerHTML = `<p class="message">${escapeHtml(error.message)}</p><button type="button" data-retry-llm>重新加载</button>`;
+    form.querySelector("[data-retry-llm]")?.addEventListener("click", () => mount(root, options));
+  }
+}
+
+async function loadGlobalLlmPresets() {
+  const response = await fetch("/api/llm-presets");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 LLM 配置。");
+  state.llmPresets = data.presets || [];
+}
+
+async function loadGlobalCodexConfig(forceRefresh = false) {
+  const response = await fetch(forceRefresh ? "/api/codex/status/refresh" : "/api/codex/status", forceRefresh ? { method:"POST" } : undefined);
+  const data = await response.json();
+  state.codexConfig = data || { available:false, models:[], rateLimits:null };
+  return state.codexConfig;
+}
+
+async function loadGlobalThreePassConfig() {
+  const response = await fetch("/api/three-pass-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Three-Pass 篇幅设置。");
+  state.threePassConfig = data.threePass;
+  return state.threePassConfig;
+}
+
+async function loadGlobalSpeechConfig() {
+  const response = await fetch("/api/speech-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Azure Speech 配置。");
+  state.speechConfig = data.speech || {
+    configured: false,
+    region: "centralus",
+    voice: "zh-CN-YunxiNeural",
+  };
+}
+
+async function loadGlobalMathpixConfig() {
+  const response = await fetch("/api/mathpix-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Mathpix 配置。");
+  state.mathpixConfig = data.mathpix || { configured: false };
+}
+
+async function loadGlobalGoogleConfig() {
+  const response = await fetch("/api/google-translate-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Google 翻译配置。");
+  state.googleConfig = data.google || { configured: false };
+}
+
+async function loadGlobalClaudeConfig(refresh = false) {
+  const response = await fetch(refresh ? "/api/claude-code-config/refresh" : "/api/claude-code-config", refresh ? { method:"POST" } : undefined);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 Claude Code 状态。");
+  state.claudeConfig = data.claude || { available: false };
+}
+
+async function loadGlobalWorkflowConfig() {
+  const response = await fetch("/api/paper-revision/workflow", { headers:{ "X-Paper-Revision":"1" } });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取双语改稿工作流。");
+  state.workflowOptions = data.options;
+}
+
+async function loadGlobalGithubConfig() {
+  const response = await fetch("/api/github-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 GitHub 配置。");
+  state.githubConfig = data.github || {
+    configured: false,
+    repository: "",
+    branch: "main",
+    imageRoot: "images",
+  };
+}
+
+function codexEffortsForModel(model, preferred = "") {
+  const efforts = model?.supportedEfforts?.length
+    ? [...model.supportedEfforts]
+    : [model?.defaultEffort || preferred || "high"];
+  return {
+    efforts,
+    selected: efforts.includes(preferred) ? preferred : (model?.defaultEffort || efforts[0]),
+  };
+}
+
+function codexEffortLabel(model, effort) {
+  const modelId = model?.id || "";
+  const supportsInstant = modelId === "gpt-5.6" || modelId.startsWith("gpt-5.6-") || ["gpt-6-sol", "gpt-6-luna"].includes(modelId);
+  return effort === "none" && supportsInstant
+    ? "Instant（none）"
+    : effort;
+}
+
+function codexRuntimeText(runtime) {
+  if (!runtime?.version) return "";
+  const label = runtime.managed ? "项目内 Codex " + runtime.version : "Codex " + runtime.version;
+  return runtime.restartRequired && runtime.availableUpdateVersion
+    ? label + " · " + runtime.availableUpdateVersion + " 将在空闲时刷新后启用"
+    : label;
+}
+
+function codexRateLimitSnapshots(rateLimits) {
+  if (!rateLimits || typeof rateLimits !== "object") return [];
+  if (Array.isArray(rateLimits.rateLimits)) return rateLimits.rateLimits;
+  if (rateLimits.rateLimitsByLimitId && typeof rateLimits.rateLimitsByLimitId === "object") return Object.values(rateLimits.rateLimitsByLimitId);
+  return rateLimits.rateLimit ? [rateLimits.rateLimit] : [];
+}
+
+function codexResetText(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "重置时间未知";
+  return new Intl.DateTimeFormat("zh-CN", { month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit" }).format(new Date(timestamp * 1000));
+}
+
+function renderCodexQuotaCards(rateLimits) {
+  const cards = [];
+  codexRateLimitSnapshots(rateLimits).forEach((snapshot, snapshotIndex) => {
+    if (!snapshot || typeof snapshot !== "object") return;
+    const name = snapshot.limitName || snapshot.limitId || (snapshotIndex ? `额度 ${snapshotIndex + 1}` : "Codex 额度");
+    [["主要窗口", snapshot.primary], ["次要窗口", snapshot.secondary]].forEach(([windowName, window]) => {
+      if (!window || typeof window !== "object") return;
+      const used = Math.min(100, Math.max(0, Number(window.usedPercent) || 0));
+      const remaining = Math.max(0, 100 - used);
+      const duration = Number(window.windowDurationMins);
+      const durationText = Number.isFinite(duration) && duration > 0 ? ` · ${duration < 60 ? `${duration} 分钟` : `${Math.round(duration / 60)} 小时`}窗口` : "";
+      cards.push(`<article class="codex-quota-card"><div><span>${escapeHtml(name)} · ${windowName}</span><strong>${remaining}%</strong><small>剩余${durationText} · ${escapeHtml(codexResetText(window.resetsAt))}重置</small></div><div class="codex-quota-track" role="progressbar" aria-label="${escapeHtml(name)}剩余额度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${remaining}"><span style="width:${remaining}%"></span></div></article>`);
+    });
+  });
+  return cards.length ? cards.join("") : `<div class="llm-empty-state codex-quota-empty"><strong>暂时无法读取额度</strong><p>账户或当前 Codex 版本可能未返回额度窗口；可稍后刷新。</p></div>`;
+}
+
+const THREE_PASS_PHASE_LABELS = {
+  pass1: "Pass 1 · 快速定位",
+  pass2: "Pass 2 · 结构与证据",
+  pass3: "Pass 3 · 重点深读",
+  synthesis: "综合报告",
+};
+
+function renderThreePassLengthCard(phase, config) {
+  const item = config.phases?.[phase] || { level:"medium", target:config.presets?.[phase]?.medium || 0 };
+  const preset = config.presets?.[phase] || {};
+  const custom = item.level === "custom";
+  return `<article class="three-pass-length-card" data-length-phase="${phase}">
+    <div class="three-pass-length-heading"><strong>${escapeHtml(THREE_PASS_PHASE_LABELS[phase])}</strong><span data-length-summary>约 ${escapeHtml(item.target)} 字 / words</span></div>
+    <label>篇幅
+      <select name="${phase}Level" data-length-level>
+        <option value="low" ${item.level === "low" ? "selected" : ""}>短 · ${escapeHtml(preset.low)}</option>
+        <option value="medium" ${item.level === "medium" ? "selected" : ""}>中 · ${escapeHtml(preset.medium)}</option>
+        <option value="long" ${item.level === "long" ? "selected" : ""}>长 · ${escapeHtml(preset.long)}</option>
+        <option value="custom" ${custom ? "selected" : ""}>自定义</option>
+      </select>
+    </label>
+    <label class="three-pass-custom-length ${custom ? "" : "hidden"}">自定义目标
+      <input name="${phase}Target" data-length-target type="number" min="${escapeHtml(config.limits.min)}" max="${escapeHtml(config.limits.max)}" step="${escapeHtml(config.limits.step)}" value="${escapeHtml(item.target)}" ${custom ? "required" : ""}>
+    </label>
+  </article>`;
+}
+
+function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
+  if (message && kind === "ok") hooks.onSaved(messageTarget);
+  const editing = state.editingLlmId ? state.llmPresets.find(item => item.id === state.editingLlmId) : null;
+  const speech = state.speechConfig || {
+    configured: false,
+    region: "centralus",
+    voice: "zh-CN-YunxiNeural",
+  };
+  const mathpix = state.mathpixConfig || { configured: false };
+  const github = state.githubConfig || {
+    configured: false,
+    repository: "",
+    branch: "main",
+    imageRoot: "images",
+  };
+  const google = state.googleConfig || { configured: false };
+  const claude = state.claudeConfig || { available: false, plan: false, models: [], efforts: [] };
+  const codex = state.codexConfig || { available:false, chatgptAuthenticated:false, models:[], rateLimits:null };
+  const codexModels = codex.models || [];
+  const codexModel = codexModels.find(item => item.id === codex.defaultModel) || codexModels[0] || null;
+  const codexEffortView = codexEffortsForModel(codexModel, codex.defaultReasoningEffort);
+  const codexReady = Boolean(codex.available && codex.chatgptAuthenticated && codexModel);
+  const codexRuntime = codexRuntimeText(codex.runtime);
+  const cards = state.llmPresets.map(preset => `
+    <article class="llm-preset-card">
+      <div class="llm-preset-copy">
+        <div class="llm-preset-heading"><h3>${escapeHtml(preset.name)}</h3><span class="preset-id">${preset.id === "default" ? "默认配置" : escapeHtml(preset.id)}</span></div>
+        <p>${escapeHtml(preset.model)} · ${escapeHtml(preset.protocol || "auto")} · 并发 ${escapeHtml(preset.concurrency || 1)}${preset.contextWindow ? ` · 上下文 ${escapeHtml(preset.contextWindow)}` : ""}</p>
+        <code>${escapeHtml(preset.baseUrl)}</code>
+      </div>
+      <div class="llm-preset-actions">
+        <button type="button" class="test-button" data-test-llm="${escapeHtml(preset.id)}">测试</button>
+        <button type="button" class="test-button" data-test-llm-concurrency="${escapeHtml(preset.id)}">测试并发</button>
+        <button type="button" data-edit-llm="${escapeHtml(preset.id)}">编辑</button>
+        <button type="button" class="danger-button" data-delete-llm="${escapeHtml(preset.id)}">删除</button>
+      </div>
+    </article>`).join("");
+  form.innerHTML = `
+    <section class="llm-manager">
+      <div class="settings-tabs" role="tablist" aria-label="全局配置类别">
+        <button type="button" role="tab" data-settings-tab="llm">LLM</button>
+        <button type="button" role="tab" data-settings-tab="mathpix">Mathpix</button>
+        <button type="button" role="tab" data-settings-tab="codex">Codex</button>
+        <button type="button" role="tab" data-settings-tab="claude">Claude Code</button>
+        <button type="button" role="tab" data-settings-tab="google">Google 翻译</button>
+        <button type="button" role="tab" data-settings-tab="workflow">双语改稿</button>
+        <button type="button" role="tab" data-settings-tab="three-pass">Three-Pass</button>
+        <button type="button" role="tab" data-settings-tab="speech">Azure Speech</button>
+        <button type="button" role="tab" data-settings-tab="github">GitHub</button>
+      </div>
+      <section class="settings-tab-panel mathpix-manager" data-settings-panel="mathpix" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Mathpix OCR</h3><span class="preset-id ${mathpix.configured ? "" : "speech-unconfigured"}">${mathpix.configured ? "已配置" : "未配置"}</span></div>
+            <p class="hint">用于论文 PDF OCR。App ID 和 App Key 只保存在项目 .env 与当前后端进程；保存后立即启用，不会发起额外识别请求。</p>
+          </div>
+        </div>
+        <p id="mathpixManagerStatus" class="manager-message ${messageTarget === "mathpix" ? escapeHtml(kind) : ""} ${message && messageTarget === "mathpix" ? "" : "hidden"}" role="status">${messageTarget === "mathpix" ? escapeHtml(message) : ""}</p>
+        <form id="mathpixConfigForm" class="llm-editor-form mathpix-editor-form">
+          <label>App ID<input name="appId" autocomplete="off" ${mathpix.configured ? "" : "required"} maxlength="1000" placeholder="${mathpix.configured ? "留空表示保持当前 App ID" : "仅保存到本机 .env"}"></label>
+          <label>App Key<input name="appKey" type="password" autocomplete="new-password" ${mathpix.configured ? "" : "required"} maxlength="1000" placeholder="${mathpix.configured ? "留空表示保持当前 App Key" : "仅保存到本机 .env"}"></label>
+          <div class="speech-editor-actions">
+            ${mathpix.configured ? `<button type="button" class="danger-button" data-delete-mathpix>移除配置</button>` : ""}
+            <button type="submit" class="primary">保存 Mathpix</button>
+          </div>
+        </form>
+      </section>
+      <section class="settings-tab-panel codex-manager" data-settings-panel="codex" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Codex 额度与默认设置</h3><span class="preset-id ${codexReady ? "" : "speech-unconfigured"}">${codexReady ? "已连接" : "不可用"}</span></div>
+            <p class="hint">默认自动安装并更新项目内 Codex 稳定版；不会修改全局 Codex CLI 配置。</p>
+          </div>
+          <div class="codex-heading-actions">
+            ${codex.chatgptAuthenticated ? `<button type="button" class="danger-button" data-codex-logout>退出登录</button>` : `<button type="button" class="test-button" data-codex-login>浏览器登录</button>`}
+            <button type="button" class="test-button" data-refresh-codex>刷新账户与额度</button>
+          </div>
+        </div>
+        <p id="codexManagerStatus" class="manager-message ${messageTarget === "codex" ? escapeHtml(kind) : ""} ${message && messageTarget === "codex" ? "" : (codexReady ? "ok" : "warn")}" role="status">${messageTarget === "codex" && message ? escapeHtml(message) : escapeHtml(codexReady ? `ChatGPT ${codex.planType || "账户"} 已连接 · ${codexModels.length} 个可用模型${codexRuntime ? ` · ${codexRuntime}` : ""}` : (codex.error || "Codex 尚未通过 ChatGPT 登录。"))}</p>
+        <div class="codex-quota-heading"><div><span class="eyebrow">USAGE</span><h4>剩余额度</h4></div><span class="hint">额度是即时快照，刷新后更新</span></div>
+        <div class="codex-quota-grid">${renderCodexQuotaCards(codex.rateLimits)}</div>
+        <form id="codexConfigForm" class="llm-editor-form codex-editor-form">
+          <label>默认模型<select name="model" ${codexReady ? "" : "disabled"}>${codexModels.length ? codexModels.map(model => `<option value="${escapeHtml(model.id)}" ${model.id === codexModel?.id ? "selected" : ""}>${escapeHtml(model.displayName || model.id)}</option>`).join("") : `<option value="">当前无可用模型</option>`}</select><span class="hint">新建 Codex 论文分析时自动选中。</span></label>
+          <label>默认推理强度<select name="reasoningEffort" ${codexReady ? "" : "disabled"}>${codexEffortView.efforts.map(effort => `<option value="${escapeHtml(effort)}" ${effort === codexEffortView.selected ? "selected" : ""}>${escapeHtml(codexEffortLabel(codexModel, effort))}</option>`).join("")}</select><span class="hint">Instant 响应最快；强度越高通常越慢，也会使用更多 token。</span></label>
+          <div class="llm-editor-actions"><button type="submit" class="primary" ${codexReady ? "" : "disabled"}>保存 Codex 默认值</button></div>
+        </form>
+      </section>
+      <section class="settings-tab-panel claude-manager" data-settings-panel="claude" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Claude Code CLI</h3><span class="preset-id ${claude.plan ? "" : "speech-unconfigured"}">${claude.plan ? "已连接" : "不可用"}</span></div>
+            <p class="hint">双语改稿通过本机已登录的 claude CLI 调用，消耗 Claude 套餐额度（与 claude.ai / Claude Code 共用）。调用时移除 API Key 环境变量、禁用全部工具，并在空目录中运行。</p>
+          </div>
+          <div class="codex-heading-actions">
+            <button type="button" class="test-button" data-test-claude ${claude.plan ? "" : "disabled"}>测试调用</button>
+            <button type="button" class="test-button" data-refresh-claude>刷新状态</button>
+          </div>
+        </div>
+        <p id="claudeManagerStatus" class="manager-message ${messageTarget === "claude" && message ? escapeHtml(kind) : (claude.plan ? "ok" : "warn")}" role="status">${messageTarget === "claude" && message ? escapeHtml(message) : escapeHtml(claude.plan ? `已登录 · ${claude.subscriptionType || "Claude"} 套餐${claude.version ? ` · CLI ${claude.version}` : ""}` : (claude.error || "未找到 Claude Code CLI。"))}</p>
+        ${claude.plan ? "" : `<p class="hint">登录方式：在终端运行 <code>claude</code>，按提示用 Claude 账号（Pro / Max）登录，然后点“刷新状态”。若 claude 不在 PATH 中，可在 .env 中设置 <code>CLAUDE_CODE_CLI</code> 为其绝对路径。</p>`}
+        ${claude.cliPath ? `<p class="hint">CLI 路径：<code>${escapeHtml(claude.cliPath)}</code></p>` : ""}
+        <p class="hint">双语改稿各步骤使用哪个 Claude 模型与推理强度，在 <a href="#settings/workflow" data-goto-workflow>双语改稿</a> 分区中设置。</p>
+      </section>
+      <section class="settings-tab-panel workflow-manager" data-settings-panel="workflow" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>双语改稿 · 默认工作流</h3><span class="preset-id">全局默认</span></div>
+            <p class="hint">为每个步骤选择默认引擎：Claude Code（套餐额度）、Codex（套餐额度）、已保存的 API 预设（独立计费），翻译还可选 Google 翻译 Basic（v2）。改稿页面打开时使用这里的设置，页面上的改动只对当次会话有效。</p>
+          </div>
+        </div>
+        <p id="workflowManagerStatus" class="manager-message ${messageTarget === "workflow" ? escapeHtml(kind) : ""} ${message && messageTarget === "workflow" ? "" : "hidden"}" role="status">${messageTarget === "workflow" ? escapeHtml(message) : ""}</p>
+        <div id="workflowEditor" class="workflow-editor"></div>
+        <p class="hint">默认：翻译用 Google 翻译，对不齐的句子由 Sonnet · 中补译；通读、修订与核对用 Opus · 中。未登录或未配置的引擎可以先选上，提交时才会检查。</p>
+        <div class="llm-editor-actions"><button type="button" data-reset-workflow>恢复推荐值</button><button type="button" class="primary" data-save-workflow>保存默认工作流</button></div>
+      </section>
+      <section class="settings-tab-panel google-manager" data-settings-panel="google" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Google 翻译 · Basic（v2）</h3><span class="preset-id ${google.configured ? "" : "speech-unconfigured"}">${google.configured ? "已配置" : "未配置"}</span></div>
+            <p class="hint">仅使用 Cloud Translation 基础版：<code>${escapeHtml(google.endpoint || "https://translation.googleapis.com/language/translate/v2")}</code>。用于双语改稿的快速翻译；按字符计费，每月前 50 万字符免费。Key 只保存在项目 .env，通过请求头发送。</p>
+          </div>
+        </div>
+        <p id="googleManagerStatus" class="manager-message ${messageTarget === "google" ? escapeHtml(kind) : ""} ${message && messageTarget === "google" ? "" : "hidden"}" role="status">${messageTarget === "google" ? escapeHtml(message) : ""}</p>
+        <p class="hint">获取 Key：Google Cloud 控制台 → 启用 “Cloud Translation API” 并开通结算 → API 和服务 → 凭据 → 创建 API 密钥（建议在“API 限制”中只允许 Cloud Translation API）。大陆网络需代理，后端请求遵循系统代理。</p>
+        <form id="googleConfigForm" class="llm-editor-form mathpix-editor-form">
+          <label>API Key<input name="apiKey" type="password" autocomplete="new-password" required maxlength="300" placeholder="${google.configured ? "粘贴新 Key 以替换当前 Key" : "仅保存到本机 .env"}"><span class="hint">保存前会发送一次极小的翻译请求验证 Key 与 API 是否可用。</span></label>
+          <div class="speech-editor-actions">
+            <button type="button" class="test-button" data-test-google ${google.configured ? "" : "disabled"}>测试翻译</button>
+            ${google.configured ? `<button type="button" class="danger-button" data-delete-google>移除配置</button>` : ""}
+            <button type="submit" class="primary">验证并保存</button>
+          </div>
+        </form>
+      </section>
+      <section class="settings-tab-panel three-pass-settings" data-settings-panel="three-pass" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Three-Pass 分阶段篇幅</h3><span class="preset-id">全局默认</span></div>
+            <p class="hint">同时用于 Codex 与直接 API。中文按目标字数、英文按目标 words 控制，实际输出允许约 ±${escapeHtml(state.threePassConfig?.tolerancePercent || 20)}% 浮动。</p>
+          </div>
+        </div>
+        <p id="threePassConfigStatus" class="manager-message ${messageTarget === "three-pass" ? escapeHtml(kind) : ""} ${message && messageTarget === "three-pass" ? "" : "hidden"}" role="status">${messageTarget === "three-pass" ? escapeHtml(message) : ""}</p>
+        <form id="threePassConfigForm">
+          <div class="three-pass-length-grid">${Object.keys(THREE_PASS_PHASE_LABELS).map(phase => renderThreePassLengthCard(phase, state.threePassConfig)).join("")}</div>
+          <p class="hint three-pass-length-note">这是可见报告的目标篇幅，不会机械截断。直接 API 的“最大输出 token”仍是独立安全上限。</p>
+          <div class="llm-editor-actions three-pass-length-actions"><button type="button" data-reset-three-pass>恢复推荐值</button><button type="submit" class="primary">保存 Three-Pass 篇幅</button></div>
+        </form>
+      </section>
+      <section class="settings-tab-panel speech-manager" data-settings-panel="speech" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>Azure Speech</h3><span class="preset-id ${speech.configured ? "" : "speech-unconfigured"}">${speech.configured ? "已配置" : "未配置"}</span></div>
+            <p class="hint">PDF 各阅读视图的段落朗读；API Key 只保存在项目 .env 和当前后端进程中。</p>
+          </div>
+        </div>
+        <p id="speechManagerStatus" class="manager-message ${messageTarget === "speech" ? escapeHtml(kind) : ""} ${message && messageTarget === "speech" ? "" : "hidden"}" role="status">${messageTarget === "speech" ? escapeHtml(message) : ""}</p>
+        <form id="speechConfigForm" class="llm-editor-form speech-editor-form">
+          <label>Azure 区域<input name="region" value="${escapeHtml(speech.region)}" required maxlength="64" placeholder="centralus"></label>
+          <label>语音名称<input name="voice" value="${escapeHtml(speech.voice)}" required maxlength="100" placeholder="zh-CN-YunxiNeural"></label>
+          <label class="speech-key-field">API Key<input name="apiKey" type="password" autocomplete="new-password" ${speech.configured ? "" : "required"} maxlength="1000" placeholder="${speech.configured ? "留空表示保持当前密钥" : "仅保存到本机 .env"}"></label>
+          <div class="speech-editor-actions">
+            <button type="button" class="test-button" data-test-speech ${speech.configured ? "" : "disabled"}>测试语音</button>
+            ${speech.configured ? `<button type="button" class="danger-button" data-delete-speech>移除配置</button>` : ""}
+            <button type="submit" class="primary">保存 Azure Speech</button>
+          </div>
+        </form>
+      </section>
+      <section class="settings-tab-panel" data-settings-panel="llm" role="tabpanel">
+      <div class="section-heading llm-manager-heading">
+        <div><h3>OpenAI-compatible LLM</h3><p class="hint">统一用于翻译、OCR 后翻译和论文划词问答；API Key 始终只留在后端。</p></div>
+        <button type="button" class="primary" data-add-llm>＋ 添加 LLM</button>
+      </div>
+      <p id="llmManagerStatus" class="manager-message ${messageTarget === "llm" ? escapeHtml(kind) : ""} ${message && messageTarget === "llm" ? "" : "hidden"}" role="status">${messageTarget === "llm" ? escapeHtml(message) : ""}</p>
+      <div class="llm-preset-list">${cards || `<div class="llm-empty-state"><strong>还没有可用的 LLM 配置</strong><p>添加一个 OpenAI-compatible 服务后，所有需要 LLM 的功能都能直接选择它。</p></div>`}</div>
+      <section id="llmEditor" class="llm-editor ${state.editingLlmId === null ? "hidden" : ""}">
+        <div class="section-heading"><div><p class="eyebrow">${editing ? "EDIT PRESET" : "NEW PRESET"}</p><h3>${editing ? `编辑 ${escapeHtml(editing.name)}` : "添加 LLM 配置"}</h3></div><button type="button" data-cancel-llm>取消</button></div>
+        <form id="llmEditorForm" class="llm-editor-form">
+          <label>配置名称<input name="name" value="${escapeHtml(editing?.name || "")}" required maxlength="100" placeholder="例如：DeepSeek"></label>
+          <label>Base URL<input name="baseUrl" value="${escapeHtml(editing?.baseUrl || "")}" required maxlength="500" placeholder="https://api.example.com/v1"></label>
+          <label>API Key<input name="apiKey" type="password" autocomplete="new-password" ${editing ? "" : "required"} maxlength="1000" placeholder="${editing ? "留空表示保持当前密钥" : "仅保存到本机 .env"}"></label>
+          <label>Model ID<input name="model" value="${escapeHtml(editing?.model || "")}" required maxlength="200" placeholder="例如：deepseek-chat"></label>
+          <label>API 协议<select name="protocol"><option value="auto" ${(editing?.protocol || "auto") === "auto" ? "selected" : ""}>自动识别</option><option value="responses" ${editing?.protocol === "responses" ? "selected" : ""}>Responses API</option><option value="chat_completions" ${editing?.protocol === "chat_completions" ? "selected" : ""}>Chat Completions</option></select><span class="hint">OpenAI 官方地址在自动模式下使用 Responses API。</span></label>
+          <label>上下文窗口（可选）<input name="contextWindow" type="number" value="${escapeHtml(editing?.contextWindow || "")}" min="8000" max="10000000" step="1000" placeholder="例如：128000"><span class="hint">用于长论文分块与调用次数预估。</span></label>
+          <label>并发请求数<input name="concurrency" type="number" value="${escapeHtml(editing?.concurrency || 1)}" required min="1" max="64" step="1"><span class="hint">同一配置的所有 LLM 调用共享此上限（1–64）。</span></label>
+          <div class="llm-editor-actions"><button type="submit" class="primary">${editing ? "保存修改" : "添加配置"}</button></div>
+        </form>
+      </section>
+      </section>
+      <section class="settings-tab-panel github-manager" data-settings-panel="github" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>GitHub 图片仓库</h3><span class="preset-id ${github.configured ? "" : "speech-unconfigured"}">${github.configured ? "已配置" : "未配置"}</span></div>
+            <p class="hint">供“Markdown 图片发布”使用。Token 仅保存在项目 .env；Raw 链接要求公开仓库。</p>
+          </div>
+        </div>
+        <p id="githubManagerStatus" class="manager-message ${messageTarget === "github" ? escapeHtml(kind) : ""} ${message && messageTarget === "github" ? "" : "hidden"}" role="status">${messageTarget === "github" ? escapeHtml(message) : ""}</p>
+        <form id="githubConfigForm" class="llm-editor-form github-editor-form">
+          <label>仓库（owner/repo）<input name="repository" value="${escapeHtml(github.repository)}" required maxlength="140" placeholder="octocat/research-images"></label>
+          <label>目标分支<input name="branch" value="${escapeHtml(github.branch || "main")}" required maxlength="255" placeholder="main"></label>
+          <label>图片根目录<input name="imageRoot" value="${escapeHtml(github.imageRoot || "images")}" required maxlength="500" placeholder="images"></label>
+          <label class="github-token-field">Personal Access Token<input name="token" type="password" autocomplete="new-password" ${github.configured ? "" : "required"} maxlength="1000" placeholder="${github.configured ? "留空表示保持当前 Token" : "需要 Contents: write 权限"}"></label>
+          <p class="hint github-path-preview">目标路径：&lt;图片根目录&gt;/YYYY/MM/DD/&lt;完整 SHA-256&gt;.&lt;扩展名&gt;</p>
+          <div class="speech-editor-actions">
+            <button type="button" class="test-button" data-test-github ${github.configured ? "" : "disabled"}>测试 GitHub</button>
+            ${github.configured ? `<button type="button" class="danger-button" data-delete-github>移除配置</button>` : ""}
+            <button type="submit" class="primary">保存 GitHub</button>
+          </div>
+        </form>
+      </section>
+    </section>`;
+  form.querySelectorAll("[data-settings-tab]").forEach(button => button.addEventListener("click", () => activateSettingsTab(button.dataset.settingsTab)));
+  form.querySelector("[data-add-llm]")?.addEventListener("click", () => { state.editingLlmId = ""; renderLlmManager(); form.querySelector("#llmEditor")?.scrollIntoView({ behavior:"smooth", block:"start" }); });
+  form.querySelector("[data-cancel-llm]")?.addEventListener("click", () => { state.editingLlmId = null; renderLlmManager(); });
+  form.querySelectorAll("[data-test-llm]").forEach(button => button.addEventListener("click", () => testGlobalLlmPreset(button.dataset.testLlm, button)));
+  form.querySelectorAll("[data-test-llm-concurrency]").forEach(button => button.addEventListener("click", () => testGlobalLlmConcurrency(button.dataset.testLlmConcurrency, button)));
+  form.querySelectorAll("[data-edit-llm]").forEach(button => button.addEventListener("click", () => { state.editingLlmId = button.dataset.editLlm; renderLlmManager(); form.querySelector("#llmEditor")?.scrollIntoView({ behavior:"smooth", block:"start" }); }));
+  form.querySelectorAll("[data-delete-llm]").forEach(button => button.addEventListener("click", () => removeGlobalLlmPreset(button.dataset.deleteLlm)));
+  form.querySelector("#llmEditorForm")?.addEventListener("submit", saveGlobalLlmPreset);
+  form.querySelector("#codexConfigForm")?.addEventListener("submit", saveGlobalCodexConfig);
+  form.querySelector("#codexConfigForm [name=model]")?.addEventListener("change", updateGlobalCodexEfforts);
+  form.querySelector("[data-refresh-codex]")?.addEventListener("click", event => refreshGlobalCodexConfig(event.currentTarget));
+  form.querySelector("[data-codex-login]")?.addEventListener("click", event => startGlobalCodexLogin(event.currentTarget));
+  form.querySelector("[data-codex-logout]")?.addEventListener("click", event => logoutGlobalCodex(event.currentTarget));
+  form.querySelector("#threePassConfigForm")?.addEventListener("submit", saveGlobalThreePassConfig);
+  form.querySelectorAll("[data-length-level]").forEach(select => select.addEventListener("change", () => updateThreePassLengthCard(select.closest("[data-length-phase]"))));
+  form.querySelectorAll("[data-length-target]").forEach(input => input.addEventListener("input", () => updateThreePassLengthCard(input.closest("[data-length-phase]"))));
+  form.querySelector("[data-reset-three-pass]")?.addEventListener("click", resetGlobalThreePassConfig);
+  form.querySelector("#speechConfigForm")?.addEventListener("submit", saveGlobalSpeechConfig);
+  form.querySelector("[data-test-speech]")?.addEventListener("click", event => testGlobalSpeechConfig(event.currentTarget));
+  form.querySelector("[data-delete-speech]")?.addEventListener("click", removeGlobalSpeechConfig);
+  form.querySelector("#mathpixConfigForm")?.addEventListener("submit", saveGlobalMathpixConfig);
+  form.querySelector("[data-delete-mathpix]")?.addEventListener("click", removeGlobalMathpixConfig);
+  form.querySelector("#githubConfigForm")?.addEventListener("submit", saveGlobalGithubConfig);
+  form.querySelector("#googleConfigForm")?.addEventListener("submit", saveGlobalGoogleConfig);
+  form.querySelector("[data-test-google]")?.addEventListener("click", event => testGlobalGoogleConfig(event.currentTarget));
+  form.querySelector("[data-delete-google]")?.addEventListener("click", removeGlobalGoogleConfig);
+  const workflowEditor = form.querySelector("#workflowEditor");
+  if (workflowEditor && state.workflowOptions && window.PaperRevisionWorkflow) window.PaperRevisionWorkflow.render(workflowEditor, state.workflowOptions, state.workflowOptions.defaults);
+  form.querySelector("[data-save-workflow]")?.addEventListener("click", event => saveGlobalWorkflowConfig(event.currentTarget));
+  form.querySelector("[data-reset-workflow]")?.addEventListener("click", () => {
+    window.PaperRevisionWorkflow.render(workflowEditor, state.workflowOptions, state.workflowOptions.recommended);
+    showSettingsStatus("#workflowManagerStatus", "已填入推荐值，保存后生效。", "");
+  });
+  form.querySelector("[data-goto-workflow]")?.addEventListener("click", event => { event.preventDefault(); activateSettingsTab("workflow"); });
+  form.querySelector("[data-refresh-claude]")?.addEventListener("click", event => refreshGlobalClaudeConfig(event.currentTarget));
+  form.querySelector("[data-test-claude]")?.addEventListener("click", event => testGlobalClaudeConfig(event.currentTarget));
+  form.querySelector("[data-test-github]")?.addEventListener("click", event => testGlobalGithubConfig(event.currentTarget));
+  form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
+  activateSettingsTab(state.settingsTab, false);
+}
+
+function activateSettingsTab(tab, updateHash = true) {
+  if (!SETTINGS_TABS.includes(tab)) return;
+  state.settingsTab = tab;
+  form.querySelectorAll("[data-settings-tab]").forEach(button => {
+    const active = button.dataset.settingsTab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  form.querySelectorAll("[data-settings-panel]").forEach(panel => panel.classList.toggle("hidden", panel.dataset.settingsPanel !== tab));
+  if (updateHash) hooks.onTabChange(tab);
+}
+
+function updateThreePassLengthCard(card) {
+  if (!card) return;
+  const phase = card.dataset.lengthPhase;
+  const level = card.querySelector("[data-length-level]").value;
+  const customLabel = card.querySelector(".three-pass-custom-length");
+  const targetInput = card.querySelector("[data-length-target]");
+  const isCustom = level === "custom";
+  customLabel.classList.toggle("hidden", !isCustom);
+  targetInput.required = isCustom;
+  const presetTarget = state.threePassConfig?.presets?.[phase]?.[level];
+  if (!isCustom && presetTarget) targetInput.value = presetTarget;
+  const target = isCustom ? targetInput.value : presetTarget;
+  card.querySelector("[data-length-summary]").textContent = `约 ${target || "—"} 字 / words`;
+}
+
+function threePassConfigFormPayload(formNode) {
+  const phases = {};
+  formNode.querySelectorAll("[data-length-phase]").forEach(card => {
+    const phase = card.dataset.lengthPhase;
+    const level = card.querySelector("[data-length-level]").value;
+    phases[phase] = { level };
+    if (level === "custom") phases[phase].target = Number(card.querySelector("[data-length-target]").value);
+  });
+  return { phases };
+}
+
+async function saveGlobalThreePassConfig(event) {
+  event.preventDefault();
+  const editor = event.currentTarget;
+  if (!editor.reportValidity()) return;
+  const submit = editor.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/three-pass-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(threePassConfigFormPayload(editor)),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Three-Pass 篇幅失败。");
+    state.threePassConfig = data.threePass;
+    renderLlmManager("Three-Pass 四个阶段的目标篇幅已保存。", "ok", "three-pass");
+  } catch (error) {
+    const status = form.querySelector("#threePassConfigStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+function resetGlobalThreePassConfig() {
+  form.querySelectorAll("[data-length-phase]").forEach(card => {
+    const phase = card.dataset.lengthPhase;
+    card.querySelector("[data-length-level]").value = "medium";
+    card.querySelector("[data-length-target]").value = state.threePassConfig.presets[phase].medium;
+    updateThreePassLengthCard(card);
+  });
+  const status = form.querySelector("#threePassConfigStatus");
+  status.textContent = "已恢复推荐的中等篇幅；点击保存后生效。";
+  status.className = "manager-message warn";
+}
+
+function updateGlobalCodexEfforts() {
+  const editor = form.querySelector("#codexConfigForm");
+  const modelId = editor?.querySelector("[name=model]")?.value;
+  const effortSelect = editor?.querySelector("[name=reasoningEffort]");
+  if (!effortSelect) return;
+  const model = (state.codexConfig?.models || []).find(item => item.id === modelId);
+  const view = codexEffortsForModel(model, model?.defaultEffort);
+  effortSelect.innerHTML = view.efforts.map(effort => `<option value="${escapeHtml(effort)}">${escapeHtml(codexEffortLabel(model, effort))}</option>`).join("");
+  effortSelect.value = view.selected;
+}
+
+async function saveGlobalCodexConfig(event) {
+  event.preventDefault();
+  const editor = event.currentTarget;
+  const submit = editor.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editor).entries());
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/codex-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Codex 默认设置失败。");
+    state.codexConfig = data.codex;
+    const model = data.codex.models?.find(item => item.id === data.codex.defaultModel);
+    renderLlmManager(`已保存：${model?.displayName || data.codex.defaultModel} · ${data.codex.defaultReasoningEffort}`, "ok", "codex");
+  } catch (error) {
+    const status = form.querySelector("#codexManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+async function refreshGlobalCodexConfig(button) {
+  button.disabled = true;
+  button.textContent = "刷新中…";
+  try {
+    await loadGlobalCodexConfig(true);
+    renderLlmManager("账户、可用模型与额度已刷新。", state.codexConfig?.chatgptAuthenticated ? "ok" : "warn", "codex");
+  } catch (error) {
+    const status = form.querySelector("#codexManagerStatus");
+    status.textContent = `刷新失败：${error.message}`;
+    status.className = "manager-message bad";
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "刷新账户与额度";
+    }
+  }
+}
+
+async function startGlobalCodexLogin(button) {
+  const status = form.querySelector("#codexManagerStatus");
+  const loginWindow = window.open("about:blank", "research-toolkit-codex-login");
+  if (loginWindow) loginWindow.opener = null;
+  button.disabled = true;
+  button.textContent = "正在启动…";
+  try {
+    const response = await fetch("/api/codex/login", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ flow:"browser" }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法启动 Codex 登录。");
+    if (data.authUrl && loginWindow) loginWindow.location.href = data.authUrl;
+    else if (data.authUrl) window.open(data.authUrl, "_blank", "noopener,noreferrer");
+    status.textContent = "已打开 ChatGPT 登录页；完成授权后，本页会自动刷新。";
+    status.className = "manager-message";
+    for (let index = 0; index < 90; index += 1) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const progressResponse = await fetch(`/api/codex/login/${encodeURIComponent(data.loginId)}`);
+      const progress = await progressResponse.json();
+      if (progress.status === "failed") throw new Error(progress.error || "Codex 登录失败。");
+      if (progress.success) {
+        await loadGlobalCodexConfig(true);
+        renderLlmManager("Codex 登录成功，账户与额度已刷新。", "ok", "codex");
+        return;
+      }
+    }
+    throw new Error("等待登录超时；完成登录后请点击“刷新账户与额度”。");
+  } catch (error) {
+    const currentStatus = form.querySelector("#codexManagerStatus");
+    if (currentStatus) {
+      currentStatus.textContent = error.message;
+      currentStatus.className = "manager-message bad";
+    }
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "浏览器登录";
+    }
+  }
+}
+
+async function logoutGlobalCodex(button) {
+  if (!window.confirm("确定退出当前 Codex ChatGPT 登录吗？使用 Codex 额度的任务将暂时不可用。")) return;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/codex/logout", { method:"POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "退出 Codex 登录失败。");
+    await loadGlobalCodexConfig(true);
+    renderLlmManager("已退出 Codex 登录。", "ok", "codex");
+  } catch (error) {
+    const status = form.querySelector("#codexManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
+async function testGlobalLlmPreset(presetId, button) {
+  const preset = state.llmPresets.find(item => item.id === presetId);
+  if (!preset) return;
+  const status = form.querySelector("#llmManagerStatus");
+  button.disabled = true;
+  button.textContent = "测试中…";
+  status.textContent = `正在测试 ${preset.name}…`;
+  status.className = "manager-message";
+  try {
+    const testMessage = "这是一次 LLM 连接测试。请只回复：OK";
+    const response = await fetch(`/api/llm-presets/${encodeURIComponent(presetId)}/test`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ message:testMessage }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "LLM 测试失败。");
+    const responseText = data.result.contentEmpty ? "服务已响应，但没有返回文本内容" : `回复：${data.result.response}`;
+    status.textContent = `连接成功：${data.result.name} · ${data.result.model} · ${data.result.latencyMs} ms · ${responseText}`;
+    status.className = `manager-message ${data.result.contentEmpty ? "warn" : "ok"}`;
+  } catch (error) {
+    status.textContent = `${preset.name} 测试失败：${error.message}`;
+    status.className = "manager-message bad";
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "测试";
+    }
+  }
+}
+
+async function testGlobalLlmConcurrency(presetId, button) {
+  const preset = state.llmPresets.find(item => item.id === presetId);
+  if (!preset) return;
+  const target = Number(preset.concurrency || 1);
+  if (!window.confirm(`将对“${preset.name}”同时发送 ${target} 个极短请求，直接验证已保存的并发数。测试结果会受当前账户限流和服务负载影响。是否继续？`)) return;
+  const status = form.querySelector("#llmManagerStatus");
+  button.disabled = true;
+  button.textContent = "测试中…";
+  status.textContent = `正在测试 ${preset.name} 的并发上限（目标 ${target}）…`;
+  status.className = "manager-message";
+  try {
+    const response = await fetch(`/api/llm-presets/${encodeURIComponent(presetId)}/concurrency-test`, { method:"POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "并发测试失败。");
+    const result = data.result;
+    const stageText = result.stages.map(stage => {
+      const errors = Object.entries(stage.errors || {}).map(([kind, count]) => `${kind} ${count}`).join("、");
+      return `并发 ${stage.concurrency}: ${stage.successCount}/${stage.concurrency} 成功，耗时 ${stage.wallMs} ms，有效并行度 ${stage.effectiveParallelism}${errors ? `，${errors}` : ""}`;
+    }).join("；");
+    status.textContent = result.reachedConfiguredLimit
+      ? `测试通过：已配置并发 ${result.configuredConcurrency} 全部成功。${stageText}。这是当前时点结果，不代表永久配额。`
+      : `测试未通过：并发 ${result.configuredConcurrency} 本轮未全部成功。${stageText}。请降低保存的并发数后重新测试。`;
+    status.className = `manager-message ${result.reachedConfiguredLimit ? "ok" : "bad"}`;
+  } catch (error) {
+    status.textContent = `${preset.name} 并发测试失败：${error.message}`;
+    status.className = "manager-message bad";
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "测试并发";
+    }
+  }
+}
+
+async function testGlobalSpeechConfig(button) {
+  const status = form.querySelector("#speechManagerStatus");
+  button.disabled = true;
+  button.textContent = "测试中…";
+  status.textContent = "正在调用 Azure Speech 合成一小段测试语音…";
+  status.className = "manager-message";
+  try {
+    const response = await fetch("/api/speech-config/test", { method:"POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Azure Speech 测试失败。");
+    status.textContent = `连接成功：${data.result.region} · ${data.result.voice} · ${data.result.latencyMs} ms · ${data.result.audioBytes} bytes`;
+    status.className = "manager-message ok";
+  } catch (error) {
+    status.textContent = `Azure Speech 测试失败：${error.message}`;
+    status.className = "manager-message bad";
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "测试语音";
+    }
+  }
+}
+
+async function saveGlobalSpeechConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editorForm).entries());
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/speech-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Azure Speech 配置失败。");
+    state.speechConfig = data.speech;
+    renderLlmManager(`已保存：${data.speech.region} · ${data.speech.voice}。阅读器页面重新加载后即可使用。`, "ok", "speech");
+  } catch (error) {
+    const status = form.querySelector("#speechManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+async function removeGlobalSpeechConfig() {
+  if (!window.confirm("确定移除 Azure Speech 配置吗？PDF 段落朗读将停止可用。")) return;
+  try {
+    const response = await fetch("/api/speech-config", { method:"DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "移除 Azure Speech 配置失败。");
+    await loadGlobalSpeechConfig();
+    renderLlmManager("已移除 Azure Speech 配置。", "ok", "speech");
+  } catch (error) {
+    const status = form.querySelector("#speechManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+  }
+}
+
+async function saveGlobalMathpixConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editorForm).entries());
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/mathpix-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 Mathpix 配置失败。");
+    state.mathpixConfig = data.mathpix;
+    await reloadTools();
+    renderLlmManager("已保存 Mathpix 配置；论文 PDF OCR 已立即更新。", "ok", "mathpix");
+  } catch (error) {
+    const status = form.querySelector("#mathpixManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+function showSettingsStatus(id, text, kind) {
+  const status = form.querySelector(id);
+  if (!status) return;
+  status.textContent = text;
+  status.className = `manager-message ${kind}`;
+}
+
+async function settingsRequest(url, options = {}) {
+  const response = await fetch(url, options.body ? { ...options, headers:{ "Content-Type":"application/json", ...(options.headers || {}) } } : options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "请求失败。");
+  return data;
+}
+
+async function saveGlobalGoogleConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  submit.disabled = true;
+  showSettingsStatus("#googleManagerStatus", "正在用一次极小的翻译请求验证 Key…", "");
+  try {
+    const data = await settingsRequest("/api/google-translate-config", { method:"PUT", body:JSON.stringify(Object.fromEntries(new FormData(editorForm).entries())) });
+    state.googleConfig = data.google;
+    renderLlmManager("Key 验证通过并已保存；双语改稿可选择 Google 翻译。", "ok", "google");
+  } catch (error) {
+    showSettingsStatus("#googleManagerStatus", error.message, "bad");
+    submit.disabled = false;
+  }
+}
+
+async function testGlobalGoogleConfig(button) {
+  button.disabled = true;
+  try {
+    const data = await settingsRequest("/api/google-translate-config/test", { method:"POST" });
+    showSettingsStatus("#googleManagerStatus", `测试成功：“${data.test.source}” → “${data.test.translated}”`, "ok");
+  } catch (error) {
+    showSettingsStatus("#googleManagerStatus", error.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function removeGlobalGoogleConfig() {
+  if (!window.confirm("确定移除 Google 翻译 API Key 吗？双语改稿将无法使用 Google 翻译。")) return;
+  try {
+    state.googleConfig = (await settingsRequest("/api/google-translate-config", { method:"DELETE" })).google;
+    renderLlmManager("已移除 Google 翻译 API Key。", "ok", "google");
+  } catch (error) {
+    showSettingsStatus("#googleManagerStatus", error.message, "bad");
+  }
+}
+
+async function saveGlobalWorkflowConfig(button) {
+  button.disabled = true;
+  try {
+    const workflow = window.PaperRevisionWorkflow.read(form.querySelector("#workflowEditor"));
+    const data = await settingsRequest("/api/paper-revision/workflow", { method:"PUT", body:JSON.stringify({ workflow }), headers:{ "X-Paper-Revision":"1" } });
+    state.workflowOptions = data.options;
+    renderLlmManager("已保存双语改稿默认工作流；改稿页面刷新后使用新的默认值。", "ok", "workflow");
+  } catch (error) {
+    showSettingsStatus("#workflowManagerStatus", error.message, "bad");
+    button.disabled = false;
+  }
+}
+
+async function refreshGlobalClaudeConfig(button) {
+  button.disabled = true;
+  try {
+    await loadGlobalClaudeConfig(true);
+    renderLlmManager("", "", "claude");
+  } catch (error) {
+    showSettingsStatus("#claudeManagerStatus", error.message, "bad");
+    button.disabled = false;
+  }
+}
+
+async function testGlobalClaudeConfig(button) {
+  button.disabled = true;
+  showSettingsStatus("#claudeManagerStatus", "正在用 Sonnet（推理 低）发送一次极小的请求…", "");
+  try {
+    const data = await settingsRequest("/api/claude-code-config/test", { method:"POST" });
+    showSettingsStatus("#claudeManagerStatus", `测试成功：模型回复 “${data.test.reply}”，用时 ${data.test.seconds} 秒（消耗少量套餐额度）。`, "ok");
+  } catch (error) {
+    showSettingsStatus("#claudeManagerStatus", error.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function removeGlobalMathpixConfig() {
+  if (!window.confirm("确定移除 Mathpix 配置吗？论文 PDF OCR 将停止可用。")) return;
+  try {
+    const response = await fetch("/api/mathpix-config", { method:"DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "移除 Mathpix 配置失败。");
+    state.mathpixConfig = data.mathpix;
+    await reloadTools();
+    renderLlmManager("已移除 Mathpix 配置；论文 PDF OCR 已停用。", "ok", "mathpix");
+  } catch (error) {
+    const status = form.querySelector("#mathpixManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+  }
+}
+
+async function testGlobalGithubConfig(button) {
+  const status = form.querySelector("#githubManagerStatus");
+  button.disabled = true;
+  button.textContent = "测试中…";
+  status.textContent = "正在只读验证公开仓库与目标分支…";
+  status.className = "manager-message";
+  try {
+    const response = await fetch("/api/github-config/test", { method:"POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "GitHub 测试失败。");
+    status.textContent = `连接成功：${data.result.repository} · 仓库 ID ${data.result.repositoryId} · ${data.result.branch} · ${data.result.visibility}`;
+    status.className = "manager-message ok";
+  } catch (error) {
+    status.textContent = `GitHub 测试失败：${error.message}`;
+    status.className = "manager-message bad";
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "测试 GitHub";
+    }
+  }
+}
+
+async function saveGlobalGithubConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editorForm).entries());
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/github-config", {
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 GitHub 配置失败。");
+    state.githubConfig = data.github;
+    await reloadTools();
+    renderLlmManager(`已保存：${data.github.repository} · ${data.github.branch} · ${data.github.imageRoot}`, "ok", "github");
+  } catch (error) {
+    const status = form.querySelector("#githubManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+async function removeGlobalGithubConfig() {
+  if (!window.confirm("确定移除 GitHub 图片仓库配置吗？Markdown 图片发布将停止可用。")) return;
+  try {
+    const response = await fetch("/api/github-config", { method:"DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "移除 GitHub 配置失败。");
+    await loadGlobalGithubConfig();
+    await reloadTools();
+    renderLlmManager("已移除 GitHub 图片仓库配置。", "ok", "github");
+  } catch (error) {
+    const status = form.querySelector("#githubManagerStatus");
+    status.textContent = error.message;
+    status.className = "manager-message bad";
+  }
+}
+
+async function saveGlobalLlmPreset(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  const payload = Object.fromEntries(new FormData(editorForm).entries());
+  const editingId = state.editingLlmId || null;
+  submit.disabled = true;
+  try {
+    const response = await fetch(editingId ? `/api/llm-presets/${encodeURIComponent(editingId)}` : "/api/llm-presets", {
+      method: editingId ? "PUT" : "POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "保存 LLM 配置失败。");
+    state.editingLlmId = null;
+    await loadGlobalLlmPresets();
+    renderLlmManager(editingId ? `已更新：${data.preset.name}` : `已添加：${data.preset.name}`, "ok");
+  } catch (error) {
+    const status = form.querySelector("#llmManagerStatus");
+    status.textContent = error.message; status.className = "manager-message bad";
+    submit.disabled = false;
+  }
+}
+
+async function removeGlobalLlmPreset(presetId) {
+  const preset = state.llmPresets.find(item => item.id === presetId);
+  if (!preset || !window.confirm(`确定删除 LLM 配置“${preset.name}”吗？使用它的已保存浏览器偏好会自动回退到其他配置。`)) return;
+  try {
+    const response = await fetch(`/api/llm-presets/${encodeURIComponent(presetId)}`, { method:"DELETE" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "删除 LLM 配置失败。");
+    state.editingLlmId = null;
+    await loadGlobalLlmPresets();
+    renderLlmManager(`已删除：${data.preset.name}`, "ok");
+  } catch (error) {
+    const status = form.querySelector("#llmManagerStatus");
+    status.textContent = error.message; status.className = "manager-message bad";
+  }
+}
+
+window.GlobalSettings = {
+  tabs: SETTINGS_TABS,
+  mount,
+  activate: tab => activateSettingsTab(tab, false),
+};
+})();

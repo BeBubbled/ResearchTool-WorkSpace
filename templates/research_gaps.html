@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/research_gaps.css?v=20260919-unified-codex-folder-import">
 </head>
 <body>
+  {% set client_active = "gaps" %}{% include "_client_nav.html" %}
   <header class="topbar">
     <a class="brand" href="/" aria-label="返回科研工具箱">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -20,7 +21,7 @@
       <button id="newProjectButton" class="button secondary" type="button">新建项目</button>
     </div>
     <a class="topbar-link" href="/researchstudio?module=idea-spark">ResearchStudio 选题</a>
-    <a class="topbar-link" href="/#llm-settings">AI 设置</a>
+    <a class="topbar-link" href="/settings#llm">AI 设置</a>
   </header>
 
   <main>
@@ -73,7 +74,7 @@
 
         <section id="codexPanel" class="codex-panel hidden" aria-live="polite">
           <span id="codexStatus">正在检查 Codex…</span>
-          <a id="manageCodex" class="text-button" href="/#settings/codex">在“AI、语音与 GitHub”中管理</a>
+          <a id="manageCodex" class="text-button" href="/settings#codex">在“AI、语音与 GitHub”中管理</a>
         </section>
 
         <section id="jobPanel" class="job-panel hidden" aria-live="polite">
@@ -185,7 +186,7 @@
       </div>
       <div id="folderImportPanel" class="import-panel">
         <form id="folderImportForm" class="folder-import-form">
-          <label>PDF 文件夹绝对路径<input id="folderPath" required placeholder="/Users/name/Documents/papers"></label>
+          <label>PDF 文件夹路径<span class="path-picker"><input id="folderPath" required placeholder="点击“浏览…”选择，或粘贴绝对路径"><button id="browseFolderPath" class="button" type="button">浏览…</button></span></label>
           <p>由本机后端递归扫描全部子目录；仅保存提取文本和原文件引用，不复制 PDF，也不会自动启动 AI 分析。</p>
           <button id="folderImportButton" class="button primary" type="submit">开始后台导入</button>
         </form>
@@ -238,6 +239,7 @@
   </dialog>
 
   <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/research_gaps.js?v=20260923-codex-56-6-models"></script>
 </body>
 </html>

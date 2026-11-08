@@ -34,6 +34,8 @@ from PIL import Image
 from pptx import Presentation
 from pptx.util import Cm, Pt
 
+from grid_labels import GridLabels, add_label_arguments
+
 try:
     import cv2  # only needed for video mode
 except ImportError:
@@ -88,7 +90,7 @@ def parse_args():
     p.add_argument("--rows", type=int, required=True)
     p.add_argument("--cols", type=int, required=True)
 
-    g = p.add_mutually_exclusive_group(required=True)
+    g = p.add_mutually_exclusive_group()
     g.add_argument(
         "--cell-size-cm",
         type=float,
@@ -164,6 +166,7 @@ def parse_args():
         default="grid_output.pptx",
         help="Output .pptx path. Default: grid_output.pptx",
     )
+    add_label_arguments(p)
     return p.parse_args()
 
 
@@ -464,9 +467,8 @@ def main():
         imgs = imgs[:needed]
 
     cw_cm, ch_cm, gap_cm, margin_cm = compute_units(args)
-    grid_w_cm, grid_h_cm = grid_size_cm(
-        args.rows, args.cols, cw_cm, ch_cm, gap_cm, margin_cm
-    )
+    labels = GridLabels.from_args(args, args.rows, args.cols)
+    grid_w_cm, grid_h_cm = labels.grid_size_cm(cw_cm, ch_cm, gap_cm, margin_cm)
 
     prs = Presentation()
     blank_layout = prs.slide_layouts[6]  # blank
@@ -487,8 +489,9 @@ def main():
     idx = 0
     for r in range(args.rows):
         for c in range(args.cols):
-            left_cm = origin_left_cm + margin_cm + c * (cw_cm + gap_cm)
-            top_cm = origin_top_cm + margin_cm + r * (ch_cm + gap_cm)
+            left_cm, top_cm = labels.cell_origin_cm(
+                r, c, origin_left_cm, origin_top_cm, cw_cm, ch_cm, gap_cm, margin_cm
+            )
             add_image_in_cell_cm(
                 slide,
                 imgs[idx],
@@ -499,6 +502,7 @@ def main():
                 fit_mode=args.fit,
             )
             idx += 1
+    labels.draw(slide, origin_left_cm, origin_top_cm, cw_cm, ch_cm, gap_cm, margin_cm)
 
     prs.save(args.out)
     print(f"Saved: {args.out}")

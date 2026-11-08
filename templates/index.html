@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>科研工具箱 · Research Toolkit</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/styles.css?v=20260923-merged-settings-reader">
+  <link rel="stylesheet" href="/static/styles.css?v=20261106-claude-google-settings">
+  <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
 </head>
 <body>
+  {% set client_active = "toolbox" %}{% include "_client_nav.html" %}
   <main class="app-shell">
     <aside class="sidebar">
       <div class="brand-lockup">
@@ -29,6 +31,10 @@
         <span class="reader-entry-copy"><small>研究发现</small><strong>研究空白地图</strong></span>
         <span class="reader-arrow">→</span>
       </a>
+      <a class="reader-entry gap-entry" href="/paper-revision">
+        <span class="reader-entry-copy"><small>中文批注 · 英文修订</small><strong>双语论文改稿</strong></span>
+        <span class="reader-arrow">→</span>
+      </a>
       <a class="reader-entry gap-entry" href="/prompts">
         <span class="reader-entry-copy"><small>模板与附件</small><strong>Prompt 工作台</strong></span>
         <span class="reader-arrow">→</span>
@@ -45,7 +51,7 @@
         </a>
       </div>
       <button id="llmSettingsNav" class="settings-entry" type="button">
-        <span class="reader-entry-copy"><small>全局设置</small><strong>AI、OCR、语音与 GitHub</strong></span>
+        <span class="reader-entry-copy"><small>全局设置</small><strong>AI、翻译、OCR、语音与 GitHub</strong></span>
         <span class="reader-arrow">⚙</span>
       </button>
       <div class="nav-heading"><span>全部工具</span><span id="toolCount">0</span></div>
@@ -85,6 +91,8 @@
       <ul data-file-list class="file-list"></ul>
     </section>
   </template>
-  <script src="/static/app.js?v=20260923-managed-codex"></script>
+  <script src="/static/local_paths.js?v=1"></script>
+  <script src="/static/paper_revision_workflow.js?v=1"></script>
+  <script src="/static/app.js?v=20261108-client-shell"></script>
 </body>
 </html>

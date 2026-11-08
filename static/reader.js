@@ -690,9 +690,9 @@ function configHtml(id, allowCustom = true) {
       <label>API Key<input data-llm="apiKey" type="password" autocomplete="off"></label>
       <label>模型 ID<input data-llm="model" placeholder="模型名称"></label>
       <label>并发请求数<input data-llm="concurrency" type="number" min="1" max="64" step="1" value="1"></label>
-      <a class="manage-presets-link" href="/#llm-settings">前往全局 LLM 配置添加或编辑预设 →</a>
+      <a class="manage-presets-link" href="/settings#llm">前往全局 LLM 配置添加或编辑预设 →</a>
       <p class="preset-note">这组手动参数只用于当前请求，不会被保存。</p>
-    </div>` : `<a class="manage-presets-link" href="/#llm-settings">前往全局 LLM 配置添加或编辑预设 →</a>
+    </div>` : `<a class="manage-presets-link" href="/settings#llm">前往全局 LLM 配置添加或编辑预设 →</a>
       <p class="preset-note">整篇翻译的模型、密钥与并发只从全局 LLM 管理面板读取。</p>`;
   return `<label>LLM 配置<select class="llm-preset" data-config="${id}" ${presets.length ? "" : "disabled"}>${options}${customOption}</select></label>${customFields}`;
 }
@@ -3509,7 +3509,7 @@ function renderThreePassLengthSummary() {
   const node = $("#threePassLengthSummary");
   if (!node || !config?.phases) return;
   const summary = threePassLengthSummary(config, $("#threePassLanguage")?.value);
-  node.innerHTML = `${escapeHtml(summary)} · <a href="/#settings/three-pass">调整篇幅 →</a>`;
+  node.innerHTML = `${escapeHtml(summary)} · <a href="/settings#three-pass">调整篇幅 →</a>`;
 }
 
 async function loadAnalysisProviders() {

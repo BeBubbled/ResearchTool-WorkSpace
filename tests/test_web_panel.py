@@ -176,6 +176,32 @@ class ToolboxApiTest(unittest.TestCase):
                     self.assertEqual(response.status_code, 403)
                     self.assertEqual(response.mimetype, "text/plain")
 
+    def test_client_shell_rail_on_module_pages(self) -> None:
+        pages = {
+            "/": "toolbox", "/reader": "reader", "/paper-revision": "revision", "/prompts": "prompts",
+            "/research-gaps": "gaps", "/researchstudio": "studio", "/settings": "settings",
+        }
+        for path, key in pages.items():
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                html = response.get_data(as_text=True)
+                self.assertEqual(html.count('class="client-rail"'), 1)
+                self.assertIn(f'data-client-nav="{key}" aria-current="page"', html)
+                self.assertIn("/static/client_shell.js", html)
+                self.assertNotIn("/#settings/", html)
+                self.assertNotIn("/#llm-settings", html)
+
+    def test_settings_page_standalone_and_embedded(self) -> None:
+        standalone = self.client.get("/settings").get_data(as_text=True)
+        self.assertIn('id="settingsRoot"', standalone)
+        self.assertIn("/static/settings.js", standalone)
+        embedded = self.client.get("/settings?embed=1").get_data(as_text=True)
+        self.assertIn('id="settingsRoot"', embedded)
+        self.assertIn("settings-embedded", embedded)
+        self.assertNotIn('class="client-rail"', embedded)
+        self.assertNotIn("/static/client_shell.js", embedded)
+
     def test_local_guard_preserves_blueprint_header_checks(self) -> None:
         for path in ("/api/prompts/templates", "/api/researchstudio/jobs"):
             with self.subTest(path=path):
@@ -2069,6 +2095,77 @@ class ToolboxApiTest(unittest.TestCase):
             pdf_tool = next(item for item in tools if item["id"] == "pdf_ocr_translate")
             self.assertFalse(pdf_tool["available"])
 
+    def test_google_translate_basic_key_is_validated_saved_tested_and_removed_globally(self) -> None:
+        env_file = Path(self.temp_dir.name) / ".env"
+        requests_seen = []
+
+        class Reply:
+            def __init__(self, status, payload):
+                self.status_code, self.payload = status, payload
+
+            def json(self):
+                return self.payload
+
+        def fake_post(url, **kwargs):
+            requests_seen.append({"url": url, **kwargs})
+            if kwargs["headers"]["X-Goog-Api-Key"] == "bad-key":
+                return Reply(400, {"error": {"message": "API key not valid.", "errors": [{"reason": "badRequest"}]}})
+            return Reply(200, {"data": {"translations": [{"translatedText": '<span id="u0">译文。</span>'}]}})
+
+        google = web_panel.paper_revision_google
+        with patch.object(web_panel, "ENV_FILE", env_file),                 patch.dict(web_panel.os.environ, {"GOOGLE_TRANSLATE_API_KEY": ""}, clear=False),                 patch.object(google, "post", fake_post):
+            initial = self.client.get("/api/google-translate-config").get_json()["google"]
+            self.assertEqual((initial["configured"], initial["edition"]), (False, "basic"))
+            self.assertEqual(initial["endpoint"], "https://translation.googleapis.com/language/translate/v2")
+            bad = self.client.put("/api/google-translate-config", json={"apiKey": "bad-key"})
+            self.assertEqual(bad.status_code, 400)
+            self.assertIn("无效", bad.get_json()["error"])
+            self.assertFalse(env_file.exists() and "GOOGLE_TRANSLATE_API_KEY" in env_file.read_text(encoding="utf-8"))
+            saved = self.client.put("/api/google-translate-config", json={"apiKey": " good-key "})
+            self.assertEqual(saved.status_code, 200, saved.get_json())
+            self.assertTrue(saved.get_json()["google"]["configured"])
+            self.assertNotIn("good-key", json.dumps(saved.get_json()))
+            self.assertIn("GOOGLE_TRANSLATE_API_KEY='good-key'", env_file.read_text(encoding="utf-8"))
+            self.assertTrue(all(r["url"].endswith("/language/translate/v2") for r in requests_seen))
+            tested = self.client.post("/api/google-translate-config/test").get_json()
+            self.assertEqual(tested["test"]["translated"], "译文。")
+            self.assertTrue(self.client.get("/api/paper-revision/projects", headers={"X-Paper-Revision": "1"})
+                            .get_json()["google"]["configured"])
+            removed = self.client.delete("/api/google-translate-config")
+            self.assertFalse(removed.get_json()["google"]["configured"])
+            self.assertNotIn("GOOGLE_TRANSLATE_API_KEY", env_file.read_text(encoding="utf-8"))
+
+    def test_claude_code_status_test_and_paper_revision_workflow_defaults_are_global(self) -> None:
+        env_file = Path(self.temp_dir.name) / ".env"
+        runner = web_panel.paper_revision_claude_runner
+        environment = {"PAPER_REVISION_WORKFLOW": "", "CLAUDE_CODE_TRANSLATE_MODEL": "opus", "CLAUDE_CODE_TRANSLATE_EFFORT": "",
+                       "CLAUDE_CODE_REVISE_MODEL": "", "CLAUDE_CODE_REVISE_EFFORT": ""}
+        fake_status = {"available": True, "loggedIn": True, "plan": True, "subscriptionType": "max", "authMethod": "claude.ai"}
+        headers = {"X-Paper-Revision": "1"}
+        with patch.object(web_panel, "ENV_FILE", env_file), patch.dict(web_panel.os.environ, environment, clear=False),                 patch.object(runner, "_status", (time.monotonic(), {**fake_status, "models": [], "efforts": []})),                 patch.object(runner, "status_ttl", 3600):
+            self.assertTrue(self.client.get("/api/claude-code-config").get_json()["claude"]["plan"])
+            options = self.client.get("/api/paper-revision/workflow", headers=headers).get_json()["options"]
+            # first run: the recommended workflow
+            self.assertEqual(options["defaults"]["translate"], {"engine": "google"})
+            self.assertEqual(options["defaults"]["translate_fallback"], {"engine": "claude", "model": "sonnet", "effort": "medium"})
+            for stage in ("context", "revise", "audit"):
+                self.assertEqual(options["defaults"][stage], {"engine": "claude", "model": "opus", "effort": "medium"})
+            workflow = {**options["defaults"], "translate": {"engine": "google"}, "audit": {"engine": "codex"}}
+            saved = self.client.put("/api/paper-revision/workflow", headers=headers, json={"workflow": workflow})
+            self.assertEqual(saved.status_code, 200, saved.get_json())
+            self.assertIn("PAPER_REVISION_WORKFLOW=", env_file.read_text(encoding="utf-8"))
+            reread = self.client.get("/api/paper-revision/workflow", headers=headers).get_json()["options"]["defaults"]
+            self.assertEqual(reread["translate"], {"engine": "google"})
+            self.assertEqual(reread["audit"], {"engine": "codex", "model": "", "effort": ""})
+            self.assertEqual(self.client.put("/api/paper-revision/workflow", headers=headers,
+                                             json={"workflow": {"audit": {"engine": "google"}}}).status_code, 400)
+            with patch.object(runner, "test", return_value={"reply": "OK", "seconds": 2.1}):
+                self.assertEqual(self.client.post("/api/claude-code-config/test").get_json()["test"]["reply"], "OK")
+            with patch.object(runner, "test", side_effect=ValueError("Claude 套餐额度已用尽")):
+                failed = self.client.post("/api/claude-code-config/test")
+                self.assertEqual(failed.status_code, 400)
+                self.assertIn("额度", failed.get_json()["error"])
+
     def test_saved_llm_preset_can_be_tested_without_exposing_its_key(self) -> None:
         environment = {
             "LLM_NAME": "Test Provider",
@@ -2314,7 +2411,7 @@ class ToolboxApiTest(unittest.TestCase):
             return FakeResponse(content=f"mock {extension}".encode())
 
         original_pdf = Path(self.temp_dir.name) / "paper.pdf"
-        original_pdf.write_bytes(b"original PDF location")
+        original_pdf.write_bytes(b"%PDF mock")
         with patch.dict("os.environ", {"MATHPIX_APP_ID": "id", "MATHPIX_APP_KEY": "key", "LLM_BASE_URL": "https://llm.example", "LLM_API_KEY": "llm-key", "LLM_MODEL": "model"}), \
              patch.object(web_panel.requests, "post", return_value=FakeResponse({"pdf_id": "mock-pdf"})) as post, \
              patch.object(web_panel.requests, "get", side_effect=fake_get), \
@@ -2882,6 +2979,24 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertFalse((root / "output" / "paper.md").exists())
         self.assertTrue(job.download_path.is_file())
         self.assertIsNone(job.markdown_repair_config)
+
+    def test_ocr_job_rejects_local_path_with_different_content(self) -> None:
+        original_pdf = Path(self.temp_dir.name) / "same-name.pdf"
+        original_pdf.write_bytes(b"%PDF other file")
+        with patch.dict("os.environ", {"MATHPIX_APP_ID": "id", "MATHPIX_APP_KEY": "key"}, clear=True):
+            response = self.client.post(
+                "/api/jobs",
+                data={
+                    "tool": "pdf_ocr_translate",
+                    "options": json.dumps({"localSourcePath": str(original_pdf), "repairMarkdown": False}),
+                    "manifest": json.dumps([{"relativePath": "same-name.pdf", "workName": "same-name"}]),
+                    "files": (io.BytesIO(b"%PDF upload"), "same-name.pdf"),
+                },
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("different files", response.get_json()["error"])
+        self.assertFalse((Path(self.temp_dir.name) / "same-name").exists())
 
     def test_ocr_job_requires_repair_llm_only_when_repair_is_enabled(self) -> None:
         original_pdf = Path(self.temp_dir.name) / "repair-config.pdf"
@@ -4251,6 +4366,58 @@ class ToolboxApiTest(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 400)
         self.assertIn("恰好", response.get_json()["error"])
+
+
+
+class GridPptCommandTest(unittest.TestCase):
+    def build(self, tool_id: str, options: dict) -> tuple[list[str], Path]:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        job = web_panel.Job("job", web_panel.TOOL_BY_ID[tool_id], root, options)
+        command, _ = web_panel.build_command(job, [])
+        return command, root
+
+    def test_grid_ppt_without_labels_keeps_square_cells_and_no_label_file(self) -> None:
+        command, root = self.build("image_ppt", {"rows": "2", "cols": "2", "rowTitles": ["", ""], "cellCaptions": []})
+        self.assertIn("--cell-size-cm", command)
+        self.assertNotIn("--labels-json", command)
+        self.assertFalse((root / "grid_labels.json").exists())
+
+    def test_grid_ppt_passes_titles_captions_and_custom_cells(self) -> None:
+        command, root = self.build("video_ppt", {
+            "rows": "2", "cols": "3", "frameIndexes": "0 4 8", "cellWidth": "4", "cellHeight": "",
+            "rowTitles": ["方法 A", "B", "extra"], "colTitles": ["t0"], "cellCaptions": ["c1"],
+            "titleFont": "18", "fontName": "Arial",
+        })
+        labels = json.loads((root / "grid_labels.json").read_text(encoding="utf-8"))
+        self.assertEqual(labels["rowTitles"], ["方法 A", "B"])
+        self.assertEqual(labels["colTitles"], ["t0", "", ""])
+        self.assertEqual(len(labels["captions"]), 6)
+        self.assertEqual(command[command.index("--cell-width-cm") + 1], "4.0")
+        self.assertEqual(command[command.index("--cell-height-cm") + 1], "5")
+        self.assertEqual(command[command.index("--title-font-pt") + 1], "18.0")
+        self.assertEqual(command[command.index("--font-name") + 1], "Arial")
+        self.assertNotIn("--cell-size-cm", command)
+
+    def test_stack_videos_column_mode_collapses_blank_row_band(self) -> None:
+        for mode, expected in (("v", "0"), ("h", None)):
+            temp = tempfile.TemporaryDirectory()
+            self.addCleanup(temp.cleanup)
+            root = Path(temp.name)
+            (root / "ordered").mkdir()
+            job = web_panel.Job("job", web_panel.TOOL_BY_ID["stack_videos"], root, {"rows": "1", "cols": "2", "mode": mode})
+            command, _ = web_panel.build_command(job, [])
+            if expected is None:
+                self.assertEqual(command[command.index("--rowcap-band-px") + 1], "150")
+                self.assertNotIn("--colcap-band-px", command)
+            else:
+                self.assertEqual(command[command.index("--colcap-band-px") + 1], "150")
+                self.assertEqual(command[command.index("--rowcap-band-px") + 1], expected)
+
+    def test_grid_ppt_rejects_non_list_labels(self) -> None:
+        with self.assertRaises(ValueError):
+            self.build("image_ppt", {"rowTitles": "not a list"})
 
 
 if __name__ == "__main__":

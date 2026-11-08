@@ -1,0 +1,7 @@
+/* Standalone /settings page (and its embedded drawer variant). Panel styles come from styles.css. */
+.settings-main { max-width:1280px; margin:0 auto; padding:34px clamp(18px,4vw,56px) 60px; }
+.settings-header { margin-bottom:24px; }
+.settings-header p:last-child { max-width:860px; color:var(--muted); line-height:1.65; }
+.settings-embedded .settings-main { padding:18px 18px 40px; }
+.settings-embedded .settings-root { box-shadow:none; }
+@media (max-width:760px) { .settings-main { padding:22px 14px 40px; } .settings-root { padding:18px; } }
