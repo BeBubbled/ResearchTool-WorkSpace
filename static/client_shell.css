@@ -19,6 +19,19 @@ body.has-client-rail { padding-left:var(--client-rail-width); }
 .client-rail-more .client-rail-item { padding:6px 2px; font-size:10.5px; }
 .client-rail-more .client-rail-item svg { width:18px; height:18px; }
 
+/* Module bar: the one 48px toolbar at the top of every module page (title · context · actions).
+   Introductory copy lives in each module's empty state, not here. */
+.module-bar { position:relative; z-index:25; box-sizing:border-box; height:48px; display:flex; align-items:center; gap:12px; padding:0 20px; border-bottom:1px solid #dde3ea; background:rgba(255,255,255,.94); color:#1f2a3a; font:14px/1.3 "Segoe UI","Microsoft YaHei",Arial,sans-serif; }
+.module-bar-title { flex:none; margin:0; color:#1b2638; font-size:15px; font-weight:650; letter-spacing:0; white-space:nowrap; }
+.module-bar-sub { min-width:0; overflow:hidden; color:#6b7686; font-size:12.5px; text-overflow:ellipsis; white-space:nowrap; }
+.module-bar-actions { flex:none; display:flex; align-items:center; gap:8px; margin-left:auto; }
+.module-bar-actions > .button, .module-bar-actions > button, .module-bar-actions > a.button { box-sizing:border-box; height:32px; min-height:0; display:inline-flex; align-items:center; padding:0 12px; font-size:13px; line-height:1; white-space:nowrap; }
+.module-bar-link { padding:6px 9px; border-radius:6px; color:#3b4d6b; font-size:13px; text-decoration:none; white-space:nowrap; }
+.module-bar-link:hover { background:#eef1f6; color:#1b2638; }
+.module-bar-link:focus-visible { outline:2px solid #78bcb4; outline-offset:1px; }
+.module-bar-pill { padding:4px 9px; border:1px solid #dde3ea; border-radius:999px; color:#6b7686; font-size:12px; white-space:nowrap; }
+@media (max-width:760px) { .module-bar { padding:0 12px; gap:8px; } .module-bar-sub { display:none; } }
+
 /* Settings drawer: /settings?embed=1 opened in place from any module. */
 .client-settings-drawer { position:fixed; z-index:1200; inset:0; display:flex; justify-content:flex-end; background:rgba(18,25,48,.32); }
 .client-settings-drawer[hidden] { display:none; }

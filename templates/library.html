@@ -5,16 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>文献库 · 科研工具箱</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/styles.css?v=20261106-claude-google-settings">
-  <link rel="stylesheet" href="/static/library.css?v=4">
+  <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
+  <link rel="stylesheet" href="/static/library.css?v=5">
 </head>
 <body class="library-page">
   {% set client_active = "library" %}{% include "_client_nav.html" %}
+  <header class="module-bar"><h1 class="module-bar-title">文献库</h1><span class="module-bar-sub">精读打开过的论文按内容识别、只存一份；研究空白与 Studio 直接取用</span><div class="module-bar-actions"><a class="button secondary" href="/reader">＋ 在精读中导入</a></div></header>
   <main class="library-main">
-    <header class="workspace-header library-header">
-      <div><p class="eyebrow">文献库</p><h2>所有论文，一处管理</h2><p>在精读中打开过的论文都保存在本机文献库，按文件内容识别，同一篇论文只存一份。研究空白地图和 ResearchStudio 直接从这里取用，不用重复上传。</p></div>
-      <a class="button secondary" href="/reader">＋ 在精读中导入新论文</a>
-    </header>
     <div class="library-toolbar">
       <label class="sr-only" for="librarySearch">搜索文献</label>
       <input id="librarySearch" type="search" placeholder="搜索标题或文件名">

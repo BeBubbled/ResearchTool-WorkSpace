@@ -5,44 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>科研工具箱 · Research Toolkit</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/styles.css?v=20261106-claude-google-settings">
+  <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
 </head>
 <body>
   {% set client_active = "toolbox" %}{% include "_client_nav.html" %}
+  <header class="module-bar"><h1 class="module-bar-title">工具箱</h1><span class="module-bar-sub">文献处理、知识整理、图像与视频 · 本地运行，文件不离开设备</span></header>
   <main class="app-shell">
-    <aside class="sidebar">
-      <div class="brand-lockup">
-        <span class="brand-mark" aria-hidden="true">
-          <i></i><i></i><i></i>
-        </span>
-        <div>
-          <p class="eyebrow">Research Toolkit</p>
-          <h1>科研工具箱</h1>
-        </div>
+    <aside class="tool-sidebar" aria-label="工具列表">
+      <div class="tool-search">
+        <label class="sr-only" for="toolSearch">搜索工具</label>
+        <input id="toolSearch" type="search" placeholder="搜索工具（按 / 聚焦）" autocomplete="off">
+        <span id="toolCount" class="tool-count" title="工具总数">0</span>
       </div>
-      <p class="side-copy">从论文处理到实验素材与科研演示，把常用工作流集中在一个本地工作台。</p>
-      <div class="local-note"><span></span> 本地运行 · 文件不离开设备</div>
-      <p class="side-copy client-rail-hint">精读、改稿、Prompt、研究空白地图和 ResearchStudio 都在左侧导航栏。</p>
-      <div class="sidebar-category" aria-label="生活与健康">
-        <p class="sidebar-category-label">生活与健康</p>
-        <a class="reader-entry health-entry" href="/health">
-          <span class="reader-entry-copy"><small>Apple 健康数据</small><strong>睡眠整理</strong></span>
-          <span class="reader-arrow">→</span>
-        </a>
-      </div>
-      <button id="llmSettingsNav" class="settings-entry" type="button">
-        <span class="reader-entry-copy"><small>全局设置</small><strong>AI、翻译、OCR、语音与 GitHub</strong></span>
-        <span class="reader-arrow">⚙</span>
-      </button>
-      <div class="nav-heading"><span>全部工具</span><span id="toolCount">0</span></div>
-      <nav id="toolNav" class="tool-nav" aria-label="工具列表"></nav>
+      <nav id="toolNav" class="tool-nav" aria-label="工具"></nav>
     </aside>
     <section class="workspace">
-      <div class="workspace-kicker">
-        <span>科研工作区</span>
-        <span class="workspace-meta">LOCAL / PRIVATE</span>
-      </div>
       <header class="workspace-header">
         <div><p id="toolCategory" class="eyebrow"></p><h2 id="toolTitle">加载工具中…</h2><p id="toolDescription"></p></div>
         <span id="availability" class="badge"></span>
@@ -75,6 +53,6 @@
   <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/engine_picker.js?v=1"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/app.js?v=20261108-client-shell"></script>
+  <script src="/static/app.js?v=20261108-toolbox"></script>
 </body>
 </html>

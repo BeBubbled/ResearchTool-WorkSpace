@@ -1,7 +1,25 @@
 /* Standalone /settings page (and its embedded drawer variant). Panel styles come from styles.css. */
-.settings-main { max-width:1280px; margin:0 auto; padding:34px clamp(18px,4vw,56px) 60px; }
-.settings-header { margin-bottom:24px; }
-.settings-header p:last-child { max-width:860px; color:var(--muted); line-height:1.65; }
+.settings-main { max-width:1280px; margin:0 auto; padding:24px clamp(18px,4vw,56px) 60px; }
 .settings-embedded .settings-main { padding:18px 18px 40px; }
 .settings-embedded .settings-root { box-shadow:none; }
 @media (max-width:760px) { .settings-main { padding:22px 14px 40px; } .settings-root { padding:18px; } }
+
+/* 设置 › 精读: per-browser reader defaults (shared with static/reader.js through localStorage). */
+.reader-settings-group { margin-top:18px; padding:16px 18px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+.reader-settings-group h4 { margin:0 0 10px; font-size:14px; }
+.reader-group-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.reader-group-heading h4 { margin:0; }
+.reader-group-heading button { padding:5px 10px; font-size:12px; }
+.reader-switch-row { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:4px 0 10px; }
+.reader-switch-row span { display:grid; gap:3px; }
+.reader-switch-row small { color:var(--muted); font-size:12.5px; }
+.reader-field { display:grid; grid-template-columns:120px minmax(0,360px); align-items:center; gap:12px; margin:6px 0; color:var(--muted); font-size:13px; }
+.reader-field select, .reader-model-row select { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); }
+.reader-model-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:6px 18px; margin:10px 0 4px; }
+.reader-model-row { display:grid; grid-template-columns:minmax(90px,140px) minmax(0,1fr); align-items:center; gap:10px; font-size:13px; }
+.reader-margin-grid { display:grid; grid-template-columns:56px repeat(4,minmax(60px,96px)); align-items:center; gap:6px 8px; color:var(--muted); font-size:12px; }
+.reader-margin-grid > span { text-align:center; }
+.reader-margin-grid strong { color:var(--ink); font-size:13px; font-weight:600; }
+.reader-margin-grid input { box-sizing:border-box; width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; text-align:right; font-variant-numeric:tabular-nums; }
+.reader-settings .hint { margin:8px 0 0; font-size:12.5px; }
+@media (max-width:640px) { .reader-field, .reader-model-row { grid-template-columns:1fr; gap:4px; } .reader-margin-grid { grid-template-columns:44px repeat(4,minmax(0,1fr)); } }

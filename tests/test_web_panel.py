@@ -399,20 +399,20 @@ class ToolboxApiTest(unittest.TestCase):
             "readerLineHeight",
             "readerParagraphSpacing",
             "resetReadingLayout",
-            "headerMarginTop",
-            "headerMarginRight",
-            "headerMarginBottom",
-            "headerMarginLeft",
-            "bodyMarginTop",
-            "bodyMarginRight",
-            "bodyMarginBottom",
-            "bodyMarginLeft",
-            "footerMarginTop",
-            "footerMarginRight",
-            "footerMarginBottom",
-            "footerMarginLeft",
         ):
             self.assertIn(f'id="{control_id}"', html)
+        # Page margins, the default selection action and per-action models moved from the reader's
+        # 排版 popover to 设置 › 精读, which shares the reader's localStorage entry.
+        self.assertNotIn('id="headerMarginTop"', html)
+        self.assertNotIn('id="actionModelMappings"', html)
+        self.assertIn('href="/settings#reader"', html)
+        self.assertIn('id="questionLlm"', html)
+        settings_js = (web_panel.PROJECT_ROOT / "static" / "settings.js").read_text(encoding="utf-8")
+        self.assertIn('"paper-lens.selection-settings.v1"', settings_js)
+        for marker in ("data-reader-margin-zone", "data-reader-action-model", "readerAutoAction", "readerDefaultAction"):
+            self.assertIn(marker, settings_js)
+        reader_js = (web_panel.PROJECT_ROOT / "static" / "reader.js").read_text(encoding="utf-8")
+        self.assertIn('window.addEventListener("storage", syncSelectionSettingsFromStorage)', reader_js)
         self.assertIn('data-assistant-width-delta="-40"', html)
         self.assertIn('data-assistant-width-delta="40"', html)
         self.assertIn('data-paper-width-delta="100"', html)

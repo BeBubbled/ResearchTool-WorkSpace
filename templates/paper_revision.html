@@ -3,14 +3,13 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>双语改稿 · 科研工具箱</title>
-  <link rel="stylesheet" href="/static/paper_revision.css?v=12">
+  <link rel="stylesheet" href="/static/paper_revision.css?v=13">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
 </head>
 <body>
   {% set client_active = "revision" %}{% include "_client_nav.html" %}
-  <header class="topbar"><a class="brand" href="/">Research Toolkit <span>/ 双语改稿</span></a><nav><a href="/settings#codex">AI 设置</a></nav></header>
+  <header class="module-bar"><h1 class="module-bar-title">双语改稿</h1><span class="module-bar-sub">中文批注 · 英文修订 · 增量更新中文对照</span><div class="module-bar-actions"><button id="toggleImport" class="secondary">＋ 导入论文</button><a class="module-bar-link" href="/settings#codex">AI 设置</a></div></header>
   <main>
-    <section class="intro"><div><p class="eyebrow">READ IN CHINESE · REVISE IN ENGLISH</p><h1>用中文推敲，把英文写准确。</h1><p>圈选中文或英文、积累批注，提交后统一修订英文；开启翻译时再增量更新中文对照。</p></div><button id="toggleImport" class="secondary">＋ 导入论文</button></section>
     <section id="importPanel" class="card" hidden>
       <form id="importForm"><h2>导入 LaTeX 原文</h2><div class="import-grid">
         <div><label for="title">项目名称</label><input id="title" maxlength="200" placeholder="例如：论文初稿 · Introduction">
@@ -48,7 +47,7 @@
     <div class="reading-tools" role="group" aria-label="阅读字号"><span>字号</span><button id="fontSmaller" type="button" class="quiet" aria-label="减小字号">A−</button><span id="fontScaleLabel">100%</span><button id="fontLarger" type="button" class="quiet" aria-label="增大字号">A+</button><button id="fontReset" type="button" class="quiet">重置</button></div>
     <section class="reading-area" aria-label="双语逐段对照">
       <div class="column-heads"><h2>EN <span>英文原文 / 当前修订稿 · 也可圈选批注</span></h2><h2>中 <span id="zhHeading">中文对照 · 圈选后添加批注</span></h2></div>
-      <div id="paper"><div class="empty"><span class="empty-number">01 → 02 → 03</span><h2>阅读、批注、修订，周而复始。</h2><p>左右段落始终对应；点击句子会同时标亮英文与中文。</p><p>默认只做必要的局部修改。章节与全文修改可在批注中明确选择。</p></div></div>
+      <div id="paper"><div class="empty"><span class="empty-number">01 → 02 → 03</span><h2>阅读、批注、修订，周而复始。</h2><p>圈选中文或英文、积累批注，提交后统一修订英文；开启翻译时再增量更新中文对照。</p><p>左右段落始终对应；点击句子会同时标亮英文与中文。</p><p>默认只做必要的局部修改。章节与全文修改可在批注中明确选择。</p></div></div>
     </section>
     <p class="footer-note">中文用于审阅，英文是修订依据。每轮保留历史版本；模型修改仍需核查科学含义，导出后请在原 LaTeX 工程中编译。</p>
   </main>

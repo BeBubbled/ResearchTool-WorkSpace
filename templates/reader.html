@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/reader.css?v=20261108-workspace2">
+  <link rel="stylesheet" href="/static/reader.css?v=20261108-typography">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
@@ -13,13 +13,9 @@
 </head>
 <body{% if embed %} class="reader-embedded"{% endif %}>
   {% if embed %}<script src="/static/engine_picker.js?v=1"></script>
-  <style>.reader-embedded .reader-header, .reader-embedded #newPaper, .reader-embedded #openWorkspace { display:none !important; }</style>
+  <style>.reader-embedded .module-bar, .reader-embedded #newPaper, .reader-embedded #openWorkspace { display:none !important; }</style>
   {% else %}{% set client_active = "reader" %}{% include "_client_nav.html" %}{% endif %}
-  <header class="reader-header">
-    <span class="brand">Research Toolkit</span>
-    <div><p class="eyebrow">PAPER LENS</p><h1>科研论文阅读器</h1></div>
-    <p class="header-copy">为机器学习、深度学习、扩散模型与数学理论而设计 · <a href="/settings#mathpix">全局 AI / OCR / 语音 / GitHub 配置</a></p>
-  </header>
+  <header class="module-bar"><h1 class="module-bar-title">精读</h1><span class="module-bar-sub">PDF / Markdown 阅读 · OCR · 整篇翻译 · 划词解读 · Three-Pass</span><div class="module-bar-actions"><a class="module-bar-link" href="/settings#reader">精读设置</a><a class="module-bar-link" href="/settings#mathpix">OCR 与 AI</a></div></header>
 
   <main>
     <section id="uploadCard" class="upload-card">
@@ -114,16 +110,16 @@
             </label>
             <button id="startSpeech" class="speech-start-button hidden" type="button" aria-label="关闭点击段落朗读" title="关闭点击段落朗读" aria-pressed="true"><span class="toolbar-icon" data-speech-icon aria-hidden="true">🔊</span><span class="toolbar-label" data-speech-label>点击朗读：开</span></button>
             <button id="stopSpeech" class="speech-stop-button hidden" type="button" aria-label="停止朗读" title="停止朗读" disabled><span class="toolbar-icon" aria-hidden="true">■</span><span class="toolbar-label">停止朗读</span></button>
-            <button id="selectionSettingsButton" class="settings-button" type="button" aria-label="打开阅读设置" title="打开阅读设置" aria-expanded="false" aria-controls="selectionSettingsPanel">
-              <span class="toolbar-icon" aria-hidden="true">⚙</span><span class="toolbar-label">阅读设置</span>
+            <button id="selectionSettingsButton" class="settings-button" type="button" aria-label="打开排版设置" title="排版：目录、字体、字号与间距" aria-expanded="false" aria-controls="selectionSettingsPanel">
+              <span class="toolbar-icon toolbar-icon-text" aria-hidden="true">Aa</span><span class="toolbar-label">排版</span>
             </button>
             <button id="assistantToggle" class="settings-button assistant-toggle-button" type="button" aria-label="打开划词解读" title="打开划词解读" aria-controls="assistantPanel" aria-expanded="false"><span class="toolbar-icon" aria-hidden="true">✦</span><span class="toolbar-label">解读</span></button>
           </div>
         </div>
-        <section id="selectionSettingsPanel" class="selection-settings hidden" aria-label="阅读与划词设置">
+        <section id="selectionSettingsPanel" class="selection-settings hidden" aria-label="排版">
           <div class="settings-heading">
-            <div><p class="eyebrow">READING SETTINGS</p><h2>阅读与划词设置</h2></div>
-            <button id="closeSelectionSettings" class="icon-button" type="button" aria-label="关闭阅读设置">×</button>
+            <div><p class="eyebrow">TYPOGRAPHY</p><h2>排版</h2></div>
+            <button id="closeSelectionSettings" class="icon-button" type="button" aria-label="关闭排版">×</button>
           </div>
           <section class="layout-settings" aria-labelledby="readerLayoutTitle">
             <label class="switch-row">
@@ -142,6 +138,27 @@
               <input id="readerAxisSlider" type="range" min="-1200" max="1200" step="10" value="0" tabindex="-1">
               <output id="readerAxisValue" for="readerAxisSlider">0px</output>
             </div>
+          </section>
+          <section class="reading-layout-settings" aria-labelledby="readingLayoutTitle">
+            <div class="settings-section-heading">
+              <div><h3 id="readingLayoutTitle">正文排版</h3><p>调整可重排文档的字号与文字、行、段落之间的距离。</p></div>
+              <button id="resetReadingLayout" type="button">恢复默认</button>
+            </div>
+            <div class="reading-layout-grid">
+              <label class="numeric-settings-field">字号
+                <span><input id="readerFontSize" type="number" min="10" max="48" step="0.5" inputmode="decimal"><small>px</small></span>
+              </label>
+              <label class="numeric-settings-field">字距
+                <span><input id="readerLetterSpacing" type="number" min="-3" max="12" step="0.1" inputmode="decimal"><small>px</small></span>
+              </label>
+              <label class="numeric-settings-field">行距
+                <span><input id="readerLineHeight" type="number" min="1" max="3" step="0.05" inputmode="decimal"><small>倍</small></span>
+              </label>
+              <label class="numeric-settings-field">段距
+                <span><input id="readerParagraphSpacing" type="number" min="0" max="96" step="1" inputmode="numeric"><small>px</small></span>
+              </label>
+            </div>
+            <p class="typography-hint">Markdown、HTML、OCR 与译文按这里排版；原生 PDF 保留文件内嵌排版。</p>
           </section>
           <section class="typography-settings" aria-labelledby="typographyTitle">
             <div class="settings-section-heading">
@@ -164,68 +181,8 @@
             <datalist id="englishFontOptions"><option value="Georgia, Times New Roman"><option value="Times New Roman"><option value="Arial, Helvetica"><option value="Inter"><option value="Palatino Linotype"></datalist>
             <datalist id="mathFontOptions"><option value="STIX Two Math, Cambria Math"><option value="Cambria Math"><option value="Latin Modern Math"><option value="STIXGeneral"><option value="Times New Roman"></datalist>
           </section>
-          <section class="reading-layout-settings" aria-labelledby="readingLayoutTitle">
-            <div class="settings-section-heading">
-              <div><h3 id="readingLayoutTitle">正文排版</h3><p>调整可重排文档的字号与文字、行、段落之间的距离。</p></div>
-              <button id="resetReadingLayout" type="button">恢复默认</button>
-            </div>
-            <div class="reading-layout-grid">
-              <label class="numeric-settings-field">字号
-                <span><input id="readerFontSize" type="number" min="10" max="48" step="0.5" inputmode="decimal"><small>px</small></span>
-              </label>
-              <label class="numeric-settings-field">字距
-                <span><input id="readerLetterSpacing" type="number" min="-3" max="12" step="0.1" inputmode="decimal"><small>px</small></span>
-              </label>
-              <label class="numeric-settings-field">行距
-                <span><input id="readerLineHeight" type="number" min="1" max="3" step="0.05" inputmode="decimal"><small>倍</small></span>
-              </label>
-              <label class="numeric-settings-field">段距
-                <span><input id="readerParagraphSpacing" type="number" min="0" max="96" step="1" inputmode="numeric"><small>px</small></span>
-              </label>
-            </div>
-            <div class="page-margin-heading">
-              <strong>页面区域边距</strong>
-              <span>上 / 右 / 下 / 左，单位为 px</span>
-            </div>
-            <div class="page-margin-grid" role="group" aria-label="页眉、正文与页脚边距">
-              <span class="page-margin-corner" aria-hidden="true">区域</span>
-              <span aria-hidden="true">上</span><span aria-hidden="true">右</span><span aria-hidden="true">下</span><span aria-hidden="true">左</span>
-              <strong>页眉</strong>
-              <label><span class="sr-only">页眉上边距</span><input id="headerMarginTop" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="top"></label>
-              <label><span class="sr-only">页眉右边距</span><input id="headerMarginRight" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="right"></label>
-              <label><span class="sr-only">页眉下边距</span><input id="headerMarginBottom" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="bottom"></label>
-              <label><span class="sr-only">页眉左边距</span><input id="headerMarginLeft" type="number" min="0" max="240" step="1" data-page-margin-zone="header" data-page-margin-side="left"></label>
-              <strong>正文</strong>
-              <label><span class="sr-only">正文上边距</span><input id="bodyMarginTop" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="top"></label>
-              <label><span class="sr-only">正文右边距</span><input id="bodyMarginRight" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="right"></label>
-              <label><span class="sr-only">正文下边距</span><input id="bodyMarginBottom" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="bottom"></label>
-              <label><span class="sr-only">正文左边距</span><input id="bodyMarginLeft" type="number" min="0" max="240" step="1" data-page-margin-zone="body" data-page-margin-side="left"></label>
-              <strong>页脚</strong>
-              <label><span class="sr-only">页脚上边距</span><input id="footerMarginTop" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="top"></label>
-              <label><span class="sr-only">页脚右边距</span><input id="footerMarginRight" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="right"></label>
-              <label><span class="sr-only">页脚下边距</span><input id="footerMarginBottom" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="bottom"></label>
-              <label><span class="sr-only">页脚左边距</span><input id="footerMarginLeft" type="number" min="0" max="240" step="1" data-page-margin-zone="footer" data-page-margin-side="left"></label>
-            </div>
-            <p class="typography-hint">Markdown、HTML、OCR 与译文会应用全部设置；原生 PDF 保留文件内嵌排版，仅调整页面外围留白。</p>
-          </section>
-          <div class="default-behavior">
-            <label class="switch-row">
-              <span><strong>划词后自动执行</strong><small>开启时自动运行下方默认动作，同时保留操作菜单以便切换。</small></span>
-              <input id="autoSelectionAction" type="checkbox" role="switch">
-            </label>
-            <label class="settings-field">默认动作
-              <select id="defaultSelectionAction"></select>
-            </label>
-          </div>
-          <div class="settings-section-heading">
-            <div><h3>每个动作使用的 LLM</h3><p>单独指定，或使用下方的兜底配置。</p></div>
-          </div>
-          <div id="actionModelMappings" class="action-model-mappings"></div>
-          <details class="fallback-config">
-            <summary>兜底 / 临时 LLM 配置</summary>
-            <div id="questionLlm" class="llm-config"></div>
-          </details>
           <p id="selectionSettingsStatus" class="settings-status" role="status"></p>
+          <a class="typography-more-link" href="/settings#reader">页面边距、划词默认动作与各动作模型 → 精读设置</a>
         </section>
         <div id="paperContent" class="paper-content"></div>
         <div id="selectionMenu" class="selection-menu hidden">
@@ -266,7 +223,11 @@
         <details id="assistantTools" class="assistant-tools">
           <summary><span>AI、模型与高级工具</span><small>按需展开</small></summary>
           <div class="assistant-tools-body">
-            <a class="assistant-config-link" href="/settings#llm">管理 API、模型与语音配置 ↗</a>
+            <a class="assistant-config-link" href="/settings#reader">划词默认动作与各动作模型 ↗</a>
+            <details id="fallbackConfig" class="fallback-config">
+              <summary>兜底 / 临时 LLM 配置</summary>
+              <div id="questionLlm" class="llm-config"></div>
+            </details>
             <div class="assistant-width-control" aria-label="调整划词解读面板整体宽度">
               <span>面板宽度</span>
               <button type="button" data-assistant-width-delta="-40" aria-label="缩窄划词解读面板">−</button>
@@ -363,6 +324,6 @@
     </section>
   </main>
   <script src="/static/prompt_handoff.js?v=1"></script>
-  <script src="/static/reader.js?v=20261108-workspace2"></script>
+  <script src="/static/reader.js?v=20261108-typography"></script>
 </body>
 </html>

@@ -5,19 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#182a5b">
   <title>Prompt 工作台 · 科研工具箱</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20261005">
-  <link rel="stylesheet" href="/static/prompts.css?v=20261108-library">
+  <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
+  <link rel="stylesheet" href="/static/prompts.css?v=20261108-bar">
 </head>
 <body class="prompt-page">
   {% set client_active = "prompts" %}{% include "_client_nav.html" %}
-  <header class="prompt-topbar">
-    <a class="prompt-brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>科研工具箱<small>RESEARCH TOOLKIT</small></span></a>
-  </header>
+  <header class="module-bar"><h1 class="module-bar-title">Prompt 工作台</h1><span class="module-bar-sub">选取模板，补充上下文，带上附件，送到 ChatGPT</span><div class="module-bar-actions"><span class="module-bar-pill">模板保存在本机</span></div></header>
   <main class="prompt-main">
-    <header class="prompt-heading">
-      <div><p class="eyebrow">PROMPT WORKSPACE</p><h1>把想法，组合成好问题。</h1><p>选取模板，补充上下文，带上附件。一次准备，送到 ChatGPT。</p></div>
-      <span class="badge">模板保存在本机</span>
-    </header>
     <div class="prompt-grid">
       <section class="prompt-library panel" aria-labelledby="libraryTitle">
         <div class="section-heading"><div><p class="eyebrow">01 / 选择模板</p><h2 id="libraryTitle">你的 Prompt 积木</h2></div><button id="newTemplate" type="button">＋ 新建</button></div>

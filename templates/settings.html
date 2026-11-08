@@ -5,24 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>全局设置 · 科研工具箱</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/styles.css?v=20261106-claude-google-settings">
+  <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
-  <link rel="stylesheet" href="/static/settings_page.css?v=1">
+  <link rel="stylesheet" href="/static/settings_page.css?v=3">
 </head>
 <body class="settings-page{% if embed %} settings-embedded{% endif %}">
   {% if not embed %}{% set client_active = "settings" %}{% include "_client_nav.html" %}{% endif %}
+  {% if not embed %}<header class="module-bar"><h1 class="module-bar-title">设置</h1><span class="module-bar-sub">AI 引擎、OCR、翻译、语音与 GitHub · 精读、改稿、Prompt 与工具箱共用</span><div class="module-bar-actions"><span class="module-bar-pill">本机全局</span></div></header>{% endif %}
   <main class="settings-main">
-    {% if not embed %}
-    <header class="workspace-header settings-header">
-      <div><p class="eyebrow">全局设置</p><h2>AI、翻译、OCR、语音与 GitHub 配置</h2><p>统一管理 API 模型、Mathpix OCR、Codex 与 Claude Code 额度、Google 翻译、双语改稿工作流、Three-Pass 篇幅、Azure Speech 及 Markdown 图片发布仓库。精读、改稿、Prompt 与工具箱共用这里的设置。</p></div>
-      <span class="badge ok">本机全局</span>
-    </header>
-    {% endif %}
     <div id="settingsRoot" class="tool-form settings-root"></div>
   </main>
   <script src="/static/engine_picker.js?v=1"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/settings.js?v=2"></script>
+  <script src="/static/settings.js?v=3"></script>
   <script>
     (() => {
       const embedded = {{ "true" if embed else "false" }};

@@ -634,9 +634,6 @@ function renderReadingLayoutSettings() {
   $("#readerLetterSpacing").value = String(layout.letterSpacing);
   $("#readerLineHeight").value = String(layout.lineHeight);
   $("#readerParagraphSpacing").value = String(layout.paragraphSpacing);
-  document.querySelectorAll("[data-page-margin-zone][data-page-margin-side]").forEach(input => {
-    input.value = String(layout.margins[input.dataset.pageMarginZone][input.dataset.pageMarginSide]);
-  });
 }
 
 function updateTypographyFromInputs(message = "阅读字体已更新。") {
@@ -651,14 +648,8 @@ function updateTypographyFromInputs(message = "阅读字体已更新。") {
 }
 
 function updateReadingLayoutFromInputs(message = "阅读排版已更新。") {
-  const margins = {};
-  PAGE_MARGIN_ZONES.forEach(zone => {
-    margins[zone] = {};
-    PAGE_MARGIN_SIDES.forEach(side => {
-      const input = document.querySelector(`[data-page-margin-zone="${zone}"][data-page-margin-side="${side}"]`);
-      margins[zone][side] = input?.value;
-    });
-  });
+  // Page margins are edited in 设置 › 精读 (static/settings.js); keep the stored ones here.
+  const margins = readerState.readingLayout.margins;
   readerState.readingLayout = normalizeReadingLayout({
     fontSize: $("#readerFontSize").value,
     letterSpacing: $("#readerLetterSpacing").value,
@@ -731,39 +722,45 @@ function refreshLlmConfigs() {
   wireLlmConfig($("#questionLlm"), true);
 }
 
+// The 排版 popover only holds view settings; default action and per-action models live in 设置 › 精读.
 function renderSelectionSettings() {
   const actions = readerState.config?.actions || [];
-  const presets = readerState.config?.llmPresets || [];
   if (!actions.some(action => action.id === readerState.defaultSelectionAction)) {
     readerState.defaultSelectionAction = actions[0]?.id || "";
   }
-  $("#autoSelectionAction").checked = readerState.autoSelectionAction;
   $("#showTableOfContents").checked = readerState.showTableOfContents;
   renderTypographySettings();
   renderReadingLayoutSettings();
-  $("#defaultSelectionAction").disabled = !readerState.autoSelectionAction;
-  $("#defaultSelectionAction").innerHTML = actions.map(action => (
-    `<option value="${escapeHtml(action.id)}" ${action.id === readerState.defaultSelectionAction ? "selected" : ""}>${escapeHtml(action.label)}</option>`
-  )).join("");
-  const modelOptions = selected => [
-    `<option value="" ${selected ? "" : "selected"}>使用兜底配置</option>`,
-    ...presets.map(preset => (
-      `<option value="${escapeHtml(preset.id)}" ${preset.id === selected ? "selected" : ""}>${escapeHtml(preset.name)} · ${escapeHtml(preset.model)} · 并发 ${escapeHtml(preset.concurrency || 1)}</option>`
-    )),
-  ].join("");
-  $("#actionModelMappings").innerHTML = actions.map(action => {
-    const selected = presets.some(item => item.id === readerState.actionModels[action.id]) ? readerState.actionModels[action.id] : "";
-    return `<label class="action-model-row"><span>${escapeHtml(action.label)}</span><select data-action-model="${escapeHtml(action.id)}" aria-label="${escapeHtml(action.label)}使用的 LLM">${modelOptions(selected)}</select></label>`;
-  }).join("");
-  $("#actionModelMappings").querySelectorAll("[data-action-model]").forEach(select => {
-    select.addEventListener("change", event => {
-      const action = event.target.dataset.actionModel;
-      if (event.target.value) readerState.actionModels[action] = event.target.value;
-      else delete readerState.actionModels[action];
-      persistSelectionSettings(`${actionLabel(action)}的 LLM 已更新。`);
-      renderActions();
-    });
-  });
+}
+
+// 设置 › 精读 (same origin, possibly the settings drawer iframe) wrote new defaults: pick them up live.
+function syncSelectionSettingsFromStorage(event) {
+  if (event.key !== SETTINGS_STORAGE_KEY) return;
+  const previousFallback = readerState.selectedPreset;
+  loadSelectionSettings();
+  applyTableOfContentsVisibility();
+  applyReaderTypography();
+  applyAssistantWidth();
+  // Rebuilding the fallback picker would drop a half-typed temporary config, so only do it when it changed.
+  if (readerState.selectedPreset !== previousFallback) refreshLlmConfigs();
+  renderSelectionSettings();
+  renderActions();
+}
+
+// No usable LLM for a selection action: show the fallback / temporary config in the assistant panel.
+function revealQuestionLlmConfig() {
+  if (readerState.assistantOverlay && !readerState.assistantOverlayOpen) {
+    readerState.assistantOverlayOpen = true;
+    readerState.tableOfContentsOverlayOpen = false;
+    applyResponsiveReaderLayout();
+  }
+  const tools = $("#assistantTools");
+  const fallback = $("#fallbackConfig");
+  if (tools) tools.open = true;
+  if (fallback) {
+    fallback.open = true;
+    fallback.scrollIntoView({ block: "nearest" });
+  }
 }
 
 function actionLabel(actionId) {
@@ -786,8 +783,7 @@ function toggleSelectionSettings(force) {
   const shouldOpen = typeof force === "boolean" ? force : panel.classList.contains("hidden");
   panel.classList.toggle("hidden", !shouldOpen);
   button.setAttribute("aria-expanded", String(shouldOpen));
-  button.setAttribute("aria-label", shouldOpen ? "关闭阅读设置" : "打开阅读设置");
-  button.title = shouldOpen ? "关闭阅读设置" : "打开阅读设置";
+  button.setAttribute("aria-label", shouldOpen ? "关闭排版设置" : "打开排版设置");
 }
 
 function localAsset(url) {
@@ -966,7 +962,7 @@ async function translateLiveParagraph(blockId, sourceText, sourceElement) {
   } catch (error) {
     readerState.liveTranslations.set(key, { error: error.message || "请先配置翻译所用的 LLM。" });
     renderLiveTranslationNode(sourceElement, blockId);
-    toggleSelectionSettings(true);
+    revealQuestionLlmConfig();
     return null;
   }
   readerState.liveTranslations.set(key, { loading: true });
@@ -3224,7 +3220,7 @@ async function ask(action, { keepMenu = false } = {}) {
     llm = llmForAction(action);
   } catch (error) {
     renderAnswer(error.message);
-    toggleSelectionSettings(true);
+    revealQuestionLlmConfig();
     return;
   }
   const requestId = ++readerState.questionRequestId;
@@ -4495,24 +4491,13 @@ async function initReader() {
   ].forEach(id => {
     $(`#${id}`).addEventListener("change", () => updateReadingLayoutFromInputs());
   });
-  document.querySelectorAll("[data-page-margin-zone][data-page-margin-side]").forEach(input => {
-    input.addEventListener("change", () => updateReadingLayoutFromInputs("页面区域边距已更新。"));
-  });
   $("#resetReadingLayout").addEventListener("click", () => {
-    readerState.readingLayout = normalizeReadingLayout();
+    readerState.readingLayout = normalizeReadingLayout({ margins: readerState.readingLayout.margins });
     renderReadingLayoutSettings();
     applyReaderTypography();
-    persistSelectionSettings("字号、间距与页面边距已恢复默认。");
+    persistSelectionSettings("字号与间距已恢复默认。");
   });
-  $("#autoSelectionAction").addEventListener("change", event => {
-    readerState.autoSelectionAction = event.target.checked;
-    $("#defaultSelectionAction").disabled = !event.target.checked;
-    persistSelectionSettings(event.target.checked ? "已启用划词默认行为。" : "已关闭划词默认行为。");
-  });
-  $("#defaultSelectionAction").addEventListener("change", event => {
-    readerState.defaultSelectionAction = event.target.value;
-    persistSelectionSettings(`默认行为已设为“${actionLabel(event.target.value)}”。`);
-  });
+  window.addEventListener("storage", syncSelectionSettingsFromStorage);
   document.addEventListener("mousedown", event => {
     if (!event.target.closest("#selectionMenu")) hideSelectionMenu();
     if (!event.target.closest("#selectionSettingsPanel, #selectionSettingsButton")) toggleSelectionSettings(false);

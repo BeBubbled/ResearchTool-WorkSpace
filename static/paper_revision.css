@@ -59,41 +59,10 @@ a {
 [hidden] {
   display:none!important
 }
-.topbar {
-  height:65px;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:0 4vw;
-  border-bottom:1px solid var(--line);
-  background:#fff
-}
-.brand {
-  font-weight:700;
-  text-decoration:none;
-  letter-spacing:-.4px
-}
-.brand span {
-  font-weight:400;
-  color:var(--muted);
-  margin-left:10px
-}
-.topbar nav {
-  display:flex;
-  gap:24px;
-  font-size:14px
-}
 main {
   max-width:1700px;
   margin:auto;
   padding:34px 4vw
-}
-.intro {
-  display:flex;
-  justify-content:space-between;
-  gap:24px;
-  align-items:center;
-  margin-bottom:25px
 }
 .eyebrow {
   font-size:11px;
@@ -108,10 +77,6 @@ h1 {
 }
 h2 {
   font-size:18px
-}
-.intro p:not(.eyebrow) {
-  color:var(--muted);
-  font-size:14px
 }
 .card {
   background:#fff;
@@ -472,9 +437,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
     margin-left:5px;
     font-size:11px
   }
-  .intro {
-    align-items:flex-start
-  }
   h1 {
     font-size:24px
   }
@@ -483,19 +445,6 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
   }
 }
 @media(max-width:580px) {
-  .topbar {
-    padding:0 15px
-  }
-  .topbar nav {
-    gap:10px
-  }
-  .brand span {
-    display:none
-  }
-  .intro {
-    flex-direction:column;
-    gap:8px
-  }
   .pair {
     grid-template-columns:1fr
   }

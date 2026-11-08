@@ -5,20 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#17334a">
   <title>ResearchStudio · 科研工具箱</title>
-  <link rel="stylesheet" href="/static/researchstudio.css?v=20261012">
+  <link rel="stylesheet" href="/static/researchstudio.css?v=20261108-bar">
 </head>
 <body>
   {% set client_active = "studio" %}{% include "_client_nav.html" %}
-  <header class="topbar">
-    <a class="brand" href="/">Research Toolkit <span>/ ResearchStudio</span></a>
-    <nav aria-label="工作台导航"><a href="/settings#codex">AI 设置</a></nav>
-  </header>
+  <header class="module-bar"><h1 class="module-bar-title">ResearchStudio</h1><span class="module-bar-sub">选题 · 检索 · 创新性核查 · 论文成果生成</span><div class="module-bar-actions"><a class="module-bar-link" href="/settings#codex">AI 设置</a></div></header>
   <main>
-    <section class="intro">
-      <p class="eyebrow">IDEA → PAPER → REEL</p>
-      <h1>把研究方向变成方案，把论文变成作品。</h1>
-      <p>接入 Microsoft ResearchStudio，在同一工作台完成选题、检索、创新性核查与论文成果生成。</p>
-    </section>
     <div class="columns">
       <section class="card">
         <h2>创建任务</h2>
@@ -58,7 +50,7 @@
         <div class="heading"><h2>任务与产物</h2><span id="jobCount" class="hint"></span></div>
         <label for="jobSelect">历史任务</label>
         <select id="jobSelect"><option value="">尚无任务</option></select>
-        <div id="empty" class="empty">选择工作流开始。任务记录和生成的文件保存在本机，刷新页面后仍可查看。</div>
+        <div id="empty" class="empty">接入 Microsoft ResearchStudio：从研究方向到方案，从论文到海报、博客与讲解视频。<br>选择工作流开始。任务记录和生成的文件保存在本机，刷新页面后仍可查看。</div>
         <div id="jobDetail" hidden>
           <div class="heading"><h3 id="jobTitle"></h3><span id="jobStatus" class="badge" role="status"></span></div>
           <p id="jobModel" class="hint"></p>

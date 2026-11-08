@@ -1,7 +1,7 @@
 const state = { tools: [], active: null, view: "tool", files: [], anki: null, captions: { titles: [], captions: [] }, gridLabels: { rowTitles: [], colTitles: [], captions: [] }, poller: null, currentJob: null, translationSource: "", llmPreset: "" };
 const nav = document.querySelector("#toolNav");
 const form = document.querySelector("#toolForm");
-const llmSettingsNav = document.querySelector("#llmSettingsNav");
+const toolSearch = document.querySelector("#toolSearch");
 const title = document.querySelector("#toolTitle");
 const category = document.querySelector("#toolCategory");
 const description = document.querySelector("#toolDescription");
@@ -28,15 +28,45 @@ async function init() {
   state.tools = data.tools;
   toolCount.textContent = String(state.tools.length);
   state.active = state.tools.find(tool => tool.id === "pdf_ocr_translate") || state.tools[0];
-  llmSettingsNav.addEventListener("click", () => openLlmSettings("llm"));
+  toolSearch.addEventListener("input", renderNav);
+  toolSearch.addEventListener("keydown", event => {
+    if (event.key === "Escape") { toolSearch.value = ""; renderNav(); }
+    if (event.key === "Enter") nav.querySelector("[data-tool]")?.click();
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.target.closest?.("input, textarea, select, [contenteditable='true']")) return;
+    event.preventDefault(); toolSearch.focus(); toolSearch.select();
+  });
   window.addEventListener("hashchange", () => { const tab = legacySettingsTab(); if (tab) openLlmSettings(tab); });
   renderNav(); renderTool();
 }
 
+// Pages that live beside the tools but have their own route (shown as links in the list).
+const TOOLBOX_LINKS = [{ href: "/health", title: "睡眠整理", category: "生活与健康", description: "整理 Apple 健康导出的睡眠数据，只在此浏览器处理。" }];
+
+function highlightMatch(text, query) {
+  const value = escapeHtml(text);
+  if (!query) return value;
+  const index = text.toLowerCase().indexOf(query);
+  if (index < 0) return value;
+  return `${escapeHtml(text.slice(0, index))}<mark>${escapeHtml(text.slice(index, index + query.length))}</mark>${escapeHtml(text.slice(index + query.length))}`;
+}
+
+// Tool list: search matches title, description and category (DevUtils-style source list).
 function renderNav() {
+  const query = toolSearch.value.trim().toLowerCase();
+  const matches = item => !query || [item.title, item.description, item.category].some(text => String(text || "").toLowerCase().includes(query));
   const groups = new Map();
-  state.tools.forEach(tool => { if (!groups.has(tool.category)) groups.set(tool.category, []); groups.get(tool.category).push(tool); });
-  nav.innerHTML = [...groups].map(([group, tools]) => `<div class="nav-category">${group}</div>${tools.map(tool => `<button class="tool-card ${state.view === "tool" && tool.id === state.active.id ? "active" : ""} ${tool.available ? "" : "unavailable"}" data-tool="${tool.id}" title="${escapeHtml(tool.unavailableReason || "")}">${escapeHtml(tool.title)}<small>${escapeHtml(tool.description)}</small></button>`).join("")}`).join("");
+  const add = (category, html) => { if (!groups.has(category)) groups.set(category, []); groups.get(category).push(html); };
+  state.tools.filter(matches).forEach(tool => {
+    const active = state.view === "tool" && tool.id === state.active.id;
+    add(tool.category, `<button type="button" class="tool-card ${active ? "active" : ""} ${tool.available ? "" : "unavailable"}" data-tool="${tool.id}" title="${escapeHtml(tool.available ? tool.description : tool.unavailableReason || tool.description)}" ${active ? 'aria-current="page"' : ""}>${highlightMatch(tool.title, query)}${tool.available ? "" : '<span class="tool-card-flag">需配置</span>'}</button>`);
+  });
+  TOOLBOX_LINKS.filter(matches).forEach(link => add(link.category, `<a class="tool-card" href="${link.href}" title="${escapeHtml(link.description)}">${highlightMatch(link.title, query)}<span class="tool-card-flag">↗</span></a>`));
+  nav.innerHTML = groups.size
+    ? [...groups].map(([group, items]) => `<div class="nav-category">${escapeHtml(group)}</div>${items.join("")}`).join("")
+    : `<p class="tool-nav-empty">没有匹配“${escapeHtml(toolSearch.value.trim())}”的工具。</p>`;
   nav.querySelectorAll("[data-tool]").forEach(button => button.addEventListener("click", () => {
     state.view = "tool"; state.active = state.tools.find(tool => tool.id === button.dataset.tool); state.files = []; state.anki = null; state.captions = { titles: [], captions: [] }; state.gridLabels = { rowTitles: [], colTitles: [], captions: [] }; state.currentJob = null; state.translationSource = ""; state.llmPreset = ""; stopPolling();
     if (location.hash) history.replaceState(null, "", location.pathname + location.search);

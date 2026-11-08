@@ -1,13 +1,5 @@
 .prompt-page { background:#f4f6fb; }
-.prompt-topbar { display:flex; align-items:center; justify-content:space-between; padding:20px max(28px,calc((100vw - 1380px)/2)); background:#182a5b; }
-.prompt-topbar a { color:#e8edf9; text-decoration:none; font-size:13px; }
-.prompt-brand { display:flex; align-items:center; gap:12px; font-weight:700; }
-.prompt-brand small { display:block; margin-top:5px; color:#99b5d3; font-size:9px; letter-spacing:.16em; }
-.prompt-main { max-width:1380px; margin:0 auto; padding:42px 28px 60px; }
-.prompt-heading { display:flex; justify-content:space-between; gap:20px; margin-bottom:30px; }
-.prompt-heading h1 { font-size:34px; letter-spacing:-.035em; color:#253b7a; margin-bottom:12px; }
-.prompt-heading p:last-child { color:var(--muted); font-size:14px; margin-bottom:0; }
-.prompt-heading .badge { margin-top:27px; }
+.prompt-main { max-width:1380px; margin:0 auto; padding:24px 28px 60px; }
 .prompt-grid { display:grid; grid-template-columns:minmax(280px, .8fr) minmax(400px,1.4fr); gap:24px; align-items:start; }
 .panel { background:#fff; padding:26px; border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 32px #1f305f06; min-width:0; }
 .prompt-page h2 { font-size:21px; margin:0; }
@@ -57,8 +49,8 @@
 .prompt-page dialog { padding:26px; width:min(620px,94vw); border:1px solid var(--line); border-radius:14px; color:var(--ink); box-shadow:var(--shadow); }.prompt-page dialog::backdrop { background:#15234170; }.prompt-page dialog .field { margin:16px 0; }.prompt-page dialog textarea { min-height:220px; line-height:1.8; }.template-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:18px; }.template-actions .danger { margin-right:auto; color:var(--danger); }.dialog-error { font-size:13px; color:var(--danger); }
 .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 [hidden] { display:none!important; }
-@media(max-width:850px) { .prompt-grid { grid-template-columns:1fr; }.template-list { max-height:370px; grid-template-columns:repeat(2,minmax(0,1fr)); }.prompt-heading .badge { display:none; }.prompt-main { padding:28px 18px 40px; }.prompt-heading h1 { font-size:28px; }.panel { padding:20px; } }
-@media(max-width:500px) { .template-list { grid-template-columns:1fr; }.prompt-topbar { padding:18px; }.draft-meta { flex-wrap:wrap; }.attachment-heading { align-items:start; flex-direction:column; }.prompt-submit-row .primary { padding:12px; } }
+@media(max-width:850px) { .prompt-grid { grid-template-columns:1fr; }.template-list { max-height:370px; grid-template-columns:repeat(2,minmax(0,1fr)); }.prompt-main { padding:28px 18px 40px; }.panel { padding:20px; } }
+@media(max-width:500px) { .template-list { grid-template-columns:1fr; }.draft-meta { flex-wrap:wrap; }.attachment-heading { align-items:start; flex-direction:column; }.prompt-submit-row .primary { padding:12px; } }
 
 /* Built-in reader actions (from 文献精读) shown in the library. */
 .builtin-badge { color:#2f6f68; font-weight:600; }

@@ -1,9 +1,9 @@
-/* 全局设置：LLM、Mathpix、Codex、Claude Code、Google 翻译、双语改稿工作流、Three-Pass、Azure Speech、GitHub。
+/* 全局设置：LLM、Mathpix、Codex、Claude Code、Google 翻译、精读默认行为、双语改稿工作流、Three-Pass、Azure Speech、GitHub。
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["llm", "mathpix", "codex", "claude", "google", "workflow", "three-pass", "speech", "github"];
-const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, claudeConfig: null, workflowOptions: null, settingsTab: "llm" };
+const SETTINGS_TABS = ["llm", "mathpix", "codex", "claude", "google", "reader", "workflow", "three-pass", "speech", "github"];
+const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], settingsTab: "llm" };
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 let form = null;
 let hooks = { onTabChange() {}, onChanged() {}, onSaved() {} };
@@ -17,12 +17,159 @@ async function mount(root, options = {}) {
   state.settingsTab = SETTINGS_TABS.includes(options.tab) ? options.tab : state.settingsTab;
   form.innerHTML = `<div class="llm-manager-loading">正在读取本机全局配置…</div>`;
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalClaudeConfig(), loadGlobalWorkflowConfig()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalClaudeConfig(), loadGlobalWorkflowConfig(), loadReaderActions()]);
     renderLlmManager();
   } catch (error) {
     form.innerHTML = `<p class="message">${escapeHtml(error.message)}</p><button type="button" data-retry-llm>重新加载</button>`;
     form.querySelector("[data-retry-llm]")?.addEventListener("click", () => mount(root, options));
   }
+}
+
+// 精读 defaults are per-browser: they share static/reader.js's localStorage entry, and the reader picks up
+// changes through the storage event, so nothing here goes to the server.
+const READER_SETTINGS_KEY = "paper-lens.selection-settings.v1";
+// Keep in sync with DEFAULT_READING_LAYOUT.margins in static/reader.js.
+const READER_MARGIN_DEFAULTS = {
+  header: { top: 18, right: 48, bottom: 12, left: 48 },
+  body: { top: 38, right: 64, bottom: 56, left: 64 },
+  footer: { top: 12, right: 48, bottom: 24, left: 48 },
+};
+const READER_MARGIN_ZONES = [["header", "页眉"], ["body", "正文"], ["footer", "页脚"]];
+const READER_MARGIN_SIDES = [["top", "上"], ["right", "右"], ["bottom", "下"], ["left", "左"]];
+
+async function loadReaderActions() {
+  try {
+    const response = await fetch("/api/reader/config");
+    const data = await response.json();
+    state.readerActions = response.ok ? data.actions || [] : [];
+  } catch {
+    state.readerActions = [];
+  }
+}
+
+function readReaderSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(READER_SETTINGS_KEY) || "{}");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+// Read-modify-write so fields the reader owns (widths, typography, …) are never dropped.
+function writeReaderSettings(patch) {
+  try {
+    localStorage.setItem(READER_SETTINGS_KEY, JSON.stringify({ ...readReaderSettings(), ...patch }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clampMargin(value, fallback) {
+  const number = Number(value);
+  return value !== "" && value !== null && Number.isFinite(number) ? Math.min(240, Math.max(0, Math.round(number))) : fallback;
+}
+
+function readerMargins(saved = readReaderSettings()) {
+  const margins = {};
+  READER_MARGIN_ZONES.forEach(([zone]) => {
+    margins[zone] = {};
+    READER_MARGIN_SIDES.forEach(([side]) => {
+      margins[zone][side] = clampMargin(saved.readingLayout?.margins?.[zone]?.[side], READER_MARGIN_DEFAULTS[zone][side]);
+    });
+  });
+  return margins;
+}
+
+function renderReaderSettingsPanel() {
+  const saved = readReaderSettings();
+  const actions = state.readerActions;
+  const presets = state.llmPresets;
+  const autoAction = saved.autoSelectionAction === true;
+  const defaultAction = actions.some(action => action.id === saved.defaultSelectionAction) ? saved.defaultSelectionAction : actions[0]?.id || "";
+  const actionModels = saved.actionModels && typeof saved.actionModels === "object" ? saved.actionModels : {};
+  const presetOptions = selected => presets.map(preset => `<option value="${escapeHtml(preset.id)}" ${preset.id === selected ? "selected" : ""}>${escapeHtml(preset.name)} · ${escapeHtml(preset.model)}</option>`).join("");
+  const fallback = typeof saved.fallbackPreset === "string" ? saved.fallbackPreset : "";
+  const fallbackSelected = presets.some(preset => preset.id === fallback) ? fallback : presets[0]?.id || "";
+  const fallbackOptions = (presets.length ? "" : `<option value="">请先在 LLM 标签添加预设</option>`)
+    + (fallback === "custom" ? `<option value="custom" selected>精读中的临时配置（仅当前请求）</option>` : "")
+    + presetOptions(fallback === "custom" ? "" : fallbackSelected);
+  const margins = readerMargins(saved);
+  const actionRows = actions.length
+    ? actions.map(action => {
+      const selected = presets.some(preset => preset.id === actionModels[action.id]) ? actionModels[action.id] : "";
+      return `<label class="reader-model-row"><span>${escapeHtml(action.label)}</span><select data-reader-action-model="${escapeHtml(action.id)}" aria-label="${escapeHtml(action.label)}使用的 LLM"><option value="">使用兜底预设</option>${presetOptions(selected)}</select></label>`;
+    }).join("")
+    : `<p class="hint">暂时读不到精读的划选动作列表。</p>`;
+  const marginHead = `<span aria-hidden="true">px</span>${READER_MARGIN_SIDES.map(([, label]) => `<span aria-hidden="true">${label}</span>`).join("")}`;
+  const marginRows = READER_MARGIN_ZONES.map(([zone, zoneLabel]) => `<strong>${zoneLabel}</strong>${READER_MARGIN_SIDES.map(([side, sideLabel]) => `<label><span class="sr-only">${zoneLabel}${sideLabel}边距</span><input type="number" min="0" max="240" step="1" value="${margins[zone][side]}" data-reader-margin-zone="${zone}" data-reader-margin-side="${side}"></label>`).join("")}`).join("");
+  return `
+      <section class="settings-tab-panel reader-settings" data-settings-panel="reader" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>精读 · 默认行为</h3><span class="preset-id">保存在此浏览器</span></div>
+            <p class="hint">不常改的默认值，改动立即生效，已打开的精读页会自动同步。字体、字号与行距请在精读工具栏的“Aa 排版”里随时调整。</p>
+          </div>
+        </div>
+        <p id="readerSettingsStatus" class="manager-message hidden" role="status"></p>
+        <div class="reader-settings-group">
+          <h4>划词</h4>
+          <label class="reader-switch-row"><span><strong>划词后自动执行</strong><small>开启时自动运行默认动作，同时保留操作菜单以便切换。</small></span><input id="readerAutoAction" type="checkbox" role="switch" ${autoAction ? "checked" : ""}></label>
+          <label class="reader-field">默认动作<select id="readerDefaultAction" ${autoAction ? "" : "disabled"}>${actions.map(action => `<option value="${escapeHtml(action.id)}" ${action.id === defaultAction ? "selected" : ""}>${escapeHtml(action.label)}</option>`).join("")}</select></label>
+          <p class="hint">动作的名称和 Prompt 在 <a href="/prompts?category=%E7%B2%BE%E8%AF%BB%E5%88%92%E9%80%89%E5%8A%A8%E4%BD%9C" target="_blank" rel="noopener">Prompt 工作台</a> 修改。</p>
+        </div>
+        <div class="reader-settings-group">
+          <h4>每个动作使用的 LLM</h4>
+          <label class="reader-field">兜底 API 预设<select id="readerFallbackPreset" ${presets.length ? "" : "disabled"}>${fallbackOptions}</select></label>
+          <div class="reader-model-list">${actionRows}</div>
+          <p class="hint">未单独指定的动作使用兜底预设。临时的手动配置在精读右栏“AI、模型与高级工具 › 兜底 / 临时 LLM 配置”中填写，不会保存。</p>
+        </div>
+        <div class="reader-settings-group">
+          <div class="reader-group-heading"><h4>页面区域边距</h4><button type="button" data-reset-reader-margins>恢复默认</button></div>
+          <div class="reader-margin-grid" role="group" aria-label="页眉、正文与页脚边距（px）">${marginHead}${marginRows}</div>
+          <p class="hint">Markdown、HTML、OCR 与译文应用全部边距；原生 PDF 保留文件内嵌排版，仅调整页面外围留白。</p>
+        </div>
+      </section>`;
+}
+
+function wireReaderSettings() {
+  const panel = form.querySelector('[data-settings-panel="reader"]');
+  if (!panel) return;
+  const save = (patch, text) => {
+    const ok = writeReaderSettings(patch);
+    const node = panel.querySelector("#readerSettingsStatus");
+    node.textContent = ok ? text : "浏览器不允许保存设置（可能处于隐私模式）。";
+    node.className = `manager-message ${ok ? "ok" : "bad"}`;
+  };
+  const actionLabel = id => state.readerActions.find(action => action.id === id)?.label || id;
+  const defaultSelect = panel.querySelector("#readerDefaultAction");
+  panel.querySelector("#readerAutoAction")?.addEventListener("change", event => {
+    defaultSelect.disabled = !event.target.checked;
+    save({ autoSelectionAction: event.target.checked, defaultSelectionAction: defaultSelect.value }, event.target.checked ? "已开启划词后自动执行。" : "已关闭划词后自动执行。");
+  });
+  defaultSelect?.addEventListener("change", event => save({ defaultSelectionAction: event.target.value }, `默认动作已设为“${actionLabel(event.target.value)}”。`));
+  panel.querySelector("#readerFallbackPreset")?.addEventListener("change", event => save({ fallbackPreset: event.target.value }, "兜底预设已更新。"));
+  panel.querySelectorAll("[data-reader-action-model]").forEach(select => select.addEventListener("change", () => {
+    const action = select.dataset.readerActionModel;
+    const actionModels = { ...(readReaderSettings().actionModels || {}) };
+    if (select.value) actionModels[action] = select.value;
+    else delete actionModels[action];
+    save({ actionModels }, `“${actionLabel(action)}”使用的 LLM 已更新。`);
+  }));
+  const saveMargins = (margins, text) => save({ readingLayout: { ...(readReaderSettings().readingLayout || {}), margins } }, text);
+  panel.querySelectorAll("[data-reader-margin-zone]").forEach(input => input.addEventListener("change", () => {
+    const { readerMarginZone: zone, readerMarginSide: side } = input.dataset;
+    const margins = readerMargins();
+    margins[zone][side] = clampMargin(input.value, READER_MARGIN_DEFAULTS[zone][side]);
+    input.value = String(margins[zone][side]);
+    saveMargins(margins, "页面区域边距已更新。");
+  }));
+  panel.querySelector("[data-reset-reader-margins]")?.addEventListener("click", () => {
+    const margins = JSON.parse(JSON.stringify(READER_MARGIN_DEFAULTS));
+    panel.querySelectorAll("[data-reader-margin-zone]").forEach(input => { input.value = String(margins[input.dataset.readerMarginZone][input.dataset.readerMarginSide]); });
+    saveMargins(margins, "页面区域边距已恢复默认。");
+  });
 }
 
 async function loadGlobalLlmPresets() {
@@ -226,6 +373,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
         <button type="button" role="tab" data-settings-tab="codex">Codex</button>
         <button type="button" role="tab" data-settings-tab="claude">Claude Code</button>
         <button type="button" role="tab" data-settings-tab="google">Google 翻译</button>
+        <button type="button" role="tab" data-settings-tab="reader">精读</button>
         <button type="button" role="tab" data-settings-tab="workflow">双语改稿</button>
         <button type="button" role="tab" data-settings-tab="three-pass">Three-Pass</button>
         <button type="button" role="tab" data-settings-tab="speech">Azure Speech</button>
@@ -284,6 +432,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
         ${claude.cliPath ? `<p class="hint">CLI 路径：<code>${escapeHtml(claude.cliPath)}</code></p>` : ""}
         <p class="hint">双语改稿各步骤使用哪个 Claude 模型与推理强度，在 <a href="#settings/workflow" data-goto-workflow>双语改稿</a> 分区中设置。</p>
       </section>
+${renderReaderSettingsPanel()}
       <section class="settings-tab-panel workflow-manager" data-settings-panel="workflow" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
@@ -428,6 +577,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   form.querySelector("[data-test-claude]")?.addEventListener("click", event => testGlobalClaudeConfig(event.currentTarget));
   form.querySelector("[data-test-github]")?.addEventListener("click", event => testGlobalGithubConfig(event.currentTarget));
   form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
+  wireReaderSettings();
   activateSettingsTab(state.settingsTab, false);
 }
 
