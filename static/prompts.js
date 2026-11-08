@@ -289,7 +289,7 @@ if (typeof document !== "undefined") (() => {
     if (edit) editTemplate(edit.dataset.edit);
     if (add) {
       try {
-        draft.add(templates.find(row => row.id === add.dataset.add));
+        draft.add(templates.find(row => row.id === add.dataset.add)); markSeen();
         $("promptText").value = draft.text; $("promptText").scrollTop = $("promptText").scrollHeight;
         saveDraft(); renderSelected(); renderTemplates();
       } catch (error) { notify(error.message); }
@@ -326,6 +326,63 @@ if (typeof document !== "undefined") (() => {
   $("attachmentList").addEventListener("click", event => { const button = event.target.closest("[data-remove-file]"); if (button) { draft.files.splice(Number(button.dataset.removeFile),1); renderFiles(); } });
   $("copyPrompt").addEventListener("click", async () => { try { await navigator.clipboard.writeText(draft.text); notify("Prompt 已复制。"); } catch { $("promptText").focus(); $("promptText").select(); notify("无法访问剪贴板，请按 Ctrl+C 复制选中文字。"); } });
   $("checkBridge").addEventListener("click", checkBridge); $("submitPrompt").addEventListener("click", submit);
+  // ChatGPT connection lives in a top-bar popover: status pill + diagnostics and setup steps.
+  const toggleBridge = (open = $("bridgePanel").hidden) => { $("bridgePanel").hidden = !open; $("bridgeToggle").setAttribute("aria-expanded", String(open)); };
+  $("bridgeToggle").addEventListener("click", () => toggleBridge());
+  document.addEventListener("pointerdown", event => { if (!$("bridgePanel").hidden && !event.target.closest("#bridgePanel, #bridgeToggle")) toggleBridge(false); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && !$("bridgePanel").hidden) toggleBridge(false); });
+
+  // `/` at the start of a line opens a template picker (BoltAI-style); the chosen template is added like a click on the left.
+  const SEEN_KEY = "research-toolkit.prompts.seen";
+  try { if (localStorage.getItem(SEEN_KEY)) document.body.classList.add("prompt-seen"); } catch {}
+  const markSeen = () => { try { localStorage.setItem(SEEN_KEY, "1"); } catch {} };
+  let slash = null;
+  function slashContext() {
+    const input = $("promptText"), caret = input.selectionStart;
+    if (caret !== input.selectionEnd) return null;
+    const lineStart = input.value.lastIndexOf("\n", caret - 1) + 1;
+    const typed = input.value.slice(lineStart, caret);
+    return /^\/[^\s/]{0,30}$/.test(typed) ? { start: lineStart, end: caret, query: typed.slice(1).toLocaleLowerCase() } : null;
+  }
+  function renderSlash() {
+    slash = slashContext();
+    const picker = $("slashPicker");
+    if (!slash) { picker.hidden = true; return; }
+    const matches = templates.filter(row => !draft.selected.some(item => item.id === row.id) && (!slash.query || `${row.title} ${row.category}`.toLocaleLowerCase().includes(slash.query))).slice(0, 8);
+    slash.matches = matches; slash.index = Math.min(slash.index || 0, Math.max(matches.length - 1, 0));
+    picker.innerHTML = matches.length
+      ? matches.map((row, index) => `<button type="button" role="option" class="slash-option${index === slash.index ? " active" : ""}" aria-selected="${index === slash.index}" data-slash="${index}"><strong>${escapeHtml(row.title)}</strong><small>${escapeHtml(row.category)}</small></button>`).join("")
+      : '<p class="hint">没有匹配的模板。</p>';
+    picker.hidden = false;
+  }
+  function chooseSlash(index) {
+    const row = slash?.matches?.[index];
+    if (!row) return;
+    const input = $("promptText");
+    const text = input.value.slice(0, slash.start) + input.value.slice(slash.end);
+    draft.updateText(text, { start: slash.start, end: slash.end });
+    try { draft.add(row); markSeen(); } catch (error) { notify(error.message); }
+    input.value = draft.text; input.focus(); input.selectionStart = input.selectionEnd = input.value.length;
+    $("slashPicker").hidden = true; slash = null;
+    saveDraft(); renderSelected(); renderTemplates();
+  }
+  $("promptText").addEventListener("input", renderSlash);
+  $("promptText").addEventListener("click", renderSlash);
+  $("promptText").addEventListener("blur", () => setTimeout(() => { if (!$("slashPicker").contains(document.activeElement)) $("slashPicker").hidden = true; }, 120));
+  $("promptText").addEventListener("keydown", event => {
+    if ($("slashPicker").hidden || !slash?.matches?.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      slash.index = (slash.index + (event.key === "ArrowDown" ? 1 : slash.matches.length - 1)) % slash.matches.length;
+      renderSlash();
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault(); chooseSlash(slash.index);
+    } else if (event.key === "Escape") {
+      event.preventDefault(); $("slashPicker").hidden = true;
+    }
+  });
+  $("slashPicker").addEventListener("mousedown", event => event.preventDefault());
+  $("slashPicker").addEventListener("click", event => { const option = event.target.closest("[data-slash]"); if (option) chooseSlash(Number(option.dataset.slash)); });
   window.addEventListener("focus", () => { if (!bridgeReady) checkBridge(); });
   const params = new URLSearchParams(location.search);
   loadTemplates().then(() => {

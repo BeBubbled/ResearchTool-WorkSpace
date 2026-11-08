@@ -8,6 +8,7 @@
     readerLibrary: [], tab: "gaps", selectedPapers: new Set(), activeJob: null, pollTimer: null,
     folderImportJob: null, folderImportPollTimer: null, folderImportOffset: 0,
     folderImportItemTotal: 0, folderImportPageSize: 50,
+    reviewIndex: 0, detailId: "", graphPositions: new Map(),
   };
   const dom = {};
   const ids = [
@@ -30,7 +31,7 @@
     "folderImportPageStatus", "folderImportPrev", "folderImportNext", "folderImportResults",
     "localLibraryResults", "reviewDialog", "reviewForm", "reviewItemId",
     "reviewItemType", "reviewTitleField", "reviewTitleInput", "reviewDetailField", "reviewDetailInput",
-    "reviewRelationField", "reviewRelationInput", "reviewEvidence", "toast",
+    "reviewRelationField", "reviewRelationInput", "reviewEvidence", "toast", "graphList", "reviewPosition", "detailResize",
   ];
 
   function cacheDom() { ids.forEach(id => { dom[id] = document.getElementById(id); }); }
@@ -237,11 +238,15 @@
   function renderReview() {
     const query = dom.reviewSearch.value.trim().toLocaleLowerCase();
     const items = state.review.filter(item => !query || JSON.stringify(item).toLocaleLowerCase().includes(query));
+    state.reviewItems = items;
+    dom.reviewPosition.textContent = items.length ? `第 ${Math.min(state.reviewIndex, items.length - 1) + 1} / ${items.length} 条` : "";
+    document.querySelectorAll("[data-triage]").forEach(button => { button.disabled = !items.length; });
     if (!items.length) {
       dom.reviewList.innerHTML = showEmpty("没有待审核内容", "新的 AI 抽取和归并结果会出现在这里。");
       return;
     }
-    dom.reviewList.innerHTML = items.map(item => `<article class="review-item" data-review-id="${escapeHtml(item.id)}">
+    state.reviewIndex = Math.min(state.reviewIndex, items.length - 1);
+    dom.reviewList.innerHTML = items.map((item, index) => `<article class="review-item${index === state.reviewIndex ? " current" : ""}" role="option" aria-selected="${index === state.reviewIndex}" tabindex="${index === state.reviewIndex ? 0 : -1}" data-review-index="${index}" data-review-id="${escapeHtml(item.id)}">
       <div>
         <div class="review-heading"><span class="tag">${item.itemType === "relation" ? relationLabel(item.relationType) : kindLabel(item.kind)}</span><h3>${escapeHtml(item.title)}</h3></div>
         <p class="review-meta">${escapeHtml(item.paperTitle)} · ${item.evidenceLevel === "fulltext" ? "全文" : "摘要证据"} · ${escapeHtml(item.locator || "未定位")} · 置信度 ${clampConfidence(item.confidence)}</p>
@@ -250,6 +255,30 @@
       </div>
       <div class="review-actions"><button class="accept" type="button" data-review-action="accepted">接受</button><button type="button" data-review-action="edit">编辑</button><button class="reject" type="button" data-review-action="rejected">驳回</button></div>
     </article>`).join("");
+  }
+
+  function moveReview(step, focus = true) {
+    const items = state.reviewItems || [];
+    if (!items.length) return;
+    state.reviewIndex = Math.max(0, Math.min(items.length - 1, state.reviewIndex + step));
+    dom.reviewList.querySelectorAll("[data-review-index]").forEach(row => {
+      const current = Number(row.dataset.reviewIndex) === state.reviewIndex;
+      row.classList.toggle("current", current);
+      row.setAttribute("aria-selected", String(current));
+      row.tabIndex = current ? 0 : -1;
+      if (current) { row.scrollIntoView({ block: "nearest" }); if (focus) row.focus({ preventScroll: true }); }
+    });
+    dom.reviewPosition.textContent = `第 ${state.reviewIndex + 1} / ${items.length} 条`;
+  }
+
+  async function triage(action) {
+    if (action === "next") return moveReview(1);
+    if (action === "prev") return moveReview(-1);
+    const item = (state.reviewItems || [])[state.reviewIndex];
+    if (!item) return;
+    await reviewAction(item, action);
+    // The handled item leaves the queue, so the same index now points at the next one.
+    dom.reviewList.querySelector(".review-item.current")?.focus({ preventScroll: true });
   }
 
   function visibleGraphTypes() {
@@ -263,7 +292,7 @@
     const nodes = (state.graph.nodes || []).filter(item => visible.has(normalizeType(item.type)));
     const nodeIds = new Set(nodes.map(item => item.id));
     const edges = (state.graph.edges || []).filter(item => nodeIds.has(item.source) && nodeIds.has(item.target));
-    if (!nodes.length) { dom.graphCanvas.innerHTML = showEmpty("没有可显示的图谱节点", "分析论文后会生成证据关系。"); return; }
+    if (!nodes.length) { dom.graphCanvas.innerHTML = showEmpty("没有可显示的图谱节点", "分析论文后会生成证据关系。"); dom.graphList.innerHTML = ""; return; }
     const columns = ["paper", "contribution", "limitation", "gap"];
     const grouped = Object.fromEntries(columns.map(type => [type, nodes.filter(item => normalizeType(item.type) === type)]));
     const x = { paper: 40, contribution: 340, limitation: 640, gap: 940 };
@@ -273,6 +302,9 @@
       maxRows = Math.max(maxRows, grouped[type].length);
       grouped[type].forEach((item, index) => positions.set(item.id, { x: x[type], y: 60 + index * 92, type }));
     });
+    state.graphPositions = positions;
+    const typeNames = { paper: "论文", contribution: "贡献", limitation: "局限", gap: "研究空白" };
+    dom.graphList.innerHTML = columns.filter(type => grouped[type].length).map(type => `<p class="graph-list-group">${typeNames[type]} · ${grouped[type].length}</p>${grouped[type].map(node => `<button type="button" class="graph-list-item ${escapeHtml(type)}${node.id === state.detailId ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.id)}" title="${escapeHtml(node.label || "")}">${escapeHtml(node.label || "")}</button>`).join("")}`).join("");
     const width = 1240, height = Math.max(570, 120 + maxRows * 92);
     const defs = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa8b6"></path></marker></defs>';
     const edgeSvg = edges.map(edge => {
@@ -286,7 +318,7 @@
       const pos = positions.get(node.id); const label = String(node.label || "");
       const first = label.length > 28 ? `${label.slice(0, 28)}…` : label;
       const second = label.length > 28 ? (label.slice(28, 54) + (label.length > 54 ? "…" : "")) : "";
-      return `<g class="graph-node ${escapeHtml(normalizeType(node.type))}" data-graph-node="${escapeHtml(node.id)}" transform="translate(${pos.x},${pos.y})"><rect width="230" height="58" rx="6"></rect><text x="12" y="24"><tspan>${escapeHtml(first)}</tspan>${second ? `<tspan x="12" dy="16">${escapeHtml(second)}</tspan>` : ""}</text></g>`;
+      return `<g class="graph-node ${escapeHtml(normalizeType(node.type))}${node.id === state.detailId ? " is-selected" : ""}" data-graph-node="${escapeHtml(node.id)}" transform="translate(${pos.x},${pos.y})"><rect width="230" height="58" rx="6"></rect><text x="12" y="24"><tspan>${escapeHtml(first)}</tspan>${second ? `<tspan x="12" dy="16">${escapeHtml(second)}</tspan>` : ""}</text></g>`;
     }).join("");
     dom.graphCanvas.innerHTML = `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-label="研究关系图">${defs}${edgeSvg}${nodeSvg}</svg>`;
   }
@@ -626,6 +658,7 @@
   }
 
   function openGapDrawer(gap) {
+    markSelected(gap.id);
     const [label, klass] = statusMeta(gap.status);
     dom.drawerEyebrow.textContent = "RESEARCH GAP";
     dom.drawerTitle.textContent = gap.canonicalTitle;
@@ -641,19 +674,39 @@
   }
 
   function openPaperDrawer(paper) {
+    markSelected(paper.id);
     dom.drawerEyebrow.textContent = "PAPER"; dom.drawerTitle.textContent = paper.title;
     const sourceSection = paper.sourcePath ? `<section class="drawer-section"><h3>本地来源</h3><p>${escapeHtml(paper.sourcePath)}<br>${paper.sourceAvailable ? "原文件当前可访问" : "原文件已移动、删除或不可访问；已提取文本仍可用于分析"}</p></section>` : "";
     dom.drawerBody.innerHTML = `<section class="drawer-section"><div class="tagline"><span class="evidence-level ${paper.evidenceLevel}">${paper.evidenceLevel === "fulltext" ? "全文证据" : "摘要/弱证据"}</span><span class="tag">${escapeHtml(paper.status)}</span></div><p>${escapeHtml(paper.abstract || paper.error || "没有摘要。")}</p></section><section class="drawer-section"><h3>元数据</h3><p>${escapeHtml((paper.authors || []).join(", ") || "未知作者")}<br>${escapeHtml([paper.year, paper.venue, paper.doi, paper.arxivId].filter(Boolean).join(" · ") || "本地文档")}</p></section>${sourceSection}`;
     openDrawer();
   }
   function openFactDrawer(fact) {
+    markSelected(fact.id);
     const paper = state.papers.find(item => item.id === fact.paperId);
     dom.drawerEyebrow.textContent = kindLabel(fact.type).toUpperCase(); dom.drawerTitle.textContent = fact.label;
     dom.drawerBody.innerHTML = `<section class="drawer-section"><div class="tagline"><span class="tag">${kindLabel(fact.type)}</span><span class="tag">置信度 ${clampConfidence(fact.confidence)}</span></div><p>${escapeHtml(fact.detail || "尚无补充说明")}</p></section><section class="drawer-section"><h3>原文证据</h3><blockquote class="evidence-quote">${escapeHtml(fact.evidence || "无逐字证据")}</blockquote><p>${escapeHtml(fact.locator || "未定位")} · ${escapeHtml(paper?.title || "未知论文")}</p></section>`;
     openDrawer();
   }
-  function openDrawer() { dom.drawerBackdrop.classList.remove("hidden"); dom.detailDrawer.classList.add("open"); dom.detailDrawer.setAttribute("aria-hidden", "false"); }
-  function closeDrawer() { dom.drawerBackdrop.classList.add("hidden"); dom.detailDrawer.classList.remove("open"); dom.detailDrawer.setAttribute("aria-hidden", "true"); }
+  function markSelected(id) {
+    state.detailId = id || "";
+    document.querySelectorAll("[data-gap-id], [data-paper-id], [data-graph-node]").forEach(node => {
+      const nodeId = node.dataset.gapId || node.dataset.paperId || node.dataset.graphNode;
+      node.classList.toggle("is-selected", Boolean(id) && nodeId === id);
+    });
+  }
+  function revealGraphNode(id) {
+    const pos = state.graphPositions.get(id);
+    if (pos && state.tab === "graph") dom.graphCanvas.scrollTo({ left: Math.max(0, pos.x - 60), top: Math.max(0, pos.y - 120), behavior: "smooth" });
+  }
+  function openDrawer() {
+    dom.drawerBackdrop.classList.remove("hidden"); dom.detailDrawer.classList.add("open"); dom.detailDrawer.setAttribute("aria-hidden", "false");
+    dom.projectWorkspace.classList.add("detail-open");
+  }
+  function closeDrawer() {
+    dom.drawerBackdrop.classList.add("hidden"); dom.detailDrawer.classList.remove("open"); dom.detailDrawer.setAttribute("aria-hidden", "true");
+    dom.projectWorkspace.classList.remove("detail-open");
+    markSelected("");
+  }
 
   function bindEvents() {
     dom.newProjectButton.addEventListener("click", () => openProjectDialog(false));
@@ -720,11 +773,26 @@
     dom.reviewList.addEventListener("click", event => { const action = event.target.dataset.reviewAction; const row = event.target.closest("[data-review-id]"); if (action && row) { const item = state.review.find(entry => entry.id === row.dataset.reviewId); if (item) reviewAction(item, action); } });
     dom.paperSearchResults.addEventListener("click", event => { const button = event.target.closest("[data-import-s2]"); if (button) importPaper(button, { paperId: button.dataset.importS2 }); });
     dom.localLibraryResults.addEventListener("click", event => { const button = event.target.closest("[data-import-reader]"); if (button) importPaper(button, { readerCacheKey: button.dataset.importReader }); });
-    dom.graphCanvas.addEventListener("click", event => {
+    const openGraphNode = event => {
       const node = event.target.closest("[data-graph-node]"); if (!node) return;
+      if (node.closest("#graphList")) revealGraphNode(node.dataset.graphNode);
       const gap = state.gaps.find(item => item.id === node.dataset.graphNode); if (gap) openGapDrawer(gap);
       else { const paper = state.papers.find(item => item.id === node.dataset.graphNode); if (paper) openPaperDrawer(paper); else { const fact = (state.graph.nodes || []).find(item => item.id === node.dataset.graphNode); if (fact) openFactDrawer(fact); } }
+    };
+    dom.graphCanvas.addEventListener("click", openGraphNode);
+    dom.graphList.addEventListener("click", openGraphNode);
+    document.querySelectorAll("[data-triage]").forEach(button => button.addEventListener("click", () => triage(button.dataset.triage)));
+    dom.reviewList.addEventListener("click", event => {
+      const row = event.target.closest("[data-review-index]");
+      if (row && !event.target.closest("button")) { state.reviewIndex = Number(row.dataset.reviewIndex); moveReview(0); }
     });
+    dom.reviewList.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); moveReview(event.key === "ArrowDown" ? 1 : -1); }
+    });
+    document.addEventListener("keydown", event => { if (event.key === "Escape" && dom.detailDrawer.classList.contains("open") && !document.querySelector("dialog[open]")) closeDrawer(); });
+    if (window.Inspector && dom.detailResize) {
+      window.Inspector.resizable(dom.detailResize, { key: "gaps.detail", min: 320, max: 640, initial: 420, apply: width => dom.projectWorkspace.style.setProperty("--gap-detail-width", `${width}px`) });
+    }
     dom.deleteProjectButton.addEventListener("click", async () => {
       const confirmation = prompt(`请输入项目名称“${state.project.name}”以确认删除：`); if (confirmation === null) return;
       try { await api(`/projects/${encodeURIComponent(state.project.id)}`, { method: "DELETE", body: { confirmName: confirmation } }); localStorage.removeItem("researchGapProjectId"); const payload = await api("/projects"); state.projects = payload.projects; renderProjectSelect(); if (state.projects[0]) await selectProject(state.projects[0].id); else renderNoProjects(); toast("项目已删除。 "); } catch (error) { toast(error.message, true); }

@@ -26,7 +26,6 @@
     result.projects.forEach(p => $('projectSelect').add(new Option(p.title, p.id)));
     setEngineOptions(result.options);
     if (result.projects.some(p => p.id === chosen)) { $('projectSelect').value = chosen; await openProject(chosen); }
-    else if (!result.projects.length) $('importPanel').hidden = false;
   }
   // ---- Each visit: re-read the paper from disk, start without last visit's comments (kept as a backup).
   let visitNotes = [];
@@ -68,7 +67,7 @@
         project = {...result.project, session_folder: project.session_folder};
         visitNotes.push({kind: result.unplaced.length ? 'warn' : 'ok', text: `已恢复 ${result.imported} 条批注` +
           (result.unplaced.length ? `；${result.unplaced.length} 条因原文已改动无法定位：${result.unplaced.join('；').slice(0, 300)}` : '。')});
-        renderComments(); renderControls(); markComments(); renderBanners(); $('commentDrawer').hidden = false;
+        renderComments(); renderControls(); markComments(); renderBanners(); showInspector('comments');
       } catch (error) { fail(error); }
     });
     download.addEventListener('click', () => saveJson({format: 'paper-revision-comments', version: 1, paper: project.title, revision: backup.revision,
@@ -106,10 +105,10 @@
     const translateOn = project.translate !== false;
     const units = snapshot.blocks.flatMap(b => b.units), missing = units.filter(u => !u.zh).length;
     const kind = project.comments.length ? 'revise' : translateOn && missing ? 'translate' : null;
-    $('submit').textContent = running ? '执行中…' : kind === 'translate' ? (missing === units.length ? '生成中文对照' : `补译缺失中文（${missing} 句）`)
-      : `提交本轮 ${project.comments.length} 条批注并修订${translateOn ? '' : '（不翻译）'}`;
+    submitPlan = {kind, missing, units: units.length, comments: project.comments.length, translateOn};
+    $('submit').textContent = running ? '执行中…' : kind === 'translate' ? (missing === units.length ? '生成中文对照…' : `补译缺失中文（${missing} 句）…`)
+      : `提交本轮 ${project.comments.length} 条批注…`;
     $('submit').disabled = busy || running || !kind;
-    $('submit').title = $('usage').checked ? '' : '请先勾选左侧“提交时使用所选模型处理论文与批注”';
     $('translateToggle').checked = translateOn; $('translateToggle').disabled = busy || running;
     $('retranslate').hidden = !translateOn || !units.some(u => u.zh); $('retranslate').disabled = busy || running;
     $('reparse').disabled = busy || running;
@@ -119,7 +118,7 @@
     $('zhHeading').textContent = translateOn ? '中文对照 · 圈选后添加批注' : '中文翻译已关闭 · 请在英文上圈选批注';
     $('cancel').hidden = !running;
     $('export').hidden = false; $('export').href = `${base}/${project.id}/export`;
-    $('commentCount').textContent = project.comments.length;
+    $('commentCount').textContent = project.comments.length; $('commentCountTab').textContent = project.comments.length;
     $('workflowEditor').querySelectorAll('select').forEach(select => { select.disabled = running; });
     renderSession();
     const job = project.job;
@@ -244,6 +243,13 @@
     return nodes;
   }
   const collapsedSections = new Set();
+  let submitPlan = {kind: null};
+  const layout = $('revisionLayout');
+  const revisionInspector = window.Inspector?.tabs($('revisionInspector'), {key: 'revision', defaultTab: 'comments'});
+  const inspectorPane = window.Inspector?.toggle($('inspectorToggle'), {key: 'revision.inspector', apply: open => layout.classList.toggle('inspector-hidden', !open)});
+  window.Inspector?.toggle($('chaptersToggle'), {key: 'revision.chapters', apply: open => layout.classList.toggle('chapters-hidden', !open)});
+  window.Inspector?.resizable($('inspectorResize'), {key: 'revision.inspector', min: 280, max: 560, initial: 340, apply: width => layout.style.setProperty('--revision-inspector-width', `${width}px`)});
+  function showInspector(tab) { inspectorPane?.set(true); revisionInspector?.select(tab); }
   const sectionKey = block => `${block.file}|${block.section}`;
   function sectionGroups() {
     const groups = [];
@@ -257,6 +263,25 @@
       groups.at(-1).blocks.push(block);
     });
     return groups;
+  }
+  function renderChapters(changed = new Set()) {
+    const list = $('chapterList'); list.replaceChildren();
+    sectionGroups().forEach(group => {
+      const item = elem('li'), link = elem('button', `chapter-link level-${Math.min(group.level, 2)}`);
+      link.type = 'button'; link.dataset.key = group.key;
+      link.append(elem('span', 'chapter-title', group.title || '（无标题）'), elem('small', 'chapter-progress', sectionProgress(group)));
+      if (group.blocks.some(b => changed.has(b.id))) link.classList.add('changed');
+      link.addEventListener('click', () => {
+        const section = document.querySelector(`.paper-section[data-key="${CSS.escape(group.key)}"]`);
+        if (!section) return;
+        section.open = true;
+        section.scrollIntoView({behavior: 'smooth', block: 'start'});
+        list.querySelectorAll('.chapter-link.active').forEach(node => node.classList.remove('active'));
+        link.classList.add('active');
+      });
+      item.append(link); list.append(item);
+    });
+    if (!list.children.length) list.append(elem('li', 'hint', '没有章节。'));
   }
   function sectionProgress(group) {
     const units = group.blocks.flatMap(b => b.units), done = units.filter(u => u.zh).length;
@@ -285,7 +310,10 @@
       prose.querySelectorAll('.unit').forEach(n => { if (fresh.has(n.dataset.unit)) n.classList.add('fresh'); });
     });
     if (dirty.size) {
-      sectionGroups().forEach(group => { const badge = document.querySelector(`.paper-section[data-key="${CSS.escape(group.key)}"] .section-progress`); if (badge) badge.textContent = sectionProgress(group); });
+      sectionGroups().forEach(group => {
+        document.querySelectorAll(`.paper-section[data-key="${CSS.escape(group.key)}"] .section-progress, .chapter-link[data-key="${CSS.escape(group.key)}"] .chapter-progress`)
+          .forEach(badge => { badge.textContent = sectionProgress(group); });
+      });
       markComments();
     }
   }
@@ -303,6 +331,7 @@
       section.append(sectionBody(group, changed));
       container.append(section);
     });
+    renderChapters(changed);
     markComments();
   }
   // One continuous reading flow per section: each paragraph's English and Chinese share a grid
@@ -373,7 +402,7 @@
     });
   }
   function renderHistory() {
-    $('history').hidden = false; $('historyList').replaceChildren();
+    $('historyList').replaceChildren();
     [...project.history].reverse().forEach(record => {
       const article = elem('article', 'history-record'), header = elem('header');
       const labels = {import: '导入原稿', translate: '生成中文', revise: '根据批注修订', restore: `恢复 v${record.from_revision}`,
@@ -405,7 +434,6 @@
     });
   }
   function renderContext() {
-    $('contextPanel').hidden = false;
     const context = snapshot.context;
     $('contextSummary').textContent = `${snapshot.files.length} 份正文 · ${(snapshot.bibliography || []).length} 份参考文献库 · ${Object.keys(snapshot.references || {}).length} 条文献元数据。${project.origin?.path ? ` 只读来源：${project.origin.path}。` : ''} ` +
       (context ? `全文背景覆盖 ${context.covered_sources} 个原文片段。${context.notice}` : '首次生成中文前，将阅读全文建立背景和共享术语；改稿后按新版本更新。');
@@ -469,13 +497,15 @@
   $('closeDialog').addEventListener('click', () => $('commentDialog').close());
   $('commentForm').addEventListener('submit', async e => {
     e.preventDefault(); const button = e.submitter; button.disabled = true;
-    try { project = await post('comments', {revision: project.revision, text: $('commentText').value, scope: $('scope').value, anchors: selected}); $('commentDialog').close(); window.getSelection()?.removeAllRanges(); selected = []; renderComments(); renderControls(); markComments(); $('commentDrawer').hidden = false; }
+    try { project = await post('comments', {revision: project.revision, text: $('commentText').value, scope: $('scope').value, anchors: selected}); $('commentDialog').close(); window.getSelection()?.removeAllRanges(); selected = []; renderComments(); renderControls(); markComments(); showInspector('comments'); }
     catch (error) { $('commentError').textContent = error.message; }
     finally { button.disabled = false; }
   });
-  $('toggleImport').addEventListener('click', () => { $('importPanel').hidden = !$('importPanel').hidden; });
-  $('commentsToggle').addEventListener('click', () => { $('commentDrawer').hidden = !$('commentDrawer').hidden; });
-  $('closeComments').addEventListener('click', () => { $('commentDrawer').hidden = true; });
+  const openImport = () => { if (!$('importDialog').open) $('importDialog').showModal(); };
+  $('toggleImport').addEventListener('click', openImport);
+  document.addEventListener('click', event => { if (event.target.closest('[data-open-import]')) openImport(); });
+  document.querySelectorAll('[data-close-import]').forEach(button => button.addEventListener('click', () => $('importDialog').close()));
+  $('commentsToggle').addEventListener('click', () => showInspector('comments'));
   // ---- Workflow: defaults come from 全局设置 → 双语改稿; edits here apply to this session only.
   const Workflow = window.PaperRevisionWorkflow;
   function jobEngine(job) {
@@ -716,20 +746,33 @@
       else if (importFiles.length) importFiles.forEach(item => data.append('files', item.file, item.name));
       else data.set('source', $('source').value);
       const created = await api(base, {method: 'POST', body: data});
-      $('importPanel').hidden = true; $('importForm').reset(); showImportFiles([]); await list(created.id);
+      $('importDialog').close(); $('importForm').reset(); showImportFiles([]); await list(created.id);
     } catch (error) { fail(error); } finally { button.disabled = false; }
   });
-  $('submit').addEventListener('click', async () => {
+  $('submit').addEventListener('click', () => {
+    if (!project || busy || !submitPlan.kind) return;
+    clearError();
+    const plan = submitPlan;
+    $('submitDialogTitle').textContent = plan.kind === 'translate' ? '生成中文对照' : '提交本轮修订';
+    $('submitSummary').textContent = plan.kind === 'translate'
+      ? `将为 ${plan.missing === plan.units ? '全部' : '缺失中文的'} ${plan.missing} 句生成中文对照。`
+      : `将根据本轮 ${plan.comments} 条批注修订英文${plan.translateOn ? '，并更新受影响段落的中文对照' : '（不翻译）'}。`;
+    $('confirmSubmit').textContent = plan.kind === 'translate' ? '开始翻译' : '提交并修订';
+    $('submitDialog').showModal();
+  });
+  document.querySelectorAll('[data-close-submit]').forEach(button => button.addEventListener('click', () => $('submitDialog').close()));
+  $('submitForm').addEventListener('submit', async event => {
+    event.preventDefault();
     if (!project || busy) return;
     if (!$('usage').checked) {
       const consent = document.querySelector('.consent');
       consent.classList.remove('attention'); void consent.offsetWidth; consent.classList.add('attention');
       $('usage').focus();
-      fail(new Error('请先勾选“提交时使用所选模型处理论文与批注”，确认使用该模型后再提交。'));
       return;
     }
+    $('submitDialog').close();
     busy = true; clearError(); renderControls();
-    try { project = await post('submit', {revision: project.revision, comment_ids: project.comments.map(c => c.id), workflow: Workflow.read($('workflowEditor')), confirm_usage: $('usage').checked}); $('commentDrawer').hidden = true; await load(project.id); }
+    try { project = await post('submit', {revision: project.revision, comment_ids: project.comments.map(c => c.id), workflow: Workflow.read($('workflowEditor')), confirm_usage: $('usage').checked}); await load(project.id); }
     catch (error) { fail(error); } finally { busy = false; renderControls(); }
   });
   $('cancel').addEventListener('click', async () => { try { await post('cancel', {}); await load(project.id); } catch (error) { fail(error); } });

@@ -10,7 +10,11 @@
 </head>
 <body>
   {% set client_active = "toolbox" %}{% include "_client_nav.html" %}
-  <header class="module-bar"><h1 class="module-bar-title">工具箱</h1><span class="module-bar-sub">文献处理、知识整理、图像与视频 · 本地运行，文件不离开设备</span></header>
+  <header class="module-bar"><h1 class="module-bar-title">工具箱</h1><span class="module-bar-sub">文献处理、知识整理、图像与视频 · 本地运行，文件不离开设备</span><div class="module-bar-actions"><button id="activityButton" type="button" class="activity-button" aria-expanded="false" aria-controls="activityPanel" data-command="查看任务活动">活动 <span id="activityCount" class="inspector-count" hidden>0</span></button></div></header>
+  <section id="activityPanel" class="activity-panel" aria-label="任务活动" hidden>
+    <div class="activity-head"><strong>任务活动</strong><span class="hint">最近 24 小时 · 所有工具</span></div>
+    <ol id="activityList" class="activity-list"><li class="hint">还没有任务。</li></ol>
+  </section>
   <main class="app-shell">
     <aside class="tool-sidebar" aria-label="工具列表">
       <div class="tool-search">
@@ -53,6 +57,6 @@
   <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/engine_picker.js?v=1"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/app.js?v=20261108-toolbox"></script>
+  <script src="/static/app.js?v=20261108-activity"></script>
 </body>
 </html>

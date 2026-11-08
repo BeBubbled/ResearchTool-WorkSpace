@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#17334a">
   <title>研究空白地图 · Research Toolkit</title>
   <meta name="description" content="从论文证据中整理贡献、局限、失败条件和仍待解决的研究问题。">
-  <link rel="stylesheet" href="/static/research_gaps.css?v=20261108-bar">
+  <link rel="stylesheet" href="/static/research_gaps.css?v=20261108-inspector">
 </head>
 <body>
   {% set client_active = "gaps" %}{% include "_client_nav.html" %}
@@ -15,7 +15,7 @@
     <div class="topbar-project">
       <label for="projectSelect">研究项目</label>
       <select id="projectSelect" aria-label="选择研究项目"></select>
-      <button id="newProjectButton" class="button secondary" type="button">新建项目</button>
+      <button id="newProjectButton" class="button secondary" type="button" data-command="新建研究项目…">新建项目</button>
     </div>
     <div class="module-bar-actions"><a class="module-bar-link" href="/researchstudio?module=idea-spark">ResearchStudio 选题</a><a class="module-bar-link" href="/settings#llm">AI 设置</a></div>
   </header>
@@ -63,8 +63,8 @@
               <option value="api">直接 API · API Key</option>
             </select>
             <span id="analysisApiOptions"><select id="llmPreset" aria-label="选择 API 分析模型"></select></span>
-            <button id="importPaperButton" class="button secondary" type="button">添加论文</button>
-            <button id="analyzeButton" class="button primary" type="button">分析论文</button>
+            <button id="importPaperButton" class="button secondary" type="button" data-command="添加论文…">添加论文</button>
+            <button id="analyzeButton" class="button primary" type="button" data-command="分析论文">分析论文</button>
           </div>
         </header>
 
@@ -80,10 +80,10 @@
         </section>
 
         <nav class="tabs" aria-label="项目视图">
-          <button class="active" type="button" data-tab="gaps">研究空白 <span id="gapTabCount">0</span></button>
-          <button type="button" data-tab="papers">论文 <span id="paperTabCount">0</span></button>
-          <button type="button" data-tab="review">待审核 <span id="reviewTabCount">0</span></button>
-          <button type="button" data-tab="graph">关系图</button>
+          <button class="active" type="button" data-tab="gaps" data-command="视图：研究空白" data-shortcut="alt+1">研究空白 <span id="gapTabCount">0</span></button>
+          <button type="button" data-tab="papers" data-command="视图：论文" data-shortcut="alt+2">论文 <span id="paperTabCount">0</span></button>
+          <button type="button" data-tab="review" data-command="视图：待审核" data-shortcut="alt+3">待审核 <span id="reviewTabCount">0</span></button>
+          <button type="button" data-tab="graph" data-command="视图：关系图" data-shortcut="alt+4">关系图</button>
         </nav>
 
         <section id="gapsView" class="view active" data-view="gaps">
@@ -118,7 +118,15 @@
           <div class="filterbar">
             <label class="search-field"><span class="sr-only">搜索待审核证据</span><input id="reviewSearch" type="search" placeholder="搜索论文、事实或研究空白"></label>
           </div>
-          <div id="reviewList" class="review-list"></div>
+          <div class="triage-bar" role="toolbar" aria-label="逐条审核">
+            <span id="reviewPosition" class="hint" aria-live="polite"></span>
+            <button type="button" class="button quiet" data-triage="prev" data-command="上一条待审核" data-shortcut="k">上一条 <kbd>K</kbd></button>
+            <button type="button" class="button quiet" data-triage="next" data-command="下一条待审核" data-shortcut="j">下一条 <kbd>J</kbd></button>
+            <button type="button" class="button quiet triage-accept" data-triage="accepted" data-command="接受当前证据" data-shortcut="a">接受 <kbd>A</kbd></button>
+            <button type="button" class="button quiet" data-triage="edit" data-command="编辑当前证据" data-shortcut="e">编辑 <kbd>E</kbd></button>
+            <button type="button" class="button quiet triage-reject" data-triage="rejected" data-command="驳回当前证据" data-shortcut="r">驳回 <kbd>R</kbd></button>
+          </div>
+          <div id="reviewList" class="review-list" role="listbox" aria-label="待审核证据"></div>
         </section>
 
         <section id="graphView" class="view" data-view="graph">
@@ -131,17 +139,21 @@
             </div>
             <button id="fitGraph" class="button quiet" type="button">适合窗口</button>
           </div>
-          <div id="graphCanvas" class="graph-canvas" role="img" aria-label="论文贡献、局限与研究空白关系图"></div>
+          <div class="graph-split">
+            <div id="graphCanvas" class="graph-canvas" role="img" aria-label="论文贡献、局限与研究空白关系图"></div>
+            <nav id="graphList" class="graph-list" aria-label="图谱节点列表"></nav>
+          </div>
         </section>
       </section>
+      <aside id="detailDrawer" class="detail-drawer" aria-hidden="true" aria-label="详情">
+        <button id="detailResize" class="inspector-resize" type="button" aria-label="拖动调整详情栏宽度"></button>
+        <header><div><p id="drawerEyebrow" class="eyebrow"></p><h2 id="drawerTitle"></h2></div><button id="closeDrawer" class="icon-button" type="button" aria-label="关闭详情">×</button></header>
+        <div id="drawerBody" class="drawer-body"></div>
+      </aside>
     </section>
   </main>
 
   <div id="drawerBackdrop" class="drawer-backdrop hidden"></div>
-  <aside id="detailDrawer" class="detail-drawer" aria-hidden="true">
-    <header><div><p id="drawerEyebrow" class="eyebrow"></p><h2 id="drawerTitle"></h2></div><button id="closeDrawer" class="icon-button" type="button" aria-label="关闭详情">×</button></header>
-    <div id="drawerBody" class="drawer-body"></div>
-  </aside>
 
   <dialog id="projectDialog">
     <form id="projectForm" method="dialog" class="dialog-form">
@@ -236,6 +248,7 @@
 
   <div id="toast" class="toast hidden" role="status"></div>
   <script src="/static/local_paths.js?v=1"></script>
-  <script src="/static/research_gaps.js?v=20261108-library"></script>
+  <script src="/static/inspector.js?v=1"></script>
+  <script src="/static/research_gaps.js?v=20261108-inspector"></script>
 </body>
 </html>

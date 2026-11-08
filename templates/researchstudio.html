@@ -5,15 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#17334a">
   <title>ResearchStudio · 科研工具箱</title>
-  <link rel="stylesheet" href="/static/researchstudio.css?v=20261108-bar">
+  <link rel="stylesheet" href="/static/researchstudio.css?v=20261108-sheet">
 </head>
 <body>
   {% set client_active = "studio" %}{% include "_client_nav.html" %}
-  <header class="module-bar"><h1 class="module-bar-title">ResearchStudio</h1><span class="module-bar-sub">选题 · 检索 · 创新性核查 · 论文成果生成</span><div class="module-bar-actions"><a class="module-bar-link" href="/settings#codex">AI 设置</a></div></header>
-  <main>
-    <div class="columns">
-      <section class="card">
-        <h2>创建任务</h2>
+  <header class="module-bar"><h1 class="module-bar-title">ResearchStudio</h1><span class="module-bar-sub">选题 · 检索 · 创新性核查 · 论文成果生成</span><div class="module-bar-actions"><a id="envStatus" class="module-bar-pill env-pill" href="/settings#studio" title="运行环境与依赖">检查环境…</a><a class="module-bar-link" href="/settings#codex">AI 设置</a><button id="newJob" type="button" data-open-new-job data-command="新建 ResearchStudio 任务…">＋ 新建任务</button></div></header>
+  <main class="studio-shell">
+    <nav class="job-pane" aria-label="任务">
+      <div class="job-pane-head"><strong>任务</strong><span id="jobCount" class="hint"></span></div>
+      <ol id="jobList" class="job-list" role="listbox" aria-label="任务记录"><li class="hint">尚无任务</li></ol>
+    </nav>
+    <section class="job-detail-pane" aria-label="任务详情">
+        <div id="empty" class="empty">接入 Microsoft ResearchStudio：从研究方向到方案，从论文到海报、博客与讲解视频。<br>点“＋ 新建任务”开始。<br><button type="button" class="empty-action" data-open-new-job>＋ 新建任务</button><br>任务记录和生成的文件保存在本机，刷新页面后仍可查看。</div>
+        <div id="jobDetail" hidden>
+          <div class="heading"><h3 id="jobTitle"></h3><span id="jobStatus" class="badge" role="status"></span></div>
+          <p id="jobModel" class="hint"></p>
+          <p id="jobError" role="alert"></p>
+          <pre id="jobLog" aria-live="polite"></pre>
+          <div class="actions"><button id="cancel" class="secondary" type="button">停止任务</button><a id="bundle" class="button" href="#">下载完整 ZIP</a></div>
+          <p class="hint">下载包含中间文件和质量报告。HTML 在下载后查看，Reel 视频定位需按上游说明使用 HTTP 服务。</p>
+          <ul id="artifacts" class="artifacts"></ul>
+        </div>
+    </section>
+  </main>
+  <dialog id="newJobDialog" class="studio-sheet" aria-labelledby="newJobTitle">
+    <div class="sheet-head"><h2 id="newJobTitle">新建任务</h2><button type="button" class="icon-close" data-close-new-job aria-label="关闭">×</button></div>
         <form id="studioForm">
           <label for="module">工作流</label>
           <select id="module" name="module" required></select>
@@ -31,38 +47,13 @@
             <input id="paper" name="paper" type="file" accept=".pdf,application/pdf">
           </fieldset>
           <div id="availability" class="notice" aria-live="polite">正在检查环境…</div>
+          <p class="hint env-links"><button id="refresh" class="link-button" type="button">重新检查环境</button> · <a href="/settings#studio">安装说明与依赖详情</a></p>
           <label class="consent"><input id="confirmUsage" type="checkbox" required><span>使用全局 Codex 模型和套餐额度运行。论文内容会交给模型处理，检索会访问公开文献服务，语音默认使用 Edge TTS。</span></label>
           <p class="hint">每个任务使用独立目录，输入文件保留原样。长流程可能需要较多时间与额度。</p>
-          <button id="submit" type="submit" disabled>开始生成</button>
+          <div class="sheet-actions"><button type="button" class="secondary" data-close-new-job>取消</button><button id="submit" type="submit" disabled>开始生成</button></div>
         </form>
-        <p id="formError" role="alert"></p>
-        <details class="setup">
-          <summary>安装与环境检查</summary>
-          <p>在 ResearchTool 目录运行以下命令，安装到项目独立环境：</p>
-          <code>python scripts/setup_researchstudio.py --install-deps</code>
-          <p>视频还需加上 <code>--video</code>。Poppler、LibreOffice、FFmpeg 与 Node.js 需在 PATH 中可用。</p>
-          <p>环境检查仅验证基础依赖；上游服务、字体和具体论文仍可能影响生成结果。</p>
-          <button id="refresh" class="secondary" type="button">重新检查</button>
-          <p><a href="https://github.com/microsoft/ResearchStudio" target="_blank" rel="noreferrer">上游代码与 MIT 许可证</a></p>
-        </details>
-      </section>
-      <section class="card results">
-        <div class="heading"><h2>任务与产物</h2><span id="jobCount" class="hint"></span></div>
-        <label for="jobSelect">历史任务</label>
-        <select id="jobSelect"><option value="">尚无任务</option></select>
-        <div id="empty" class="empty">接入 Microsoft ResearchStudio：从研究方向到方案，从论文到海报、博客与讲解视频。<br>选择工作流开始。任务记录和生成的文件保存在本机，刷新页面后仍可查看。</div>
-        <div id="jobDetail" hidden>
-          <div class="heading"><h3 id="jobTitle"></h3><span id="jobStatus" class="badge" role="status"></span></div>
-          <p id="jobModel" class="hint"></p>
-          <p id="jobError" role="alert"></p>
-          <pre id="jobLog" aria-live="polite"></pre>
-          <div class="actions"><button id="cancel" class="secondary" type="button">停止任务</button><a id="bundle" class="button" href="#">下载完整 ZIP</a></div>
-          <p class="hint">下载包含中间文件和质量报告。HTML 在下载后查看，Reel 视频定位需按上游说明使用 HTTP 服务。</p>
-          <ul id="artifacts" class="artifacts"></ul>
-        </div>
-      </section>
-    </div>
-  </main>
-  <script src="/static/researchstudio.js?v=20261108-library"></script>
+    <p id="formError" role="alert"></p>
+  </dialog>
+  <script src="/static/researchstudio.js?v=20261108-sheet"></script>
 </body>
 </html>

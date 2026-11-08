@@ -61,7 +61,7 @@ function renderNav() {
   const add = (category, html) => { if (!groups.has(category)) groups.set(category, []); groups.get(category).push(html); };
   state.tools.filter(matches).forEach(tool => {
     const active = state.view === "tool" && tool.id === state.active.id;
-    add(tool.category, `<button type="button" class="tool-card ${active ? "active" : ""} ${tool.available ? "" : "unavailable"}" data-tool="${tool.id}" title="${escapeHtml(tool.available ? tool.description : tool.unavailableReason || tool.description)}" ${active ? 'aria-current="page"' : ""}>${highlightMatch(tool.title, query)}${tool.available ? "" : '<span class="tool-card-flag">需配置</span>'}</button>`);
+    add(tool.category, `<button type="button" class="tool-card ${active ? "active" : ""} ${tool.available ? "" : "unavailable"}" data-tool="${tool.id}" data-command="工具：${escapeHtml(tool.title)}" title="${escapeHtml(tool.available ? tool.description : tool.unavailableReason || tool.description)}" ${active ? 'aria-current="page"' : ""}>${highlightMatch(tool.title, query)}${tool.available ? "" : '<span class="tool-card-flag">需配置</span>'}</button>`);
   });
   TOOLBOX_LINKS.filter(matches).forEach(link => add(link.category, `<a class="tool-card" href="${link.href}" title="${escapeHtml(link.description)}">${highlightMatch(link.title, query)}<span class="tool-card-flag">↗</span></a>`));
   nav.innerHTML = groups.size
@@ -340,7 +340,7 @@ async function submitJob() {
   }
   const body = new FormData(); body.append("tool", state.active.id); body.append("options", JSON.stringify(collectOptions())); body.append("manifest", JSON.stringify(files.map(item => ({ relativePath:item.relativePath, workName:item.workName })))); files.forEach(item => body.append("files", item.file, item.file.name));
   document.querySelector("#submitJob").disabled = true; setTask("正在提交任务…", ""); downloadLink.classList.add("hidden"); githubCommitLink.classList.add("hidden"); readerImportPanel.classList.add("hidden");
-  try { const response = await fetch("/api/jobs", { method:"POST", body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "提交失败"); state.currentJob = data.id; state.translationSource = ""; setTask("任务已排队", ""); taskLog.textContent = "任务已提交，等待本地科研工作线程。"; translationDebugLink.classList.add("hidden"); startPolling(data.id); }
+  try { const response = await fetch("/api/jobs", { method:"POST", body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "提交失败"); state.currentJob = data.id; state.translationSource = ""; setTask("任务已排队", ""); taskLog.textContent = "任务已提交，等待本地科研工作线程。"; translationDebugLink.classList.add("hidden"); startPolling(data.id); refreshActivity(); }
   catch (error) { setTask(error.message, "bad"); } finally { document.querySelector("#submitJob").disabled = false; }
 }
 
@@ -498,4 +498,52 @@ function startPolling(jobId) {
   state.poller = setInterval(poll, 1000);
 }
 
-init().catch(error => { title.textContent = "无法加载工具"; description.textContent = error.message; });
+// ---- 活动: recent jobs from every tool (GET /api/jobs); refreshed while anything runs or the list is open.
+const ACTIVITY_LABELS = { queued: "排队中", running: "处理中", completed: "已完成", completed_with_warnings: "完成（有警告）", failed: "失败" };
+const activityButton = document.querySelector("#activityButton");
+const activityPanel = document.querySelector("#activityPanel");
+let activityTimer = null;
+
+async function refreshActivity() {
+  clearTimeout(activityTimer);
+  let jobs = [];
+  try {
+    const response = await fetch("/api/jobs");
+    if (response.ok) jobs = (await response.json()).jobs || [];
+  } catch {}
+  const running = jobs.filter(job => job.status === "queued" || job.status === "running").length;
+  const count = document.querySelector("#activityCount");
+  count.textContent = String(running);
+  count.hidden = !running;
+  document.querySelector("#activityList").innerHTML = jobs.length ? jobs.map(job => `
+    <li class="activity-item">
+      <strong title="${escapeHtml(job.toolTitle)}">${escapeHtml(job.toolTitle)}</strong>
+      <small><span class="activity-status-${escapeHtml(job.status)}">${escapeHtml(ACTIVITY_LABELS[job.status] || job.status)}</span> · ${escapeHtml(new Date(job.createdAt * 1000).toLocaleTimeString())}</small>
+      <span class="activity-actions"><button type="button" data-show-job="${escapeHtml(job.id)}" data-job-tool="${escapeHtml(job.tool)}">查看</button>${job.downloadReady ? `<a href="/api/jobs/${encodeURIComponent(job.id)}/download">下载</a>` : ""}</span>
+    </li>`).join("") : `<li class="hint">还没有任务。</li>`;
+  if (running || !activityPanel.hidden) activityTimer = setTimeout(refreshActivity, running ? 2500 : 6000);
+}
+
+function toggleActivity(open = activityPanel.hidden) {
+  activityPanel.hidden = !open;
+  activityButton.setAttribute("aria-expanded", String(open));
+  if (open) refreshActivity();
+}
+
+activityButton.addEventListener("click", () => toggleActivity());
+document.addEventListener("pointerdown", event => {
+  if (!activityPanel.hidden && !event.target.closest("#activityPanel, #activityButton")) toggleActivity(false);
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape" && !activityPanel.hidden) toggleActivity(false); });
+document.querySelector("#activityList").addEventListener("click", event => {
+  const button = event.target.closest("[data-show-job]");
+  if (!button) return;
+  const tool = state.tools.find(item => item.id === button.dataset.jobTool);
+  if (tool && tool.id !== state.active?.id) { state.active = tool; state.files = []; renderNav(); renderTool(); }
+  state.currentJob = button.dataset.showJob;
+  setTask("读取任务…", "");
+  startPolling(button.dataset.showJob);
+  toggleActivity(false);
+});
+
+init().then(refreshActivity).catch(error => { title.textContent = "无法加载工具"; description.textContent = error.message; });

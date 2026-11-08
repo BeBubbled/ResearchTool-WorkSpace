@@ -6,20 +6,26 @@
   <title>文献库 · 科研工具箱</title>
   <meta name="theme-color" content="#182a5b">
   <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
-  <link rel="stylesheet" href="/static/library.css?v=5">
+  <link rel="stylesheet" href="/static/library.css?v=6">
 </head>
 <body class="library-page">
   {% set client_active = "library" %}{% include "_client_nav.html" %}
-  <header class="module-bar"><h1 class="module-bar-title">文献库</h1><span class="module-bar-sub">精读打开过的论文按内容识别、只存一份；研究空白与 Studio 直接取用</span><div class="module-bar-actions"><a class="button secondary" href="/reader">＋ 在精读中导入</a></div></header>
-  <main class="library-main">
-    <div class="library-toolbar">
+  <header class="module-bar"><h1 class="module-bar-title">文献库</h1><span class="module-bar-sub">精读打开过的论文按内容识别、只存一份；研究空白与 Studio 直接取用</span><div class="module-bar-actions"><button id="libraryInspectorToggle" type="button" class="button secondary" aria-controls="libraryInspector" data-command="显示 / 隐藏详情" data-shortcut="mod+alt+\">详情 ⊟</button><a class="button secondary" href="/reader" data-command="在精读中导入新论文">＋ 在精读中导入</a></div></header>
+  <main id="libraryLayout" class="library-shell">
+    <nav class="library-sources" aria-label="文献来源">
       <label class="sr-only" for="librarySearch">搜索文献</label>
-      <input id="librarySearch" type="search" placeholder="搜索标题或文件名">
-      <label class="library-filter"><input id="libraryPdfOnly" type="checkbox"> 只看有原始 PDF 的</label>
-      <span id="libraryCount" class="hint" role="status" aria-live="polite"></span>
-    </div>
-    <div id="libraryList" class="library-list" aria-live="polite"><p class="hint">正在读取文献库…</p></div>
+      <input id="librarySearch" type="search" placeholder="搜索标题或文件名" autocomplete="off" data-command="搜索文献库" data-shortcut="/">
+      <div id="librarySourceList" class="library-source-list" role="listbox" aria-label="来源"></div>
+    </nav>
+    <section class="library-table-wrap" aria-label="论文列表">
+      <div class="library-toolbar"><strong id="librarySourceTitle">全部论文</strong><span id="libraryCount" class="hint" role="status" aria-live="polite"></span><span class="hint library-tip">双击打开精读 · 右键更多操作</span></div>
+      <div id="libraryList" class="library-list" aria-live="polite"><p class="hint">正在读取文献库…</p></div>
+    </section>
+    <aside id="libraryInspector" class="library-inspector" aria-label="论文详情" aria-live="polite">
+      <p class="hint">选择一篇论文查看文件、笔记、Three-Pass、研究项目与成果。</p>
+    </aside>
   </main>
-  <script src="/static/library.js?v=2" defer></script>
+  <script src="/static/inspector.js?v=1"></script>
+  <script src="/static/library.js?v=3" defer></script>
 </body>
 </html>

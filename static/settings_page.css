@@ -23,3 +23,37 @@
 .reader-margin-grid input { box-sizing:border-box; width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; text-align:right; font-variant-numeric:tabular-nums; }
 .reader-settings .hint { margin:8px 0 0; font-size:12.5px; }
 @media (max-width:640px) { .reader-field, .reader-model-row { grid-template-columns:1fr; gap:4px; } .reader-margin-grid { grid-template-columns:44px repeat(4,minmax(0,1fr)); } }
+
+/* Sidebar navigation (System Settings style): search, grouped panes, readiness dots; reopens on the last pane. */
+.settings-layout { display:grid; grid-template-columns:200px minmax(0,1fr); gap:28px; align-items:start; }
+.settings-nav { position:sticky; top:12px; display:flex; flex-direction:column; gap:6px; }
+.settings-search { box-sizing:border-box; width:100%; height:32px; padding:0 10px; border:1px solid #d3dbd6; border-radius:7px; background:#fff; color:var(--ink); font-size:13px; }
+.settings-search:focus { outline:2px solid rgba(120,188,180,.45); outline-offset:0; }
+.settings-nav-list { display:flex; flex-direction:column; gap:1px; }
+.settings-nav-group { margin:12px 10px 4px; color:#8a9690; font-size:11px; font-weight:700; letter-spacing:.06em; }
+.settings-nav-group:first-child { margin-top:6px; }
+.settings-nav-list button { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:7px 10px; border:0; border-radius:6px; background:transparent; color:#3f4d46; font-size:13.5px; font-weight:500; text-align:left; }
+.settings-nav-list button:hover { color:#2f4a3f; background:rgba(84,105,95,.08); }
+.settings-nav-list button.active { color:#2f4a3f; background:#fff; font-weight:650; box-shadow:0 1px 3px rgba(66,78,71,.14); }
+.settings-nav-list button[hidden], .settings-nav-group[hidden] { display:none; }
+.settings-dot { flex:none; width:7px; height:7px; border-radius:50%; background:#d0c3b4; }
+.settings-dot.ok { background:#5fae8f; }
+.settings-search-empty { margin:6px 10px; color:var(--muted); font-size:12.5px; }
+.settings-panes { min-width:0; }
+.settings-panes > .settings-tab-panel > .section-heading:first-child { margin-top:0; }
+.settings-embedded .settings-layout { grid-template-columns:180px minmax(0,1fr); gap:20px; }
+@media (max-width:760px) {
+  .settings-layout, .settings-embedded .settings-layout { grid-template-columns:1fr; gap:14px; }
+  .settings-nav { position:static; }
+  .settings-nav-list { flex-direction:row; gap:4px; overflow-x:auto; padding-bottom:4px; }
+  .settings-nav-group { display:none; }
+  .settings-nav-list button { flex:none; width:auto; }
+}
+
+/* 设置 › ResearchStudio: environment check per workflow + setup steps. */
+.studio-env-table { width:100%; margin:12px 0; border-collapse:collapse; font-size:13px; background:#fff; }
+.studio-env-table th, .studio-env-table td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:left; }
+.studio-env-table th { color:var(--muted); font-size:12px; font-weight:650; }
+.studio-setup { margin-top:16px; padding:14px 18px; border:1px solid var(--line); border-radius:10px; background:#fff; font-size:13px; line-height:1.7; }
+.studio-setup h4 { margin:0 0 6px; }
+.studio-setup code { overflow-wrap:anywhere; }

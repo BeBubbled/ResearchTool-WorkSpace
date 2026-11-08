@@ -2,8 +2,18 @@
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["llm", "mathpix", "codex", "claude", "google", "reader", "workflow", "three-pass", "speech", "github"];
-const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], settingsTab: "llm" };
+const SETTINGS_TABS = ["llm", "mathpix", "codex", "claude", "google", "reader", "workflow", "three-pass", "studio", "speech", "github"];
+// Sidebar groups (macOS System Settings style): accounts & engines, services, then per-module defaults.
+const SETTINGS_GROUPS = [
+  { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"]] },
+  { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
+  { label: "功能", items: [["reader", "精读"], ["workflow", "双语改稿"], ["three-pass", "Three-Pass"], ["studio", "ResearchStudio"]] },
+];
+const LAST_PANE_KEY = "research-toolkit.settings.last-pane";
+function storedPane() {
+  try { const pane = localStorage.getItem(LAST_PANE_KEY); return SETTINGS_TABS.includes(pane) ? pane : ""; } catch { return ""; }
+}
+const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], studioConfig: null, settingsTab: "llm", settingsQuery: "" };
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 let form = null;
 let hooks = { onTabChange() {}, onChanged() {}, onSaved() {} };
@@ -14,10 +24,11 @@ async function reloadTools() { await hooks.onChanged(); }
 async function mount(root, options = {}) {
   form = root;
   hooks = { ...hooks, ...options };
-  state.settingsTab = SETTINGS_TABS.includes(options.tab) ? options.tab : state.settingsTab;
+  // HIG: reopen on the pane the user last looked at unless a link names one.
+  state.settingsTab = SETTINGS_TABS.includes(options.tab) ? options.tab : storedPane() || state.settingsTab;
   form.innerHTML = `<div class="llm-manager-loading">正在读取本机全局配置…</div>`;
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalClaudeConfig(), loadGlobalWorkflowConfig(), loadReaderActions()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalClaudeConfig(), loadGlobalWorkflowConfig(), loadReaderActions(), loadStudioConfig()]);
     renderLlmManager();
   } catch (error) {
     form.innerHTML = `<p class="message">${escapeHtml(error.message)}</p><button type="button" data-retry-llm>重新加载</button>`;
@@ -36,6 +47,43 @@ const READER_MARGIN_DEFAULTS = {
 };
 const READER_MARGIN_ZONES = [["header", "页眉"], ["body", "正文"], ["footer", "页脚"]];
 const READER_MARGIN_SIDES = [["top", "上"], ["right", "右"], ["bottom", "下"], ["left", "左"]];
+
+// ResearchStudio's environment check (moved here from the Studio page): per-workflow readiness and setup.
+async function loadStudioConfig(refresh = false) {
+  try {
+    const response = await fetch(`/api/researchstudio/config${refresh ? "?refresh=1" : ""}`, { headers: { "X-ResearchStudio": "1" } });
+    const data = await response.json();
+    state.studioConfig = response.ok ? data : { error: data.error || "无法读取 ResearchStudio 环境。", modules: [] };
+  } catch (error) {
+    state.studioConfig = { error: error.message, modules: [] };
+  }
+}
+
+function renderStudioSettingsPanel() {
+  const config = state.studioConfig || { modules: [] };
+  const modules = config.modules || [];
+  const ready = modules.filter(item => item.ready).length;
+  const rows = modules.map(item => `<tr><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.bundle === "Idea" ? "Idea · 研究发现" : "Reel · 论文成果")}</td><td>${item.ready ? '<span class="hint ok">可运行</span>' : `<span class="hint bad">缺少：${escapeHtml((item.missing || []).join("、"))}</span>`}</td></tr>`).join("");
+  return `
+      <section class="settings-tab-panel studio-settings" data-settings-panel="studio" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>ResearchStudio · 运行环境</h3><span class="preset-id ${modules.length && ready === modules.length ? "" : "speech-unconfigured"}">${modules.length ? `${ready}/${modules.length} 可运行` : "未检测"}</span></div>
+            <p class="hint">任务使用全局 Codex 默认模型与推理强度（见 Codex）。环境检查只验证基础依赖；上游服务、字体和具体论文仍可能影响生成结果。</p>
+          </div>
+          <button type="button" data-refresh-studio>重新检查</button>
+        </div>
+        ${config.error ? `<p class="manager-message bad">${escapeHtml(config.error)}</p>` : ""}
+        ${rows ? `<table class="studio-env-table"><thead><tr><th>工作流</th><th>分组</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table>` : ""}
+        <div class="studio-setup">
+          <h4>安装</h4>
+          <p>在 ResearchTool 目录运行以下命令，安装到项目独立环境（视频还需加上 <code>--video</code>）：</p>
+          <code>python scripts/setup_researchstudio.py --install-deps</code>
+          <p>Poppler、LibreOffice、FFmpeg 与 Node.js 需在启动面板时的 PATH 中可用；也可用 <code>.env</code> 的 <code>RESEARCHSTUDIO_TOOL_PATH</code> 指定额外工具目录。</p>
+          <p><a href="https://github.com/microsoft/ResearchStudio" target="_blank" rel="noreferrer">上游代码与 MIT 许可证</a></p>
+        </div>
+      </section>`;
+}
 
 async function loadReaderActions() {
   try {
@@ -351,6 +399,10 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   const codexEffortView = codexEffortsForModel(codexModel, codex.defaultReasoningEffort);
   const codexReady = Boolean(codex.available && codex.chatgptAuthenticated && codexModel);
   const codexRuntime = codexRuntimeText(codex.runtime);
+  const paneStatus = {
+    codex: codexReady, claude: Boolean(claude.plan), llm: state.llmPresets.length > 0,
+    mathpix: Boolean(mathpix.configured), google: Boolean(google.configured), speech: Boolean(speech.configured), github: Boolean(github.configured),
+  };
   const cards = state.llmPresets.map(preset => `
     <article class="llm-preset-card">
       <div class="llm-preset-copy">
@@ -367,18 +419,18 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
     </article>`).join("");
   form.innerHTML = `
     <section class="llm-manager">
-      <div class="settings-tabs" role="tablist" aria-label="全局配置类别">
-        <button type="button" role="tab" data-settings-tab="llm">LLM</button>
-        <button type="button" role="tab" data-settings-tab="mathpix">Mathpix</button>
-        <button type="button" role="tab" data-settings-tab="codex">Codex</button>
-        <button type="button" role="tab" data-settings-tab="claude">Claude Code</button>
-        <button type="button" role="tab" data-settings-tab="google">Google 翻译</button>
-        <button type="button" role="tab" data-settings-tab="reader">精读</button>
-        <button type="button" role="tab" data-settings-tab="workflow">双语改稿</button>
-        <button type="button" role="tab" data-settings-tab="three-pass">Three-Pass</button>
-        <button type="button" role="tab" data-settings-tab="speech">Azure Speech</button>
-        <button type="button" role="tab" data-settings-tab="github">GitHub</button>
-      </div>
+      <div class="settings-layout">
+      <nav class="settings-nav" aria-label="设置分类">
+        <label class="sr-only" for="settingsSearch">搜索设置</label>
+        <input id="settingsSearch" class="settings-search" type="search" placeholder="搜索设置" autocomplete="off" value="${escapeHtml(state.settingsQuery)}">
+        <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="全局配置类别">${SETTINGS_GROUPS.map(group => `<p class="settings-nav-group" data-settings-group>${group.label}</p>${group.items.map(([tab, label]) => {
+          const status = paneStatus[tab];
+          const dot = status === undefined ? "" : `<i class="settings-dot ${status ? "ok" : ""}" title="${status ? "已就绪" : "未配置"}" aria-hidden="true"></i>`;
+          return `<button type="button" role="tab" data-settings-tab="${tab}"><span>${label}</span>${dot}</button>`;
+        }).join("")}`).join("")}</div>
+        <p class="settings-search-empty hidden" role="status">没有匹配的设置。</p>
+      </nav>
+      <div class="settings-panes">
       <section class="settings-tab-panel mathpix-manager" data-settings-panel="mathpix" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
@@ -433,6 +485,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
         <p class="hint">双语改稿各步骤使用哪个 Claude 模型与推理强度，在 <a href="#settings/workflow" data-goto-workflow>双语改稿</a> 分区中设置。</p>
       </section>
 ${renderReaderSettingsPanel()}
+${renderStudioSettingsPanel()}
       <section class="settings-tab-panel workflow-manager" data-settings-panel="workflow" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
@@ -538,8 +591,11 @@ ${renderReaderSettingsPanel()}
           </div>
         </form>
       </section>
+      </div>
+      </div>
     </section>`;
   form.querySelectorAll("[data-settings-tab]").forEach(button => button.addEventListener("click", () => activateSettingsTab(button.dataset.settingsTab)));
+  wireSettingsNavigation();
   form.querySelector("[data-add-llm]")?.addEventListener("click", () => { state.editingLlmId = ""; renderLlmManager(); form.querySelector("#llmEditor")?.scrollIntoView({ behavior:"smooth", block:"start" }); });
   form.querySelector("[data-cancel-llm]")?.addEventListener("click", () => { state.editingLlmId = null; renderLlmManager(); });
   form.querySelectorAll("[data-test-llm]").forEach(button => button.addEventListener("click", () => testGlobalLlmPreset(button.dataset.testLlm, button)));
@@ -578,12 +634,60 @@ ${renderReaderSettingsPanel()}
   form.querySelector("[data-test-github]")?.addEventListener("click", event => testGlobalGithubConfig(event.currentTarget));
   form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
   wireReaderSettings();
+  form.querySelector("[data-refresh-studio]")?.addEventListener("click", async event => {
+    event.currentTarget.disabled = true;
+    await loadStudioConfig(true);
+    renderLlmManager();
+  });
   activateSettingsTab(state.settingsTab, false);
+}
+
+// Sidebar search matches pane names and every word inside the pane; ↑/↓ move between panes.
+function filterSettingsNav(query) {
+  state.settingsQuery = query;
+  const needle = query.trim().toLowerCase();
+  let firstMatch = null;
+  form.querySelectorAll("[data-settings-tab]").forEach(button => {
+    const panel = form.querySelector(`[data-settings-panel="${button.dataset.settingsTab}"]`);
+    const haystack = `${button.textContent} ${panel?.textContent || ""}`.toLowerCase();
+    const match = !needle || haystack.includes(needle);
+    button.hidden = !match;
+    if (match && !firstMatch) firstMatch = button;
+  });
+  form.querySelectorAll("[data-settings-group]").forEach(label => {
+    let node = label.nextElementSibling;
+    let visible = false;
+    while (node && !node.matches("[data-settings-group]")) { if (!node.hidden) visible = true; node = node.nextElementSibling; }
+    label.hidden = !visible;
+  });
+  form.querySelector(".settings-search-empty")?.classList.toggle("hidden", Boolean(firstMatch));
+  return firstMatch;
+}
+
+function wireSettingsNavigation() {
+  const search = form.querySelector("#settingsSearch");
+  search?.addEventListener("input", () => filterSettingsNav(search.value));
+  search?.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); const first = filterSettingsNav(search.value); if (first) activateSettingsTab(first.dataset.settingsTab); }
+    if (event.key === "Escape" && search.value) { event.stopPropagation(); search.value = ""; filterSettingsNav(""); }
+  });
+  form.querySelector(".settings-nav-list")?.addEventListener("keydown", event => {
+    if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+    const buttons = [...form.querySelectorAll("[data-settings-tab]")].filter(button => !button.hidden);
+    const index = buttons.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next = buttons[(index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length];
+    activateSettingsTab(next.dataset.settingsTab);
+    next.focus();
+  });
+  if (state.settingsQuery) filterSettingsNav(state.settingsQuery);
 }
 
 function activateSettingsTab(tab, updateHash = true) {
   if (!SETTINGS_TABS.includes(tab)) return;
   state.settingsTab = tab;
+  try { localStorage.setItem(LAST_PANE_KEY, tab); } catch {}
   form.querySelectorAll("[data-settings-tab]").forEach(button => {
     const active = button.dataset.settingsTab === tab;
     button.classList.toggle("active", active);

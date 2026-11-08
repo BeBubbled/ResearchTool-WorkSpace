@@ -260,10 +260,9 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/library/{key}/pdf").status_code, 404)
         self.assertEqual(self.client.get(f"/api/library/{'c' * 64}/workspace").status_code, 404)
 
-        page = self.client.get(f"/library/{key}").get_data(as_text=True)
-        self.assertIn(f'data-paper="{key}"', page)
-        self.assertIn("/static/workspace.js", page)
-        self.assertIn('class="client-rail"', page)
+        # The workspace page folded into the reader's inspector; old links land on its 信息 tab.
+        page = self.client.get(f"/library/{key}")
+        self.assertEqual((page.status_code, page.headers["Location"]), (302, f"/reader?library={key}&inspector=info"))
         missing = self.client.get(f"/library/{'c' * 64}")
         self.assertEqual((missing.status_code, missing.headers["Location"]), (302, "/library"))
         embedded = self.client.get("/reader?embed=1").get_data(as_text=True)
@@ -2452,6 +2451,10 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertEqual(download.status_code, 200)
         self.assertIn(b"Q1\tA1", download.data)
         download.close()
+        # The toolbox 活动 list shows recent jobs from every tool, newest first, without logs.
+        listed = next(job for job in self.client.get("/api/jobs").get_json()["jobs"] if job["id"] == job_id)
+        self.assertEqual((listed["tool"], listed["status"], listed["downloadReady"]), ("anki", "completed", True))
+        self.assertNotIn("logs", listed)
 
     def test_batch_image_job_returns_zip(self) -> None:
         image_bytes = io.BytesIO()

@@ -30,7 +30,7 @@
     $("query").required = item.bundle === "Idea";
     $("queryOptional").textContent = item.bundle === "Idea" ? "（必填）" : "（可选）";
     $("paperRequirement").textContent = item.bundle === "Reel" ? "（必填）" : "（可选种子论文）";
-    $("availability").textContent = item.ready ? "基础依赖已就绪，使用 AI 设置中的 Codex 默认模型与推理强度。" : `暂不可运行，缺少：${item.missing.join("、")}。请展开下方安装说明。`;
+    $("availability").textContent = item.ready ? "基础依赖已就绪，使用 AI 设置中的 Codex 默认模型与推理强度。" : `暂不可运行，缺少：${item.missing.join("、")}。安装说明见 设置 › ResearchStudio。`;
     $("availability").classList.toggle("missing", !item.ready);
     $("submit").disabled = !item.ready || submitting;
   }
@@ -51,15 +51,50 @@
       if (items.some(x => x.id === old)) $(id).value = old;
     }
     moduleChanged();
+    const ready = config.modules.filter(x => x.ready).length;
+    $("envStatus").textContent = ready === config.modules.length ? "环境就绪" : `环境：${ready}/${config.modules.length} 可运行`;
+    $("envStatus").classList.toggle("warn", ready < config.modules.length);
+  }
+  let jobs = [];
+  // Job list (Xcode report navigator): status dot, workflow and time; ↑/↓ moves, right-click for actions.
+  function renderJobList() {
+    const list = $("jobList");
+    $("jobCount").textContent = jobs.length ? `${jobs.length} 条` : "";
+    if (!jobs.length) { list.innerHTML = '<li class="hint">尚无任务</li>'; return; }
+    list.replaceChildren(...jobs.map(job => {
+      const item = document.createElement("li");
+      item.className = `job-item status-${job.status}${job.id === selected ? " selected" : ""}`;
+      item.dataset.jobId = job.id;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(job.id === selected));
+      item.tabIndex = job.id === selected ? 0 : -1;
+      const title = document.createElement("strong"), meta = document.createElement("small");
+      title.textContent = job.label;
+      meta.textContent = `${labels[job.status] || job.status} · ${new Date(job.createdAt * 1000).toLocaleString()}`;
+      item.append(title, meta);
+      return item;
+    }));
+  }
+  function selectJob(id, focus = false) {
+    selected = id;
+    renderJobList();
+    if (focus) $("jobList").querySelector(".job-item.selected")?.focus();
+    history.replaceState(null, "", `${location.pathname}?job=${encodeURIComponent(id)}`);
+    showJob();
+  }
+  function jobMenu(job) {
+    return [
+      {label: "查看", run: () => selectJob(job.id)},
+      {label: "停止任务", disabled: !active.has(job.status), run: async () => { selected = job.id; await api(`/api/researchstudio/jobs/${job.id}/cancel`, {method: "POST"}).catch(error => { $("jobError").textContent = error.message; }); showJob(); }},
+      "separator",
+      {label: "下载完整 ZIP", href: `/api/researchstudio/jobs/${job.id}/bundle`, disabled: active.has(job.status)},
+    ];
   }
   async function loadJobs() {
     const data = await api("/api/researchstudio/jobs");
-    $("jobSelect").replaceChildren();
-    $("jobCount").textContent = `${data.jobs.length} 条记录`;
-    if (!data.jobs.length) { $("jobSelect").append(option("","尚无任务")); return; }
-    data.jobs.forEach(x => $("jobSelect").append(option(x.id,`${x.label} · ${new Date(x.createdAt * 1000).toLocaleString()} · ${labels[x.status] || x.status}`)));
-    if (!data.jobs.some(x => x.id === selected)) selected = data.jobs[0].id;
-    $("jobSelect").value = selected;
+    jobs = data.jobs;
+    if (jobs.length && !jobs.some(x => x.id === selected)) selected = jobs[0].id;
+    renderJobList();
   }
   async function showJob() {
     clearTimeout(pollTimer);
@@ -86,6 +121,8 @@
         size.textContent = file.size >= 1048576 ? `${(file.size / 1048576).toFixed(1)} MB` : `${Math.ceil(file.size / 1024)} KB`;
         li.append(link,size); $("artifacts").append(li);
       });
+      const listed = jobs.find(x => x.id === id);
+      if (listed && listed.status !== job.status) { listed.status = job.status; renderJobList(); }
       if (active.has(job.status)) pollTimer = setTimeout(showJob,2500);
       else await loadJobs();
     } catch (error) {
@@ -96,7 +133,28 @@
   $("module").addEventListener("change",moduleChanged);
   $("paper").addEventListener("change",() => { if ($("paper").files.length) $("paperId").value = ""; });
   $("paperId").addEventListener("change",() => { if ($("paperId").value) $("paper").value = ""; });
-  $("jobSelect").addEventListener("change",() => { selected = $("jobSelect").value; showJob(); });
+  const dialog = $("newJobDialog");
+  document.addEventListener("click", event => {
+    if (event.target.closest("[data-open-new-job]")) { $("formError").textContent = ""; dialog.showModal(); $("module").focus(); }
+    if (event.target.closest("[data-close-new-job]")) dialog.close();
+  });
+  $("jobList").addEventListener("click", event => { const item = event.target.closest("[data-job-id]"); if (item) selectJob(item.dataset.jobId); });
+  $("jobList").addEventListener("contextmenu", event => {
+    const item = event.target.closest("[data-job-id]");
+    if (!item || !window.ContextMenu) return;
+    event.preventDefault();
+    window.ContextMenu.open(event, jobMenu(jobs.find(x => x.id === item.dataset.jobId)));
+  });
+  $("jobList").addEventListener("keydown", event => {
+    const item = event.target.closest("[data-job-id]");
+    if (!item) return;
+    const job = jobs.find(x => x.id === item.dataset.jobId);
+    if (window.ContextMenu?.fromKeyboard(event, item, jobMenu(job))) return;
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const next = jobs[jobs.indexOf(job) + (event.key === "ArrowDown" ? 1 : -1)];
+    if (next) selectJob(next.id, true);
+  });
   $("refresh").addEventListener("click",async () => {
     $("refresh").disabled = true;
     try { await loadConfig(true); $("formError").textContent = ""; }
@@ -117,6 +175,7 @@
     if (!$("paper").files.length) data.delete("paper");
     try {
       const job = await api("/api/researchstudio/jobs",{method:"POST",body:data});
+      dialog.close();
       selected = job.id; await loadJobs(); await showJob();
     } catch (error) { $("formError").textContent = error.message; }
     finally { submitting = false; moduleChanged(); }

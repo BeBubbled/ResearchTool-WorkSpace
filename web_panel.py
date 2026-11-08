@@ -322,6 +322,12 @@ class JobManager:
         with self.lock:
             return self.jobs.get(job_id)
 
+    def recent(self, limit: int = 30) -> list[Job]:
+        """Newest first: the toolbox's activity list (jobs are kept for a day, in memory)."""
+        with self.lock:
+            jobs = list(self.jobs.values())
+        return sorted(jobs, key=lambda job: job.created_at, reverse=True)[:limit]
+
     def cleanup(self) -> None:
         deadline = time.time() - 24 * 60 * 60
         with self.lock:
@@ -8080,10 +8086,11 @@ def library_page():
 
 @app.get("/library/<cache_key>")
 def library_workspace_page(cache_key: str):
+    """The paper workspace now lives in the reader's inspector (信息 tab); keep old links working."""
     document = paper_library.document(cache_key)
     if not document:
         return redirect("/library")
-    return render_template("workspace.html", document=document)
+    return redirect(f"/reader?library={cache_key}&inspector=info")
 
 
 @app.get("/settings")
@@ -9651,6 +9658,20 @@ def create_job():
     job.log("[INFO] Queued. Waiting for the local worker.")
     job_manager.submit(job)
     return jsonify({"id": job.id, "status": job.status}), 202
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    """Recent toolbox jobs across every tool, for the 活动 list (no logs; poll /api/jobs/<id> for those)."""
+    jobs = []
+    for job in job_manager.recent():
+        with job.lock:
+            jobs.append({
+                "id": job.id, "tool": job.tool.id, "toolTitle": job.tool.title, "status": job.status,
+                "createdAt": job.created_at, "finishedAt": job.finished_at,
+                "downloadReady": job.download_path is not None, "downloadName": job.download_name,
+            })
+    return jsonify({"jobs": jobs})
 
 
 @app.get("/api/jobs/<job_id>")

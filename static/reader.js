@@ -747,13 +747,86 @@ function syncSelectionSettingsFromStorage(event) {
   renderActions();
 }
 
-// No usable LLM for a selection action: show the fallback / temporary config in the assistant panel.
-function revealQuestionLlmConfig() {
+// Right-hand inspector (static/inspector.js): 解读 / 笔记 / Three-Pass / 信息, last tab remembered.
+let readerInspector = null;
+
+function initReaderInspector() {
+  const panel = $("#assistantPanel");
+  if (!panel || !window.Inspector) return;
+  readerInspector = window.Inspector.tabs(panel, {
+    key: "reader",
+    defaultTab: "assistant",
+    onChange: tab => { if (tab === "info") renderDocumentInfo(); },
+  });
+}
+
+function showInspectorTab(tab) {
   if (readerState.assistantOverlay && !readerState.assistantOverlayOpen) {
     readerState.assistantOverlayOpen = true;
     readerState.tableOfContentsOverlayOpen = false;
     applyResponsiveReaderLayout();
   }
+  readerInspector?.select(tab);
+}
+if (typeof window !== "undefined") window.ReaderInspector = { show: showInspectorTab };
+
+const DOCUMENT_KIND_LABELS = { pdf: "PDF", markdown: "Markdown", html: "HTML" };
+const JOB_STATUS_LABELS = { completed: "已完成", succeeded: "已完成", failed: "失败", cancelled: "已取消", canceled: "已取消", running: "进行中", queued: "排队中", interrupted: "已中断", incomplete: "产物不完整" };
+
+// 信息: what the 论文工作区 page showed, next to the paper (files, counts, projects, Studio jobs).
+async function renderDocumentInfo() {
+  const target = $("#documentInfo");
+  const doc = readerState.document;
+  if (!target || !doc) return;
+  const key = /^[0-9a-f]{64}$/.test(doc.cacheKey || "") ? doc.cacheKey : "";
+  if (!key) {
+    target.innerHTML = `<p class="muted">这篇文档没有进入文献库缓存，暂无研究项目与成果记录。</p>`;
+    return;
+  }
+  target.innerHTML = `<p class="muted">正在读取…</p>`;
+  let data;
+  try {
+    const response = await fetch(`/api/library/${key}/workspace`);
+    data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法读取这篇论文的记录。");
+  } catch (error) {
+    target.innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    return;
+  }
+  if (readerState.document !== doc) return;
+  const info = data.document || {};
+  const when = value => {
+    const number = Number(value || 0);
+    return number ? new Date(number > 1e12 ? number : number * 1000).toLocaleString() : "—";
+  };
+  const files = (data.files || []).map(file => `<a class="info-button" href="${escapeHtml(file.url)}" download>${escapeHtml(file.label)} ↓</a>`).join("")
+    || `<span class="muted">没有保存原始 PDF。</span>`;
+  const list = (items, empty, render) => items.length ? `<ul class="info-list">${items.map(render).join("")}</ul>` : `<p class="muted">${empty}</p>`;
+  const gaps = list(data.gaps || [], "还没有研究项目引用这篇论文。", item => `<li><a href="/research-gaps?project=${encodeURIComponent(item.id)}">${escapeHtml(item.name || item.title || item.id)}</a></li>`);
+  const studio = list(data.studio || [], "还没有成果生成任务。", item => `<li><a href="/researchstudio?job=${encodeURIComponent(item.id)}">${escapeHtml(item.label || item.title || item.id)}</a>${item.status ? ` <small>${escapeHtml(JOB_STATUS_LABELS[item.status] || item.status)}</small>` : ""}</li>`);
+  target.innerHTML = `
+    <h3 class="inspector-title">${escapeHtml(info.title || doc.title || "论文")}</h3>
+    <dl class="info-facts">
+      <dt>来源</dt><dd>${escapeHtml(info.sourceName || "—")}</dd>
+      <dt>格式</dt><dd>${escapeHtml(DOCUMENT_KIND_LABELS[info.sourceType] || info.sourceType || "—")}${info.useOcr ? " · Mathpix OCR" : ""}</dd>
+      <dt>译文</dt><dd>${info.hasTranslation ? "已有整篇译文" : "尚无整篇译文"}</dd>
+      <dt>更新</dt><dd>${escapeHtml(when(info.updatedAt))}</dd>
+    </dl>
+    <div class="info-actions">${files}</div>
+    <div class="info-counts">
+      <button type="button" data-info-tab="notes"><strong>${(data.notes || []).length}</strong><span>笔记</span></button>
+      <button type="button" data-info-tab="three-pass"><strong>${(data.analyses || []).length}</strong><span>Three-Pass</span></button>
+    </div>
+    <h4>研究空白</h4>${gaps}
+    <div class="info-actions"><a class="info-button" href="/research-gaps?libraryPaper=${key}">加入研究空白…</a></div>
+    <h4>成果生成</h4>${studio}
+    <div class="info-actions"><a class="info-button" href="/researchstudio?paperId=${key}">用于 ResearchStudio…</a></div>`;
+  target.querySelectorAll("[data-info-tab]").forEach(button => button.addEventListener("click", () => showInspectorTab(button.dataset.infoTab)));
+}
+
+// No usable LLM for a selection action: show the fallback / temporary config in the assistant panel.
+function revealQuestionLlmConfig() {
+  showInspectorTab("assistant");
   const tools = $("#assistantTools");
   const fallback = $("#fallbackConfig");
   if (tools) tools.open = true;
@@ -2237,8 +2310,7 @@ function locateReaderNotes(notes, message = "") {
   if (!ids.size) return;
   const list = $("#notesList");
   if (!list) return;
-  const panel = $("#notesPanel");
-  if (panel) panel.open = true;
+  showInspectorTab("notes");
   clearTimeout(locateReaderNotes.timer);
   list.querySelectorAll(".note-item.is-located").forEach(item => {
     item.classList.remove("is-located");
@@ -3164,6 +3236,9 @@ function captureSelection(sourceDocument = document, frame = null) {
   const menu = $("#selectionMenu");
   $("#selectionPreview").textContent = text.length > 100 ? `${text.slice(0, 100)}…` : text;
   renderSelectionFormatControls();
+  let moreOpen = false;
+  try { moreOpen = localStorage.getItem(SELECTION_MORE_KEY) === "1"; } catch {}
+  setSelectionMore(moreOpen, false);
   const left = rect.left + (frameRect?.left || 0);
   const bottom = rect.bottom + (frameRect?.top || 0);
   menu.classList.remove("hidden");
@@ -3242,6 +3317,7 @@ async function ask(action, { keepMenu = false } = {}) {
   $("#saveAnswerNote").disabled = true;
   $("#saveAnswerNote").textContent = "正在生成配对笔记…";
   if (!keepMenu) hideSelectionMenu();
+  showInspectorTab("assistant");
   renderAnswer(`正在使用${mappedPreset(action)?.name || "兜底 LLM"}执行“${actionLabel(action)}”…`);
   try {
     const response = await fetch(`/api/reader/documents/${readerState.document.id}/questions`, {
@@ -3288,6 +3364,31 @@ function renderActions() {
     return `<button data-action="${action.id}"><span>${escapeHtml(action.label)}</span><small>${escapeHtml(modelName)}</small></button>`;
   }).join("");
   $("#actionButtons").querySelectorAll("[data-action]").forEach(button => button.addEventListener("click", () => ask(button.dataset.action)));
+  // First level: the default action plus the next two, as short buttons; everything else stays under 更多.
+  const actions = readerState.config?.actions || [];
+  const primary = [actions.find(action => action.id === readerState.defaultSelectionAction), ...actions].filter(Boolean)
+    .filter((action, index, list) => list.findIndex(item => item.id === action.id) === index).slice(0, 3);
+  const quick = $("#quickActions");
+  if (quick) {
+    quick.innerHTML = primary.map(action => `<button type="button" data-quick-action="${escapeHtml(action.id)}" title="${escapeHtml(action.label)} · ${escapeHtml(mappedPreset(action.id)?.name || "兜底 LLM")}">${escapeHtml(action.label)}</button>`).join("");
+    quick.querySelectorAll("[data-quick-action]").forEach(button => button.addEventListener("click", () => ask(button.dataset.quickAction)));
+  }
+}
+
+const SELECTION_MORE_KEY = "paper-lens.selection-more-open";
+function setSelectionMore(open, persist = true) {
+  const more = $("#selectionMore"), toggle = $("#selectionMoreToggle");
+  if (!more || !toggle) return;
+  more.hidden = !open;
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.textContent = open ? "收起 ▴" : "更多 ▾";
+  if (persist) { try { localStorage.setItem(SELECTION_MORE_KEY, open ? "1" : "0"); } catch {} }
+  // Keep the taller menu on screen.
+  const menu = $("#selectionMenu");
+  if (menu && !menu.classList.contains("hidden")) {
+    const rect = menu.getBoundingClientRect();
+    if (rect.bottom > window.innerHeight - 12) menu.style.top = `${Math.max(12, window.innerHeight - rect.height - 12)}px`;
+  }
 }
 
 async function loadContent() {
@@ -3858,7 +3959,7 @@ async function startThreePassAnalysis(confirmedChunkedCalls = false) {
       throw new Error("已取消分块 API 分析。 ");
     }
     if (!response.ok) throw new Error(data.error || "无法创建 Three-Pass 分析。 ");
-    $("#threePassPanel").open = true;
+    showInspectorTab("three-pass");
     renderThreePassAnalysis(data);
     await loadThreePassAnalyses();
     $("#threePassHistory").value = data.id;
@@ -3899,13 +4000,8 @@ async function submitThreePassFollowup(event) {
 async function showReadyDocument(data, restoredFromCache = false) {
   readerState.document = data;
   renderAlignmentProgress(data);
-  const workspaceLink = $("#openWorkspace");
-  if (workspaceLink) {
-    const cached = /^[0-9a-f]{64}$/.test(data.cacheKey || "");
-    workspaceLink.classList.toggle("hidden", !cached);
-    if (cached) workspaceLink.href = `/library/${data.cacheKey}`;
-  }
   await loadDocumentNotes();
+  if (readerInspector?.current() === "info") renderDocumentInfo();
   $("#uploadCard").classList.add("hidden");
   $("#readerShell").classList.remove("hidden");
   document.body.classList.add("reader-active");
@@ -3919,7 +4015,9 @@ async function showReadyDocument(data, restoredFromCache = false) {
 
 async function openReaderDocumentFromQuery() {
   // /reader?library=<cache key>: open a paper from the shared library (links from 文献库 and other modules).
-  const libraryKey = new URLSearchParams(window.location.search).get("library");
+  // &inspector=<tab> opens the inspector on that tab (notes, three-pass, info — 文献库 links use it).
+  const query = new URLSearchParams(window.location.search);
+  const libraryKey = query.get("library");
   if (libraryKey && /^[0-9a-f]{64}$/.test(libraryKey)) {
     history.replaceState(null, "", "/reader");
     // Hide the import form while the library paper opens; it reappears only if opening fails.
@@ -3929,6 +4027,8 @@ async function openReaderDocumentFromQuery() {
     } finally {
       document.body.classList.remove("reader-opening");
     }
+    const tab = query.get("inspector");
+    if (tab) showInspectorTab(tab);
     return true;
   }
   const documentId = new URLSearchParams(window.location.search).get("document");
@@ -4361,6 +4461,7 @@ async function initReader() {
   applyReaderAxisOffset();
   applyAssistantWidth();
   initAssistantResize();
+  initReaderInspector();
   initPaperResize();
   initResponsiveReaderLayout();
   const response = await fetch("/api/reader/config");
@@ -4461,6 +4562,10 @@ async function initReader() {
       const labels = { bold: "粗体", italic: "斜体", underline: "下划线", strike: "删除线" };
       updateCurrentTextFormat({ [property]: enabled }, `已${enabled ? "启用" : "取消"}${labels[property]}。`);
     });
+  });
+  $("#selectionMoreToggle")?.addEventListener("click", () => setSelectionMore($("#selectionMore").hidden));
+  $("#quickHighlight")?.addEventListener("click", () => {
+    updateCurrentTextFormat({ highlightColor: normalizeFormatColor($("#selectionHighlightColor").value) }, "选区已高亮。");
   });
   $("#clearSelectionFormat").addEventListener("click", () => {
     clearCurrentTextFormats();

@@ -46,6 +46,20 @@ This project is developed entirely through ViveCoding. The code is provided as-i
 
 ## Local toolbox
 
+### 界面布局、命令面板与快捷键
+
+各模块共用一套布局：左侧导航栏、顶部 48px 工具栏（模块名、说明、操作），内容区按需配左侧边栏和右侧检查器。检查器的标签、宽度和开关状态按模块记在浏览器里（`static/inspector.js`）。
+
+- **命令面板**：任意页面按 ⌘K / Ctrl+K，可搜索并执行当前页面的命令、跳到其他模块或设置面板、打开文献库里的论文。页面上带 `data-command` 的按钮会自动出现在面板里，`data-shortcut` 为它绑定快捷键（`static/command_palette.js`）。
+- **快捷键表**：按 `?` 查看全局和当前页面的快捷键。例如：精读 `1`–`5` 切换视图、Alt+1…4 切换检查器标签、⌘\ / Ctrl+\ 开关目录；改稿 ⌘↩ 提交本轮、`C` 为选区添加批注、⌘⌥\ 开关检查器；研究空白 `J`/`K` 上下移动、`A` 接受、`E` 编辑、`R` 驳回；工具箱和文献库按 `/` 搜索。
+- **右键菜单**：文献库的论文、ResearchStudio 的任务支持右键（或 Shift+F10）菜单（`static/context_menu.js`）。
+- **设置**：左侧是可搜索的分组侧栏（账号与引擎、服务、功能），已配置的账号和服务显示绿点，重新打开时回到上次的面板。“精读”面板管理划词默认动作、各动作使用的模型和页面边距（保存在浏览器，已打开的精读页即时同步）；字体、字号和行距在精读工具栏的“Aa 排版”里调整。“ResearchStudio”面板显示各工作流的依赖检查和安装说明。
+- **改稿**：左侧是章节导航，中间是中英对照，右侧检查器分“批注 / 背景术语 / 历史”。点“提交本轮…”打开确认对话框，在里面选工作流、引擎和会话方式，并勾选使用确认；导入论文也在对话框里进行。
+- **研究空白地图**：详情在宽屏时固定为右侧一栏，可拖动调整宽度；待审核支持键盘逐条处理；关系图旁边有节点列表，两边的选中状态同步。
+- **ResearchStudio**：左侧是任务列表（状态圆点、工作流、时间），右侧是日志和产物；“＋ 新建任务”在对话框中填写。
+- **工具箱**：左侧是可搜索的工具列表；顶部“活动”列出最近 24 小时所有工具的任务（`GET /api/jobs`），可切回查看日志或直接下载结果。
+- **Prompt 工作台**：顶部胶囊显示 ChatGPT 扩展的连接状态，点开查看诊断和安装步骤；在编排区行首输入 `/` 可以搜索并插入模板。
+
 ### 统一客户端导航与全局设置
 
 各模块页面左侧共用一条导航栏（窄屏时改为底部导航）：**精读**（`/reader`）、**改稿**（`/paper-revision`）、**Prompt**（`/prompts`），以及“更多”中的工具箱（`/`）、研究空白地图（`/research-gaps`）和 ResearchStudio（`/researchstudio`），底部是**设置**（`/settings`）。
@@ -55,13 +69,8 @@ This project is developed entirely through ViveCoding. The code is provided as-i
 ### 统一文献库与 OCR
 
 - **文献库**（左侧导航“文献库”，`/library`）：在精读中打开过的论文都保存在本机阅读缓存里，按文件内容的指纹识别，同一篇论文只存一份。文献库页面列出全部论文，可按标题或文件名搜索，也可只看有原始 PDF 的；每篇论文显示它被哪些研究空白地图项目引用，并提供“精读”“加入研究空白”“ResearchStudio”三个入口。
-- **论文工作区**（`/library/<cache key>`，在文献库点论文标题或“打开工作区”，精读工具栏的“工作区”也能进入）：一篇论文的所有内容集中在一个页面，用标签页切换：
-  - **概览**：来源、格式、是否有译文，下载原始 PDF，各模块的数量统计。
-  - **阅读**：内嵌完整的精读界面（`/reader?embed=1`，不显示导航栏和页头），切换到其他标签页再回来时，阅读位置不丢。
-  - **笔记**：精读里保存的摘录和划词解读，最新的在前，可复制为 Markdown。
-  - **Three-Pass**：这篇论文的历次整篇精读，展开即可阅读报告；“在阅读中新建”会切到阅读标签页并打开 Three-Pass 面板。
-  - **研究空白**、**成果生成**：引用这篇论文的研究项目和 ResearchStudio 任务，可直接打开（`/research-gaps?project=<id>`、`/researchstudio?job=<id>`），也可以新建。
-  - 除阅读外，切换标签页时会重新读取 `GET /api/library/<key>/workspace`，所以在阅读里新加的笔记和分析会立即出现。原始 PDF 由 `GET /api/library/<key>/pdf` 提供。
+- **文献库三栏**：左侧是来源（全部、最近 30 天、有原始 PDF、有译文、OCR 导入、未用于研究项目，以及每个研究项目），中间是可排序的论文表格，右侧是选中论文的详情（文件、笔记与 Three-Pass 数量、研究项目、成果生成任务）。双击打开精读；右键或 Shift+F10 打开菜单（精读、笔记、Three-Pass、加入研究空白、ResearchStudio、下载原始 PDF、复制标题）。
+- **论文的所有记录都在精读右栏**：精读右侧是检查器，标签为“解读 / 笔记 / Three-Pass / 信息”，记住上次打开的标签。“信息”就是原来的论文工作区：来源与格式、原始 PDF 下载、笔记和 Three-Pass 数量、引用这篇论文的研究项目和 ResearchStudio 任务。旧链接 `/library/<cache key>` 会跳到 `/reader?library=<key>&inspector=info`；`inspector` 参数也可以是 `notes`、`three-pass` 或 `assistant`。数据仍来自 `GET /api/library/<key>/workspace`，原始 PDF 由 `GET /api/library/<key>/pdf` 提供。
 - **接口**：`GET /api/library`（`?q=` 搜索，`?pdf=1` 只要有原始 PDF 的）和 `GET /api/library/<cache key>`。实现在 `paper_library.py`：研究空白地图取文献库里最完整的正文（OCR 版 HTML、Markdown 或 PDF），ResearchStudio 取原始 PDF，两者不再各自解析阅读缓存。
 - **页面互链**：`/reader?library=<key>` 直接在精读中打开某篇论文；`/research-gaps?libraryPaper=<key>` 打开“本地阅读库”导入面板并高亮这篇论文（需要先有研究项目）；`/researchstudio?paperId=<key>` 预先选好这篇论文。只有导入时保留了原始 PDF 的论文才能用于 ResearchStudio，较早用 OCR 导入的论文可能只缓存了 OCR 结果。
 - **统一的 Mathpix OCR**：工具箱的 PDF OCR 和精读的 OCR 导入走同一个入口。系统按 PDF 内容指纹记录 Mathpix 已生成过哪些格式；同一个 PDF 再次 OCR、且所需格式之前都生成过时，直接复用原结果，不重新上传、不重复计费。复用记录 30 天内有效，并且只在同一个 Mathpix 账号（App ID）下复用；原结果不可用时自动重新上传。记录保存在阅读缓存目录下的 `mathpix-ocr.json`。注意：工具箱 OCR（MMD 等格式）和精读 OCR（HTML 包）要的格式不同，所以两者之间暂不互相复用，只有同一模块重复处理同一 PDF 时才复用。

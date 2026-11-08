@@ -58,3 +58,51 @@ body.has-client-rail { padding-left:var(--client-rail-width); }
   .client-settings-panel { width:100vw; }
 }
 @media print { .client-rail { display:none; } body.has-client-rail { padding:0; } }
+
+/* Inspector (static/inspector.js): segmented tabs on top of a right-hand panel, shared by every module. */
+.inspector-tabs { flex:1; min-width:0; display:flex; gap:2px; padding:3px; border-radius:8px; background:rgba(84,105,95,.09); }
+.inspector-tabs button { flex:1 1 auto; min-width:0; padding:6px 4px; border:0; border-radius:6px; background:transparent; color:#5d6d68; font:650 12px/1.3 "Segoe UI","Microsoft YaHei",Arial,sans-serif; white-space:nowrap; cursor:pointer; box-shadow:none; }
+.inspector-tabs button:hover { color:#2f4a3f; background:transparent; }
+.inspector-tabs button.active { color:#2f4a3f; background:#fff; box-shadow:0 1px 3px rgba(66,78,71,.16); }
+.inspector-tabs button:focus-visible { outline:2px solid rgba(120,188,180,.6); outline-offset:-2px; }
+.inspector-count { display:inline-block; min-width:16px; margin-left:2px; padding:0 4px; border-radius:999px; background:rgba(84,105,95,.12); font-size:10px; font-weight:700; text-align:center; }
+.inspector-section[hidden] { display:none !important; }
+.inspector-title { margin:0 0 10px; color:#1b2638; font-size:15px; line-height:1.35; }
+.inspector-resize { position:absolute; z-index:3; top:10px; bottom:10px; left:0; width:8px; padding:0; border:0; background:transparent; cursor:col-resize; touch-action:none; }
+.inspector-resize::before { content:""; position:absolute; top:50%; left:2px; width:3px; height:44px; border-radius:999px; background:#cfd8d3; transform:translateY(-50%); }
+.inspector-resize:hover::before, .inspector-resize:focus-visible::before { background:#78bcb4; }
+.inspector-resize:focus-visible { outline:none; }
+body.inspector-resizing, body.inspector-resizing * { cursor:col-resize !important; user-select:none !important; }
+
+/* Command palette (⌘K) and shortcut sheet (?) — static/command_palette.js. */
+.palette-overlay { position:fixed; z-index:1400; inset:0; display:flex; align-items:flex-start; justify-content:center; padding:12vh 16px 16px; background:rgba(18,25,48,.28); font:14px/1.4 "Segoe UI","Microsoft YaHei",Arial,sans-serif; }
+.palette-overlay[hidden] { display:none; }
+.palette { width:min(600px,100%); max-height:70vh; display:flex; flex-direction:column; overflow:hidden; border:1px solid #d6deeb; border-radius:12px; background:#fff; color:#1f2a3a; box-shadow:0 24px 64px rgba(20,35,76,.28); }
+.palette > input { box-sizing:border-box; width:100%; padding:14px 16px; border:0; border-bottom:1px solid #e3e8ef; outline:none; background:transparent; color:inherit; font:inherit; font-size:16px; }
+.palette-list { flex:1; margin:0; padding:6px; overflow-y:auto; list-style:none; }
+.palette-group { margin:8px 10px 3px; color:#7a8597; font-size:11px; font-weight:700; letter-spacing:.06em; }
+.palette-item { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border-radius:7px; cursor:pointer; }
+.palette-item span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.palette-item.active { background:#e9f2ef; color:#1b4a3f; }
+.palette-empty { padding:16px 10px; color:#7a8597; }
+.palette kbd { flex:none; padding:1px 6px; border:1px solid #d6deeb; border-bottom-width:2px; border-radius:5px; background:#f6f8fb; color:#4a5568; font:12px/1.5 ui-monospace,"Cascadia Mono",Consolas,monospace; }
+.palette-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 14px; border-top:1px solid #e3e8ef; color:#7a8597; font-size:12px; }
+.palette-foot button { padding:3px 8px; border:1px solid #d6deeb; border-radius:6px; background:#fff; color:#3b4d6b; font:inherit; cursor:pointer; }
+.palette-help { max-height:80vh; padding:4px 18px 16px; overflow-y:auto; }
+.palette-help-head { display:flex; align-items:center; justify-content:space-between; }
+.palette-help-head h2 { margin:12px 0 4px; font-size:17px; }
+.palette-help-head button { padding:2px 9px; border:1px solid #d6deeb; border-radius:6px; background:#fff; font:inherit; cursor:pointer; }
+.palette-help h3 { margin:14px 0 6px; color:#7a8597; font-size:12px; letter-spacing:.06em; }
+.palette-help table { width:100%; border-collapse:collapse; }
+.palette-help td { padding:5px 4px; border-bottom:1px solid #eef1f5; vertical-align:top; }
+.palette-help td:first-child { width:120px; }
+.palette-note { margin:12px 0 0; color:#7a8597; font-size:12px; }
+
+/* Shared right-click menu (static/context_menu.js). */
+.context-menu { position:fixed; z-index:1350; min-width:200px; max-width:320px; display:flex; flex-direction:column; padding:5px; border:1px solid #d6deeb; border-radius:9px; background:#fff; box-shadow:0 14px 40px rgba(20,35,76,.22); font:13px/1.4 "Segoe UI","Microsoft YaHei",Arial,sans-serif; }
+.context-menu[hidden] { display:none; }
+.context-menu-item { display:block; width:100%; padding:7px 10px; border:0; border-radius:6px; background:transparent; color:#1f2a3a; font:inherit; text-align:left; text-decoration:none; cursor:pointer; }
+.context-menu-item:hover, .context-menu-item:focus { outline:none; background:#e9f2ef; color:#1b4a3f; }
+.context-menu-item.danger { color:#a33930; }
+.context-menu-item[aria-disabled="true"] { color:#a8b0bd; cursor:default; background:transparent; }
+.context-menu hr { margin:4px 6px; border:0; border-top:1px solid #e6eaf0; }

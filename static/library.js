@@ -1,65 +1,226 @@
-/* 文献库: the shared paper library (GET /api/library), with links into each module. */
+/* 文献库: source list | sortable paper table | inspector (Zotero / Bookends style).
+   GET /api/library lists every paper once; the inspector reads GET /api/library/<key>/workspace. */
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const KIND = {pdf: 'PDF', markdown: 'Markdown', html: 'HTML'};
-  let documents = [], timer = null;
+  const STATUS = {completed: '已完成', succeeded: '已完成', failed: '失败', cancelled: '已取消', canceled: '已取消', running: '进行中', queued: '排队中', interrupted: '已中断'};
+  const DAY = 86400;
+  const SOURCES = [
+    {id: 'all', label: '全部论文', test: () => true},
+    {id: 'recent', label: '最近 30 天', test: item => item.updatedAt && Date.now() / 1000 - item.updatedAt < 30 * DAY},
+    {id: 'pdf', label: '有原始 PDF', test: item => item.hasPdf},
+    {id: 'translated', label: '有整篇译文', test: item => item.hasTranslation},
+    {id: 'ocr', label: 'OCR 导入', test: item => item.useOcr},
+    {id: 'unused', label: '未用于研究项目', test: item => !(item.usedBy?.gaps || []).length},
+  ];
+  const COLUMNS = [
+    {id: 'title', label: '标题', value: item => item.title.toLowerCase()},
+    {id: 'kind', label: '格式', value: item => item.sourceType || ''},
+    {id: 'projects', label: '研究项目', value: item => (item.usedBy?.gaps || []).length},
+    {id: 'updated', label: '更新', value: item => item.updatedAt || 0},
+  ];
+  const STORE = 'research-toolkit.library.';
+  const remember = (key, value) => { try { localStorage.setItem(STORE + key, value); } catch {} };
+  const recall = key => { try { return localStorage.getItem(STORE + key); } catch { return null; } };
 
-  function describe(item) {
-    const parts = [KIND[item.sourceType] || item.sourceType || '文档'];
-    if (item.useOcr) parts.push('OCR');
-    if (item.hasTranslation) parts.push('含译文');
-    if (item.updatedAt) parts.push(new Date(item.updatedAt * 1000).toLocaleDateString());
-    return parts.join(' · ');
+  let documents = [], visible = [], selected = null, inspectorRequest = 0;
+  let source = recall('source') || 'all';
+  let sort = {column: recall('sort') || 'updated', descending: recall('descending') !== '0'};
+
+  const date = value => value ? new Date(value * 1000).toLocaleDateString() : '—';
+  const projectSources = () => {
+    const projects = new Map();
+    documents.forEach(item => (item.usedBy?.gaps || []).forEach(project => projects.set(project.id, project.name)));
+    return [...projects].map(([id, name]) => ({id: `project:${id}`, label: name, test: item => (item.usedBy?.gaps || []).some(p => p.id === id)}));
+  };
+  const allSources = () => [...SOURCES, ...projectSources()];
+
+  function renderSources() {
+    const sources = allSources();
+    if (!sources.some(item => item.id === source)) source = 'all';
+    const button = item => {
+      const count = documents.filter(item.test).length;
+      return `<button type="button" role="option" class="library-source ${item.id === source ? 'active' : ''}" aria-selected="${item.id === source}" data-source="${escapeHtml(item.id)}"><span>${escapeHtml(item.label)}</span><small>${count}</small></button>`;
+    };
+    const projects = projectSources();
+    $('librarySourceList').innerHTML = `<p class="library-source-group">文献库</p>${SOURCES.map(button).join('')}`
+      + (projects.length ? `<p class="library-source-group">研究项目</p>${projects.map(button).join('')}` : '');
+    $('librarySourceTitle').textContent = sources.find(item => item.id === source)?.label || '全部论文';
   }
 
-  function usedBy(item) {
-    const gaps = item.usedBy?.gaps || [];
-    if (!gaps.length) return '<span class="library-unused">尚未用于研究项目</span>';
-    return `研究空白地图：${gaps.map(p => `<a href="/research-gaps?project=${encodeURIComponent(p.id)}">${escapeHtml(p.name)}</a>`).join('、')}`;
+  function filterAndSort() {
+    const query = $('librarySearch').value.trim().toLowerCase();
+    const test = allSources().find(item => item.id === source)?.test || (() => true);
+    const column = COLUMNS.find(item => item.id === sort.column) || COLUMNS[3];
+    visible = documents.filter(item => test(item) && (!query || `${item.title} ${item.sourceName}`.toLowerCase().includes(query)));
+    visible.sort((a, b) => {
+      const left = column.value(a), right = column.value(b);
+      const order = left < right ? -1 : left > right ? 1 : 0;
+      return sort.descending ? -order : order;
+    });
   }
 
-  function render() {
-    $('libraryCount').textContent = `${documents.length} 篇`;
-    if (!documents.length) {
-      const filtered = $('librarySearch').value.trim() || $('libraryPdfOnly').checked;
-      $('libraryList').innerHTML = `<div class="library-empty"><strong>${filtered ? '没有匹配的论文' : '文献库还是空的'}</strong><p>${filtered ? '换个关键词，或取消筛选。' : '在精读中导入 PDF、Markdown 或 HTML 后，会自动出现在这里。'}</p></div>`;
+  function renderTable() {
+    filterAndSort();
+    $('libraryCount').textContent = `${visible.length} 篇`;
+    if (!visible.length) {
+      const filtered = $('librarySearch').value.trim() || source !== 'all';
+      $('libraryList').innerHTML = `<div class="library-empty"><strong>${filtered ? '没有匹配的论文' : '文献库还是空的'}</strong><p>${filtered ? '换个关键词，或在左侧选择“全部论文”。' : '在精读中导入 PDF、Markdown 或 HTML 后，会自动出现在这里。'}</p>${filtered ? '' : '<a class="button primary" href="/reader">去精读导入</a>'}</div>`;
       return;
     }
-    $('libraryList').innerHTML = documents.map(item => `
-      <article class="library-card">
-        <div class="library-card-main">
-          <h3><a class="library-title-link" href="${escapeHtml(item.links.workspace)}">${escapeHtml(item.title)}</a></h3>
-          <p class="library-meta">${escapeHtml(describe(item))}${item.sourceName ? ` · <span title="${escapeHtml(item.sourceName)}">${escapeHtml(item.sourceName)}</span>` : ''}</p>
-          <p class="library-usage">${usedBy(item)}</p>
-        </div>
-        <div class="library-actions">
-          <a class="button primary" href="${escapeHtml(item.links.workspace)}">打开工作区</a>
-          <a class="button secondary" href="${escapeHtml(item.links.reader)}">精读</a>
-          <a class="button secondary" href="${escapeHtml(item.links.gaps)}" title="加入当前研究项目">加入研究空白</a>
-          ${item.links.studio ? `<a class="button secondary" href="${escapeHtml(item.links.studio)}">ResearchStudio</a>` : '<span class="button secondary disabled" title="只有导入了原始 PDF 的论文才能用于 ResearchStudio">ResearchStudio</span>'}
-        </div>
-      </article>`).join('');
+    const head = COLUMNS.map(column => {
+      const active = sort.column === column.id;
+      const arrow = active ? (sort.descending ? ' ↓' : ' ↑') : '';
+      return `<th scope="col" aria-sort="${active ? (sort.descending ? 'descending' : 'ascending') : 'none'}"><button type="button" data-sort="${column.id}">${column.label}${arrow}</button></th>`;
+    }).join('');
+    const rows = visible.map(item => {
+      const projects = (item.usedBy?.gaps || []).length;
+      const flags = [item.hasPdf ? '<span class="lib-flag" title="有原始 PDF">PDF</span>' : '', item.hasTranslation ? '<span class="lib-flag" title="有整篇译文">译</span>' : '', item.useOcr ? '<span class="lib-flag" title="Mathpix OCR">OCR</span>' : ''].join('');
+      return `<tr tabindex="-1" data-key="${escapeHtml(item.id)}" aria-selected="${item.id === selected}" class="${item.id === selected ? 'selected' : ''}">
+        <td class="lib-title"><span title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>${item.sourceName ? `<small title="${escapeHtml(item.sourceName)}">${escapeHtml(item.sourceName)}</small>` : ''}</td>
+        <td>${escapeHtml(KIND[item.sourceType] || item.sourceType || '文档')}${flags}</td>
+        <td>${projects || '—'}</td>
+        <td>${escapeHtml(date(item.updatedAt))}</td>
+      </tr>`;
+    }).join('');
+    $('libraryList').innerHTML = `<table class="library-table" role="grid" aria-label="论文"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  function render() { renderSources(); renderTable(); }
+
+  const find = key => documents.find(item => item.id === key);
+  const readerLink = (key, tab = '') => `/reader?library=${encodeURIComponent(key)}${tab ? `&inspector=${tab}` : ''}`;
+
+  function menuItems(item) {
+    return [
+      {label: '在精读中打开', href: readerLink(item.id)},
+      {label: '查看笔记', href: readerLink(item.id, 'notes')},
+      {label: '查看 Three-Pass', href: readerLink(item.id, 'three-pass')},
+      'separator',
+      {label: '加入研究空白…', href: item.links.gaps},
+      {label: '用于 ResearchStudio…', href: item.links.studio || '#', disabled: !item.links.studio, title: '只有导入了原始 PDF 的论文才能用于 ResearchStudio'},
+      'separator',
+      {label: '下载原始 PDF', href: `/api/library/${item.id}/pdf`, download: true, disabled: !item.hasPdf},
+      {label: '复制标题', run: () => navigator.clipboard?.writeText(item.title)},
+    ];
+  }
+
+  function select(key, {focus = false} = {}) {
+    selected = key;
+    document.querySelectorAll('.library-table tbody tr').forEach(row => {
+      const active = row.dataset.key === key;
+      row.classList.toggle('selected', active);
+      row.setAttribute('aria-selected', String(active));
+      row.tabIndex = active ? 0 : -1;
+      if (active && focus) { row.focus(); row.scrollIntoView({block: 'nearest'}); }
+    });
+    renderInspector();
+  }
+
+  async function renderInspector() {
+    const target = $('libraryInspector');
+    const item = find(selected);
+    if (!item) { target.innerHTML = '<p class="hint">选择一篇论文查看文件、笔记、Three-Pass、研究项目与成果。</p>'; return; }
+    const request = ++inspectorRequest;
+    const actions = `<div class="lib-actions">
+        <a class="button primary" href="${readerLink(item.id)}">在精读中打开</a>
+        <a class="button secondary" href="${escapeHtml(item.links.gaps)}">加入研究空白</a>
+        ${item.links.studio ? `<a class="button secondary" href="${escapeHtml(item.links.studio)}">ResearchStudio</a>` : '<span class="button secondary disabled" title="只有导入了原始 PDF 的论文才能用于 ResearchStudio">ResearchStudio</span>'}
+      </div>`;
+    target.innerHTML = `<h2 class="lib-inspector-title">${escapeHtml(item.title)}</h2>${actions}<p class="hint">正在读取…</p>`;
+    let data;
+    try {
+      const response = await fetch(`/api/library/${item.id}/workspace`);
+      data = await response.json();
+      if (!response.ok) throw new Error(data.error || '无法读取这篇论文的记录。');
+    } catch (error) {
+      if (request === inspectorRequest) target.querySelector('.hint').textContent = error.message;
+      return;
+    }
+    if (request !== inspectorRequest) return;
+    const list = (items, empty, render) => items.length ? `<ul class="lib-list">${items.map(render).join('')}</ul>` : `<p class="hint">${empty}</p>`;
+    target.innerHTML = `<h2 class="lib-inspector-title">${escapeHtml(item.title)}</h2>${actions}
+      <dl class="lib-facts">
+        <dt>来源</dt><dd>${escapeHtml(item.sourceName || '—')}</dd>
+        <dt>格式</dt><dd>${escapeHtml(KIND[item.sourceType] || item.sourceType || '—')}${item.useOcr ? ' · Mathpix OCR' : ''}</dd>
+        <dt>译文</dt><dd>${item.hasTranslation ? '已有整篇译文' : '尚无整篇译文'}</dd>
+        <dt>更新</dt><dd>${escapeHtml(item.updatedAt ? new Date(item.updatedAt * 1000).toLocaleString() : '—')}</dd>
+      </dl>
+      ${(data.files || []).map(file => `<a class="button secondary lib-file" href="${escapeHtml(file.url)}" download>${escapeHtml(file.label)} ↓</a>`).join('')}
+      <div class="lib-counts">
+        <a href="${readerLink(item.id, 'notes')}"><strong>${(data.notes || []).length}</strong><span>笔记</span></a>
+        <a href="${readerLink(item.id, 'three-pass')}"><strong>${(data.analyses || []).length}</strong><span>Three-Pass</span></a>
+      </div>
+      <h3>研究空白</h3>${list(data.gaps || [], '尚未用于研究项目。', project => `<li><a href="/research-gaps?project=${encodeURIComponent(project.id)}">${escapeHtml(project.name)}</a></li>`)}
+      <h3>成果生成</h3>${list(data.studio || [], '还没有 ResearchStudio 任务。', job => `<li><a href="/researchstudio?job=${encodeURIComponent(job.id)}">${escapeHtml(job.label || job.id)}</a> <small>${escapeHtml(STATUS[job.status] || job.status || '')}</small></li>`)}`;
   }
 
   async function load() {
-    const params = new URLSearchParams();
-    const query = $('librarySearch').value.trim();
-    if (query) params.set('q', query);
-    if ($('libraryPdfOnly').checked) params.set('pdf', '1');
     try {
-      const response = await fetch(`/api/library${params.size ? `?${params}` : ''}`);
+      const response = await fetch('/api/library');
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '无法读取文献库。');
       documents = data.documents || [];
       render();
+      if (!find(selected)) selected = visible[0]?.id || null;
+      select(selected);
     } catch (error) {
       $('libraryList').innerHTML = `<p class="hint error">${escapeHtml(error.message)}</p>`;
     }
   }
 
-  $('librarySearch').addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 200); });
-  $('libraryPdfOnly').addEventListener('change', load);
+  $('librarySearch').addEventListener('input', () => { renderTable(); select(find(selected) && visible.some(item => item.id === selected) ? selected : visible[0]?.id || null); });
+  $('librarySearch').addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' && visible.length) { event.preventDefault(); select(visible[0].id, {focus: true}); }
+    if (event.key === 'Escape' && $('librarySearch').value) { $('librarySearch').value = ''; renderTable(); }
+  });
+  $('librarySourceList').addEventListener('click', event => {
+    const button = event.target.closest('[data-source]');
+    if (!button) return;
+    source = button.dataset.source; remember('source', source);
+    render();
+    select(visible.some(item => item.id === selected) ? selected : visible[0]?.id || null);
+  });
+  $('libraryList').addEventListener('click', event => {
+    const header = event.target.closest('[data-sort]');
+    if (header) {
+      const column = header.dataset.sort;
+      sort = {column, descending: sort.column === column ? !sort.descending : column !== 'title'};
+      remember('sort', sort.column); remember('descending', sort.descending ? '1' : '0');
+      renderTable(); select(selected);
+      return;
+    }
+    const row = event.target.closest('tr[data-key]');
+    if (row) select(row.dataset.key);
+  });
+  $('libraryList').addEventListener('dblclick', event => {
+    const row = event.target.closest('tr[data-key]');
+    if (row) location.href = readerLink(row.dataset.key);
+  });
+  $('libraryList').addEventListener('contextmenu', event => {
+    const row = event.target.closest('tr[data-key]');
+    if (!row || !window.ContextMenu) return;
+    event.preventDefault();
+    select(row.dataset.key);
+    window.ContextMenu.open(event, menuItems(find(row.dataset.key)));
+  });
+  $('libraryList').addEventListener('keydown', event => {
+    const row = event.target.closest('tr[data-key]');
+    if (!row) return;
+    const item = find(row.dataset.key);
+    if (window.ContextMenu?.fromKeyboard(event, row, menuItems(item))) return;
+    const index = visible.findIndex(entry => entry.id === row.dataset.key);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const next = visible[index + (event.key === 'ArrowDown' ? 1 : -1)];
+      if (next) select(next.id, {focus: true});
+      else if (event.key === 'ArrowUp') $('librarySearch').focus();
+    } else if (event.key === 'Enter') {
+      location.href = readerLink(row.dataset.key);
+    }
+  });
+  window.Inspector?.toggle($('libraryInspectorToggle'), {key: 'library.inspector', apply: open => $('libraryLayout').classList.toggle('inspector-hidden', !open)});
   load();
 })();

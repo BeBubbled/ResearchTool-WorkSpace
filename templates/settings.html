@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#182a5b">
   <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
-  <link rel="stylesheet" href="/static/settings_page.css?v=3">
+  <link rel="stylesheet" href="/static/settings_page.css?v=5">
 </head>
 <body class="settings-page{% if embed %} settings-embedded{% endif %}">
   {% if not embed %}{% set client_active = "settings" %}{% include "_client_nav.html" %}{% endif %}
@@ -17,11 +17,12 @@
   </main>
   <script src="/static/engine_picker.js?v=1"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/settings.js?v=3"></script>
+  <script src="/static/settings.js?v=5"></script>
   <script>
     (() => {
       const embedded = {{ "true" if embed else "false" }};
-      const tabFromHash = () => decodeURIComponent(location.hash.replace(/^#(settings\/)?/, "")) || "llm";
+      // No hash → settings.js reopens the last pane (stored per browser).
+      const tabFromHash = () => decodeURIComponent(location.hash.replace(/^#(settings\/)?/, ""));
       const notifyParent = type => { if (embedded && window.parent !== window) window.parent.postMessage({ type }, location.origin); };
       window.GlobalSettings.mount(document.querySelector("#settingsRoot"), {
         tab: tabFromHash(),
