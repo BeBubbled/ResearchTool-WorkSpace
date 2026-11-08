@@ -152,9 +152,9 @@ if (typeof document !== "undefined") (() => {
       if (!groups.has(row.category)) groups.set(row.category, []);
       groups.get(row.category).push(row);
     }
-    $("templateList").innerHTML = [...groups].map(([name, rows]) => `<div class="template-group-heading" role="heading" aria-level="3"><span>${escapeHtml(name)}</span><small>${rows.length} 个模板</small></div>${rows.map(row => {
+    $("templateList").innerHTML = [...groups].map(([name, rows]) => `<div class="template-group-heading" role="heading" aria-level="3"><span>${escapeHtml(name)}</span><small>${rows.length} 个模板${rows.some(row => row.scope === "reader") ? " · 精读页划选按钮使用这些内容" : ""}</small></div>${rows.map(row => {
       const index = draft.selected.findIndex(item => item.id === row.id);
-      return `<div class="template-card ${index >= 0 ? "added" : ""}"><button type="button" class="template-pick" data-add="${escapeHtml(row.id)}" ${index >= 0 ? "disabled" : ""}><strong>${escapeHtml(row.title)}${index >= 0 ? `<span class="order-badge">已添加 ${index + 1}</span>` : ""}</strong><small>${escapeHtml(row.category)}</small><span class="template-preview">${escapeHtml(row.content)}</span></button><button type="button" class="template-edit" data-edit="${escapeHtml(row.id)}" aria-label="编辑 ${escapeHtml(row.title)}" title="编辑模板">⋯</button></div>`;
+      return `<div class="template-card ${index >= 0 ? "added" : ""}"><button type="button" class="template-pick" data-add="${escapeHtml(row.id)}" ${index >= 0 ? "disabled" : ""}><strong>${escapeHtml(row.title)}${index >= 0 ? `<span class="order-badge">已添加 ${index + 1}</span>` : ""}</strong><small>${escapeHtml(row.category)}${row.builtin ? ` · <span class="builtin-badge">${row.customized ? "内置 · 已自定义" : "内置"}</span>` : ""}</small><span class="template-preview">${escapeHtml(row.content)}</span></button><button type="button" class="template-edit" data-edit="${escapeHtml(row.id)}" aria-label="编辑 ${escapeHtml(row.title)}" title="编辑模板">⋯</button></div>`;
     }).join("")}`).join("") || '<p class="hint">没有匹配的模板，可以新建一个。</p>';
   }
   async function loadTemplates() {
@@ -171,7 +171,11 @@ if (typeof document !== "undefined") (() => {
     editingId = id; const item = templates.find(row => row.id === id);
     $("templateDialogTitle").textContent = item ? "编辑模板" : "新建模板";
     $("templateTitle").value = item?.title || ""; $("templateCategory").value = item?.category || "通用";
-    $("templateContent").value = item?.content || ""; $("deleteTemplate").hidden = !item;
+    $("templateContent").value = item?.content || "";
+    $("templateCategory").disabled = !!item?.builtin;
+    $("deleteTemplate").hidden = !item || (item.builtin && !item.customized);
+    $("deleteTemplate").textContent = item?.builtin ? "恢复默认" : "删除模板";
+    $("templateBuiltinNote").hidden = !item?.builtin;
     $("templateError").textContent = ""; $("templateDialog").showModal(); $("templateTitle").focus();
   }
   function renderFiles() {
@@ -243,6 +247,30 @@ if (typeof document !== "undefined") (() => {
     }
   }
 
+  // Content sent from 精读 / 改稿 (static/prompt_handoff.js): append the text, fetch attachments.
+  async function receiveHandoff(item) {
+    if (!item) { notify("没有找到待带入的内容（可能已超过 10 分钟或已被带入过）。"); return; }
+    const separator = draft.text.trim() ? "\n\n" : "";
+    try {
+      if (draft.text.length + separator.length + item.text.length > 100000) throw new Error("带入后的 Prompt 超过 100,000 字符，未自动带入。");
+      draft.updateText(draft.text + separator + item.text);
+      $("promptText").value = draft.text; $("promptText").scrollTop = $("promptText").scrollHeight;
+      saveDraft(); renderSelected(); renderTemplates();
+    } catch (error) { notify(error.message); return; }
+    const files = [];
+    for (const attachment of item.attachments) {
+      try {
+        const response = await fetch(attachment.url);
+        if (!response.ok) throw new Error(String(response.status));
+        const blob = await response.blob();
+        files.push(new File([blob], attachment.name, { type: blob.type || "application/octet-stream", lastModified: Date.now() }));
+      } catch { notify(`附件「${attachment.name}」未能带入，可手动添加。`); }
+    }
+    if (files.length) addFiles(files);
+    const from = item.source.title ? `「${item.source.title}」` : "";
+    notify(`已从${item.source.label}${from}带入文字${files.length ? `和 ${files.length} 个附件` : ""}。可再追加模板，检查后提交到 ChatGPT。`);
+  }
+
   $("promptText").value = draft.text; renderSelected(); saveDraft();
   let textReplacement = null;
   $("promptText").addEventListener("beforeinput", event => {
@@ -278,7 +306,8 @@ if (typeof document !== "undefined") (() => {
     finally { $("saveTemplate").disabled = false; }
   });
   $("deleteTemplate").addEventListener("click", async () => {
-    if (!editingId || !confirm("删除此模板？已加入草稿的文字会保留。")) return;
+    const editing = templates.find(row => row.id === editingId);
+    if (!editingId || !confirm(editing?.builtin ? "恢复为默认名称和内容？精读页的划选按钮会随之更新。" : "删除此模板？已加入草稿的文字会保留。")) return;
     try { await api(`/api/prompts/templates/${editingId}`, {method:"DELETE"}); await loadTemplates(); $("templateDialog").close(); }
     catch (error) { $("templateError").textContent = error.message; }
   });
@@ -298,7 +327,13 @@ if (typeof document !== "undefined") (() => {
   $("copyPrompt").addEventListener("click", async () => { try { await navigator.clipboard.writeText(draft.text); notify("Prompt 已复制。"); } catch { $("promptText").focus(); $("promptText").select(); notify("无法访问剪贴板，请按 Ctrl+C 复制选中文字。"); } });
   $("checkBridge").addEventListener("click", checkBridge); $("submitPrompt").addEventListener("click", submit);
   window.addEventListener("focus", () => { if (!bridgeReady) checkBridge(); });
-  loadTemplates().catch(error => { $("templateList").textContent = error.message; notify("读取模板失败，刷新页面可重试。"); });
+  const params = new URLSearchParams(location.search);
+  loadTemplates().then(() => {
+    const wanted = params.get("category");
+    if (wanted && [...$("categoryFilter").options].some(option => option.value === wanted)) { $("categoryFilter").value = wanted; renderTemplates(); }
+  }).catch(error => { $("templateList").textContent = error.message; notify("读取模板失败，刷新页面可重试。"); });
+  if (params.get("handoff") && window.PromptHandoff) receiveHandoff(window.PromptHandoff.take());
+  if (params.has("handoff") || params.has("category")) history.replaceState(null, "", "/prompts");
   checkBridge();
   try { transfer = JSON.parse(sessionStorage.getItem(transferKey) || "null"); } catch { transfer = null; }
   if (transfer?.id && transfer?.token) { busy = true; updateSubmit(); pollTransfer(); }

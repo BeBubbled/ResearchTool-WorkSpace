@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 import queue
 import shutil
@@ -28,9 +29,10 @@ from managed_codex import (
 
 
 TERMINAL_STATUSES = {"ready", "failed", "cancelled"}
-RUNNING_STATUSES = {"queued", "pass1", "pass2", "pass3", "synthesis", "responding"}
+RUNNING_STATUSES = {"queued", "reading", "pass1", "pass2", "pass3", "synthesis", "responding"}
 PHASE_LABELS = {
     "queued": "等待 Three-Pass 分析",
+    "reading": "一次通读 · 同时填写 Pass 1–3 与报告",
     "pass1": "Pass 1 · 快速定位",
     "pass2": "Pass 2 · 结构与证据",
     "pass3": "Pass 3 · 重点深读",
@@ -119,6 +121,88 @@ def phase_length_rule(session: "AnalysisSession", phase: str) -> str:
         f"Target approximately {target} visible {unit} (within +/-20% when practical). "
         "Do not pad, mechanically truncate, or omit required evidence merely to hit the target."
     )
+
+
+# ---- Single read: one pass over the paper fills every part ----
+# The parts are Keshav's three passes plus the final report. They describe *what kind of
+# information* to extract, not three separate readings: the paper is read once and all
+# parts are returned together, delimited by these markers inside the one Markdown result.
+PART_FILES = {"pass1": "pass1.md", "pass2": "pass2.md", "pass3": "pass3.md", "synthesis": "report.md"}
+PART_TASKS = {
+    "pass1": "Pass 1 · bird's-eye view: the Five Cs map (category, context, correctness, contributions, clarity), "
+             "one-sentence summary, problem, core idea, key result, and what deserves deeper reading.",
+    "pass2": "Pass 2 · content and evidence: connect each central claim to its support (pipeline/components or "
+             "theory, data and setup, baselines, metrics, main results, ablations, limitations, open questions).",
+    "pass3": "Pass 3 · focused virtual reconstruction for the focuses {focuses} (extra focus: {custom}): enough "
+             "detail to start re-implementing, hidden assumptions, missing details, failure modes, reproducibility.",
+    "synthesis": "Final report: a standalone summary useful without the passes (executive summary, contributions, "
+                 "method, evidence, reproducibility, critique, limitations, open questions, source caveats).",
+}
+_PART_MARKER = re.compile(r"^[ \t]*<!--\s*three-pass:(pass1|pass2|pass3|synthesis)\s*-->[ \t]*$", re.M)
+
+
+def part_marker(part: str) -> str:
+    return f"<!-- three-pass:{part} -->"
+
+
+def single_read_rule(session: "AnalysisSession", *, notes: bool = False) -> str:
+    """How to lay out every part in one response (final parts, or short per-chunk notes)."""
+    unit = "Chinese characters" if session.language == "zh-CN" else "English words"
+    lengths = session_phase_lengths(session)
+    focuses = "、".join(session.focuses) or "方法、实验、复现性"
+    lines = []
+    for part, task in PART_TASKS.items():
+        budget = "under 250" if notes else f"about {lengths[part]['target']}"
+        lines.append(f"{part_marker(part)}\n  {task.format(focuses=focuses, custom=session.custom_focus or '无')} "
+                     f"Length: {budget} visible {unit}.")
+    purpose = (
+        "These are internal notes for one part of the paper; capture only evidence, locations, gaps and facts "
+        "each part will need later."
+        if notes else
+        "Do not pad, mechanically truncate, or omit required evidence merely to hit a length."
+    )
+    return (
+        "Read the source once and fill ALL of the following parts in this single response. "
+        "Each part answers a different question about the same reading: later parts add information "
+        "instead of repeating earlier wording. Start each part with its marker line exactly as shown, "
+        "in this order, and put nothing before the first marker:\n"
+        + "\n".join(lines)
+        + f"\n{purpose}"
+    )
+
+
+def split_parts(markdown: str) -> dict[str, str]:
+    """Split one single-read result into its parts; every part must be present and non-empty."""
+    matches = list(_PART_MARKER.finditer(markdown or ""))
+    parts: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+        text = markdown[match.end():end].strip()
+        if text and match.group(1) not in parts:
+            parts[match.group(1)] = text
+    missing = [part for part in PART_FILES if part not in parts]
+    if missing:
+        raise CodexProtocolError(f"一次通读的结果缺少这些部分：{', '.join(missing)}。")
+    return parts
+
+
+def begin_single_read(session: "AnalysisSession") -> None:
+    session.status = session.phase = "reading"
+    session.preview = ""
+    session.error = None
+    session.terminal_phase = None
+    session.persist()
+    session.publish("phase", session.snapshot())
+
+
+def store_parts(session: "AnalysisSession", parts: dict[str, str]) -> None:
+    """Save every part of one reading (same files and events as the old per-pass flow)."""
+    for part, filename in PART_FILES.items():
+        atomic_write_text(session.root / filename, parts[part].rstrip() + "\n")
+        session.results[part] = parts[part]
+    session.persist()
+    for part in PART_FILES:
+        session.publish("phase_completed", {"phase": part, "markdown": parts[part]})
 
 
 def intermediate_chunk_rule(session: "AnalysisSession") -> str:
@@ -1173,43 +1257,20 @@ class ThreePassAnalysisManager:
         session.persist()
         return True
 
-    def _phase_prompt(self, session: AnalysisSession, phase: str) -> str:
-        input_path = session.root / "input.md"
-        focuses = "、".join(session.focuses) or "方法、实验、复现性"
-        custom = session.custom_focus or "无"
+    def _single_read_prompt(self, session: AnalysisSession) -> str:
         language_instruction = (
             "Write the result in Simplified Chinese while preserving technical terms, formulas and citations."
             if session.language == "zh-CN"
             else "Write the result in English while preserving formulas, citations, and original technical terms."
         )
-        common = (
-            f"Use $three-pass-paper-reader in {phase} mode.\n"
+        return (
+            "Use $three-pass-paper-reader in single-read mode.\n"
             f"Paper title: {session.document_title}\n"
-            f"Read the canonical local source at: {input_path}\n"
+            f"Read the canonical local source once, at: {session.root / 'input.md'}\n"
             f"{language_instruction}\n"
             "Cite only page markers or section names that appear in the source. "
             "Separate paper claims, evidence, and your reviewer inference.\n"
-            f"{phase_length_rule(session, phase)}"
-        )
-        if phase == "pass1":
-            return common + "\nPerform only Pass 1: rapid orientation and a reliable paper map."
-        if phase == "pass2":
-            return (
-                common
-                + f"\nRead the saved Pass 1 result at: {session.root / 'pass1.md'}"
-                + "\nPerform only Pass 2: inspect structure, claims, evidence, figures/tables described in text, assumptions, and open questions."
-            )
-        if phase == "pass3":
-            return (
-                common
-                + f"\nRead Pass 1 and Pass 2 at: {session.root / 'pass1.md'} and {session.root / 'pass2.md'}"
-                + f"\nDeep-reading focuses: {focuses}.\nAdditional user focus: {custom}."
-                + "\nPerform only Pass 3: reconstruct and critique the selected method, experiments, and reproducibility details."
-            )
-        return (
-            common
-            + f"\nRead all pass results at: {session.root / 'pass1.md'}, {session.root / 'pass2.md'}, {session.root / 'pass3.md'}"
-            + "\nCreate the final standalone report. Include executive summary, contributions, method, experiments, reproducibility checklist, critique, limitations, open questions, evidence locations, and source-quality caveats."
+            f"{single_read_rule(session)}"
         )
 
     def _run_analysis(self, session: AnalysisSession) -> None:
@@ -1218,28 +1279,13 @@ class ThreePassAnalysisManager:
             raise CodexProtocolError(status.get("error") or "Codex 未使用 ChatGPT 登录。")
         session.busy = True
         session.thread_id = self._start_thread(session)
-        session.persist()
-        for phase, filename in (
-            ("pass1", "pass1.md"),
-            ("pass2", "pass2.md"),
-            ("pass3", "pass3.md"),
-            ("synthesis", "report.md"),
-        ):
-            if session.cancel_requested:
-                self._finish_cancelled(session)
-                return
-            session.status = phase
-            session.phase = phase
-            session.preview = ""
-            session.error = None
-            session.terminal_phase = None
-            session.persist()
-            session.publish("phase", session.snapshot())
-            markdown = self._run_turn(session, self._phase_prompt(session, phase), structured=True)
-            atomic_write_text(session.root / filename, markdown.rstrip() + "\n")
-            session.results[phase] = markdown
-            session.persist()
-            session.publish("phase_completed", {"phase": phase, "markdown": markdown})
+        if session.cancel_requested:
+            self._finish_cancelled(session)
+            return
+        begin_single_read(session)
+        # One turn: the paper is read once and every part is filled from that reading.
+        markdown = self._run_turn(session, self._single_read_prompt(session), structured=True)
+        store_parts(session, split_parts(markdown))
         session.status = "ready"
         session.phase = "ready"
         session.busy = False
@@ -1402,7 +1448,7 @@ class ThreePassAnalysisManager:
             session.persist()
             session.publish("followup_cancelled", session.snapshot())
             return
-        session.terminal_phase = session.phase if session.phase in {"pass1", "pass2", "pass3", "synthesis", "responding"} else None
+        session.terminal_phase = session.phase if session.phase in {"reading", "pass1", "pass2", "pass3", "synthesis", "responding"} else None
         session.status = "cancelled"
         session.phase = "cancelled"
         session.busy = False
@@ -1493,9 +1539,9 @@ def build_chunk_plan(text: str, context_window: int | None, max_output_tokens: i
             "estimatedInputTokens": estimate_text_tokens(text),
             "safeInputTokensPerCall": input_budget,
             "chunkCount": count,
-            # Conservative upper bound: every merge level may reduce only two
-            # partial results to one, which needs at most count - 1 merges.
-            "estimatedCalls": 4 if count == 1 else 4 * (2 * count - 1),
+            # Single read: one call for a paper that fits. Otherwise one notes call per
+            # chunk, at most count - 1 condensing calls, and one final call.
+            "estimatedCalls": 1 if count == 1 else 2 * count,
             "requiresConfirmation": count > 1,
         },
         chunks,
@@ -1811,28 +1857,11 @@ class ApiThreePassAnalysisManager:
             f"Return only JSON matching {{\"markdown\": string}}. Write in {language}."
         )
 
-    def _phase_prompt(
-        self,
-        session: AnalysisSession,
-        phase: str,
-        source: str,
-        previous: str,
-        chunk_label: str,
-        *,
-        intermediate: bool = False,
-    ) -> str:
-        focuses = "、".join(session.focuses) or "方法、实验、复现性"
-        labels = {
-            "pass1": "Perform only Pass 1: rapid orientation and a reliable paper map.",
-            "pass2": "Perform only Pass 2: connect claims to structure and evidence, and revisit Pass 1.",
-            "pass3": f"Perform only Pass 3 with these focuses: {focuses}. Additional focus: {session.custom_focus or '无'}.",
-            "synthesis": "Create the final standalone report from the paper and all saved pass findings.",
-        }
+    def _single_read_prompt(self, session: AnalysisSession, source: str, label: str, *, notes: bool) -> str:
         return (
-            f"Paper: {session.document_title}\nPhase: {phase}\nSource part: {chunk_label}\n{labels[phase]}\n"
+            f"Paper: {session.document_title}\nMode: single-read\nSource: {label}\n"
             "Cite only page markers or section names visible below. Separate paper claims, evidence, and reviewer inference.\n"
-            f"{intermediate_chunk_rule(session) if intermediate else phase_length_rule(session, phase)}\n\n"
-            f"Prior pass context:\n{previous or '[none]'}\n\nCanonical paper source:\n{source}"
+            f"{single_read_rule(session, notes=notes)}\n\n{source}"
         )
 
     def _complete(self, session: AnalysisSession, prompt: str) -> str:
@@ -1883,33 +1912,30 @@ class ApiThreePassAnalysisManager:
         budget = int(session.chunk_plan.get("safeInputTokensPerCall") or 60_000)
         chunks = split_analysis_markdown(source, budget)
         session.busy = True
-        for phase, filename in (("pass1", "pass1.md"), ("pass2", "pass2.md"), ("pass3", "pass3.md"), ("synthesis", "report.md")):
-            if session.cancel_requested:
-                raise InterruptedError
-            session.status = phase
-            session.phase = phase
-            session.preview = ""
-            session.error = None
-            session.terminal_phase = None
-            session.persist()
-            session.publish("phase", session.snapshot())
-            previous = "\n\n".join(f"## {key}\n{value}" for key, value in session.results.items())
-            chunk_results = []
-            for index, chunk in enumerate(chunks, start=1):
-                prompt = self._phase_prompt(
+        begin_single_read(session)
+        if len(chunks) == 1:
+            # The whole paper fits: one call reads it once and fills every part.
+            markdown = self._complete(
+                session,
+                self._single_read_prompt(session, f"Canonical paper source:\n{chunks[0]}", "whole paper", notes=False),
+            )
+        else:
+            # Too long for one call: still one pass over the paper. Each chunk is read once and yields
+            # notes for all parts at the same time; one final call then fills the parts from the notes.
+            notes = [
+                self._complete(
                     session,
-                    phase,
-                    chunk,
-                    previous,
-                    f"{index}/{len(chunks)}",
-                    intermediate=len(chunks) > 1,
+                    self._single_read_prompt(
+                        session,
+                        f"Canonical paper source (part {index}/{len(chunks)}):\n{chunk}",
+                        f"part {index}/{len(chunks)} of the paper",
+                        notes=True,
+                    ),
                 )
-                chunk_results.append(self._complete(session, prompt))
-            markdown = self._merge_chunk_results(session, phase, chunk_results, budget)
-            atomic_write_text(session.root / filename, markdown.rstrip() + "\n")
-            session.results[phase] = markdown
-            session.persist()
-            session.publish("phase_completed", {"phase": phase, "markdown": markdown})
+                for index, chunk in enumerate(chunks, start=1)
+            ]
+            markdown = self._fill_from_notes(session, notes, budget)
+        store_parts(session, split_parts(markdown))
         session.status = "ready"
         session.phase = "ready"
         session.busy = False
@@ -1917,44 +1943,47 @@ class ApiThreePassAnalysisManager:
         session.persist()
         session.publish("completed", session.snapshot())
 
-    def _merge_chunk_results(
-        self,
-        session: AnalysisSession,
-        phase: str,
-        results: list[str],
-        token_budget: int,
-    ) -> str:
-        current = list(results)
+    def _fill_from_notes(self, session: AnalysisSession, notes: list[str], token_budget: int) -> str:
+        """Condense per-chunk notes only while they exceed one call, then fill every part once."""
         character_budget = max(8_000, token_budget * 3)
-        while len(current) > 1:
+        current = list(notes)
+        while len(current) > 1 and sum(len(item) for item in current) > character_budget:
             groups: list[list[str]] = []
             group: list[str] = []
             size = 0
-            for result in current:
-                if group and (size + len(result) > character_budget or len(group) >= 8):
+            for item in current:
+                if group and (size + len(item) > character_budget or len(group) >= 8):
                     groups.append(group)
                     group, size = [], 0
-                group.append(result)
-                size += len(result)
+                group.append(item)
+                size += len(item)
             if group:
                 groups.append(group)
             if len(groups) == len(current):
                 groups = [current[index:index + 2] for index in range(0, len(current), 2)]
-            final_round = len(groups) == 1
-            merged: list[str] = []
-            for group in groups:
-                if len(group) == 1 and len(current) > 1:
-                    merged.append(group[0])
-                    continue
-                merge_prompt = (
-                    f"Merge the following {phase} chunk findings into one evidence-grounded {phase} result. "
-                    "Remove duplication, retain page/section evidence, and do not add claims absent from the findings. "
-                    f"{phase_length_rule(session, phase) if final_round else intermediate_chunk_rule(session)}\n\n"
-                    + "\n\n---\n\n".join(group)
+            current = [
+                group[0] if len(group) == 1 else self._complete(
+                    session,
+                    self._single_read_prompt(
+                        session,
+                        "Notes to condense (remove duplication, keep page/section evidence, add nothing new):\n\n"
+                        + "\n\n---\n\n".join(group),
+                        "condensing notes",
+                        notes=True,
+                    ),
                 )
-                merged.append(self._complete(session, merge_prompt))
-            current = merged
-        return current[0]
+                for group in groups
+            ]
+        return self._complete(
+            session,
+            self._single_read_prompt(
+                session,
+                "Notes taken while reading the paper once, part by part. Use only these notes; "
+                "do not add claims absent from them:\n\n" + "\n\n---\n\n".join(current),
+                "notes from the whole paper",
+                notes=False,
+            ),
+        )
 
     def _run_followup_guarded(self, session: AnalysisSession, question: str) -> None:
         try:
@@ -1994,7 +2023,7 @@ class ApiThreePassAnalysisManager:
             session.phase = "ready"
             event = "followup_cancelled"
         else:
-            session.terminal_phase = session.phase if session.phase in {"pass1", "pass2", "pass3", "synthesis"} else None
+            session.terminal_phase = session.phase if session.phase in {"reading", "pass1", "pass2", "pass3", "synthesis"} else None
             session.status = "cancelled"
             session.phase = "cancelled"
             event = "cancelled"

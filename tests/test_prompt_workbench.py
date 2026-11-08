@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from flask import Flask
 
-from prompt_workbench import CHUNK_BYTES, TRANSFER_TTL, PromptWorkbench, create_prompt_blueprint
+from prompt_workbench import CHUNK_BYTES, READER_ACTION_DEFAULTS, TRANSFER_TTL, PromptWorkbench, create_prompt_blueprint
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADERS = {"X-Prompt-Workbench": "1"}
@@ -45,6 +45,33 @@ class PromptWorkbenchTests(unittest.TestCase):
         for row in restarted.templates():
             self.assertEqual(self.client.delete(f"/api/prompts/templates/{row['id']}", headers=HEADERS).status_code, 200)
         self.assertEqual(restarted.templates(), [])
+
+    def test_reader_actions_are_builtin_editable_and_resettable(self):
+        library = self.client.get("/api/prompts/templates").get_json()["templates"]
+        builtins = [row for row in library if row.get("builtin")]
+        self.assertEqual(len(builtins), 10)
+        geometry = next(row for row in builtins if row["id"] == "reader:geometry")
+        self.assertEqual((geometry["title"], geometry["category"], geometry["customized"]), ("解释公式的几何意义", "精读划选动作", False))
+        self.assertNotIn("reader:geometry", [row["id"] for row in self.service.templates()])
+
+        edited = self.client.put("/api/prompts/templates/reader:geometry", json={"title": "几何直觉", "category": "被忽略", "content": "只讲几何。"}, headers=HEADERS)
+        self.assertEqual(edited.status_code, 200)
+        self.assertEqual(edited.get_json()["template"]["category"], "精读划选动作")
+        restarted = PromptWorkbench(self.service.root, self.service.extension_dir)
+        self.assertEqual(restarted.reader_action("geometry")["content"], "只讲几何。")
+        self.assertTrue(restarted.reader_action("geometry")["customized"])
+
+        self.assertEqual(self.client.delete("/api/prompts/templates/reader:geometry", headers=HEADERS).status_code, 200)
+        reset = self.service.reader_action("geometry")
+        self.assertEqual(reset["title"], "解释公式的几何意义")
+        self.assertFalse(reset["customized"])
+        # Saving the default text back is the same as no override.
+        title, content = READER_ACTION_DEFAULTS["summary"]
+        self.client.put("/api/prompts/templates/reader:summary", json={"title": "x", "content": "x"}, headers=HEADERS)
+        self.client.put("/api/prompts/templates/reader:summary", json={"title": title, "content": content}, headers=HEADERS)
+        self.assertFalse(self.service.reader_action("summary")["customized"])
+        self.assertEqual(self.client.put("/api/prompts/templates/reader:missing", json={"title": "x", "content": "y"}, headers=HEADERS).status_code, 404)
+        self.assertEqual(self.client.put("/api/prompts/templates/reader:explain", json={"title": "x", "content": "y" * 4001}, headers=HEADERS).status_code, 400)
 
     def test_invalid_template_inputs_do_not_change_library(self):
         for payload in ([], {"title": " ", "content": "x"}, {"title": "x", "content": 5}, {"title": "x" * 81, "content": "y"}):

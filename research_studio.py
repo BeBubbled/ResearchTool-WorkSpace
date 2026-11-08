@@ -18,11 +18,12 @@ from flask import Blueprint, abort, jsonify, render_template, request, send_file
 
 from codex_three_pass import atomic_write_json, atomic_write_text, CodexProtocolError, read_text_with_retry
 from prompt_workbench import local_request_error
+import pdf_core
+from pdf_core import MAX_PDF_BYTES
 
 
 UPSTREAM_URL = "https://github.com/microsoft/ResearchStudio"
 UPSTREAM_COMMIT = "063f10088af49909e1a4a7ea8d29efe19633f34e"
-MAX_PDF_BYTES = 100 * 1024 * 1024
 ACTIVE = {"queued", "running", "cancelling"}
 MODULES = {
     "idea-spark": ("Idea", "研究选题", "idea_spark"),
@@ -354,19 +355,7 @@ class ResearchStudio:
             if upload or source:
                 stream = upload.stream if upload else Path(source).open("rb")
                 try:
-                    with (work / "paper.pdf").open("wb") as out:
-                        size = 0
-                        first = True
-                        while chunk := stream.read(1024 * 1024):
-                            if first and not chunk.startswith(b"%PDF-"):
-                                raise ValueError("输入文件不是 PDF。")
-                            first = False
-                            size += len(chunk)
-                            if size > MAX_PDF_BYTES:
-                                raise ValueError("PDF 最大为 100 MB。")
-                            out.write(chunk)
-                        if not size:
-                            raise ValueError("PDF 为空。")
+                    pdf_core.save_pdf_upload(stream, work / "paper.pdf", max_bytes=MAX_PDF_BYTES)
                 finally:
                     if not upload:
                         stream.close()

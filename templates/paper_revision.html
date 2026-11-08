@@ -8,7 +8,7 @@
 </head>
 <body>
   {% set client_active = "revision" %}{% include "_client_nav.html" %}
-  <header class="topbar"><a class="brand" href="/">Research Toolkit <span>/ 双语改稿</span></a><nav><a href="/reader">论文阅读器</a><a href="/settings#codex">AI 设置</a></nav></header>
+  <header class="topbar"><a class="brand" href="/">Research Toolkit <span>/ 双语改稿</span></a><nav><a href="/settings#codex">AI 设置</a></nav></header>
   <main>
     <section class="intro"><div><p class="eyebrow">READ IN CHINESE · REVISE IN ENGLISH</p><h1>用中文推敲，把英文写准确。</h1><p>圈选中文或英文、积累批注，提交后统一修订英文；开启翻译时再增量更新中文对照。</p></div><button id="toggleImport" class="secondary">＋ 导入论文</button></section>
     <section id="importPanel" class="card" hidden>
@@ -53,7 +53,7 @@
     <p class="footer-note">中文用于审阅，英文是修订依据。每轮保留历史版本；模型修改仍需核查科学含义，导出后请在原 LaTeX 工程中编译。</p>
   </main>
   <aside id="commentDrawer" class="drawer" hidden aria-label="本轮批注"><div class="drawer-heading"><h2>本轮批注</h2><button id="closeComments" class="quiet" aria-label="关闭批注面板">关闭 ×</button></div><p class="hint">保存批注不会调用模型。全部标注完成后，再提交本轮。批注只属于这次打开：下次打开会移入备份，请在关闭前导出。</p>
-    <div class="comment-io"><a id="exportComments" class="button secondary" download>导出批注</a><button id="importComments" type="button" class="secondary">导入批注…</button><input id="importCommentsFile" type="file" accept=".json,application/json" hidden></div>
+    <div class="comment-io"><a id="exportComments" class="button secondary" download>导出批注</a><button id="importComments" type="button" class="secondary">导入批注…</button><input id="importCommentsFile" type="file" accept=".json,application/json" hidden><button id="sendCommentsToPrompts" type="button" class="secondary" title="把本轮批注和当前英文原稿（ZIP）带到 Prompt 工作台，再提交到 ChatGPT 征求第二意见">送到 ChatGPT ↗</button></div>
     <div id="comments"></div></aside>
   <dialog id="syncDialog"><form method="dialog"><h2>磁盘上的论文与本工具都有改动</h2><p id="syncText" class="hint"></p>
     <div class="session-actions"><button value="disk" class="primary">以磁盘为准（重新读取）</button><button value="tool" class="secondary">继续用本工具的版本</button></div>
@@ -71,7 +71,9 @@
   <button id="selectionButton" class="selection-button" hidden>＋ 添加批注</button>
   <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/paper_revision_import.js?v=2"></script>
-  <script src="/static/paper_revision_workflow.js?v=1"></script>
-  <script src="/static/paper_revision.js?v=14"></script>
+  <script src="/static/engine_picker.js?v=1"></script>
+  <script src="/static/paper_revision_workflow.js?v=2"></script>
+  <script src="/static/prompt_handoff.js?v=1"></script>
+  <script src="/static/paper_revision.js?v=16"></script>
 </body>
 </html>

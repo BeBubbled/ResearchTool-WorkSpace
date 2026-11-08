@@ -3192,6 +3192,26 @@ function captureSelection(sourceDocument = document, frame = null) {
   }
 }
 
+// Hand the current selection to the Prompt workbench, which owns the ChatGPT bridge.
+function sendSelectionToPrompts() {
+  if (!readerState.selection || !window.PromptHandoff) return;
+  const title = readerState.content?.title || readerState.document?.title || "论文";
+  const section = readerState.selectionSection || (readerState.selectionPage ? `第 ${readerState.selectionPage} 页` : "");
+  const question = $("#customQuestion")?.value.trim() || "";
+  const parts = [`以下内容来自论文《${title}》${section ? `（${section}）` : ""}。`, `【选区】\n${readerState.selection}`];
+  if (readerState.selectionContext) parts.push(`【相邻原文，仅作上下文】\n${String(readerState.selectionContext).slice(0, 8000)}`);
+  if (question) parts.push(`【我的问题】\n${question}`);
+  const attachments = readerState.document?.sourceType === "pdf" && readerState.document?.id
+    ? [{ name: `${title.replace(/[\\/:*?"<>|\s]+/g, " ").trim().slice(0, 120) || "paper"}.pdf`, url: `/api/reader/documents/${encodeURIComponent(readerState.document.id)}/source` }]
+    : [];
+  try {
+    window.PromptHandoff.send({ text: parts.join("\n\n"), source: { label: "文献精读", title }, attachments });
+    hideSelectionMenu();
+  } catch (error) {
+    renderAnswer(error.message);
+  }
+}
+
 async function ask(action, { keepMenu = false } = {}) {
   if (!readerState.selection) return;
   if (readerState.assistantOverlay) {
@@ -3528,6 +3548,23 @@ async function loadAnalysisProviders() {
   }
 }
 
+// Settings drawer saved (new API preset, Codex model, …) → re-read engines here instead of a page reload.
+async function refreshReaderEngines() {
+  try {
+    const response = await fetch("/api/reader/config");
+    const config = await response.json();
+    if (response.ok) {
+      readerState.config = config;
+      refreshLlmConfigs();
+      renderSelectionSettings();
+    }
+  } catch (error) {
+    console.warn("Reader config refresh failed", error);
+  }
+  await loadCodexStatus();
+  await loadAnalysisProviders();
+}
+
 async function startCodexLogin(flow = "browser") {
   const loginWindow = flow === "browser" ? window.open("about:blank", "paper-lens-codex-login") : null;
   if (loginWindow) loginWindow.opener = null;
@@ -3578,6 +3615,12 @@ async function logoutCodex() {
 function threePassProgressState(analysis, phase) {
   if (!analysis) return "waiting";
   const effectivePhase = analysis.terminalPhase || analysis.phase;
+  // Single read: every part is filled by the same reading, so they progress together.
+  if (effectivePhase === "reading") {
+    if (analysis.results?.[phase]) return "done";
+    if (["failed", "cancelled"].includes(analysis.status)) return analysis.status;
+    return analysis.phase === "reading" ? "running" : "waiting";
+  }
   const current = THREE_PASS_PHASES.indexOf(effectivePhase);
   const target = THREE_PASS_PHASES.indexOf(phase);
   if (analysis.status === "ready" || current > target || analysis.results?.[phase]) return "done";
@@ -4313,7 +4356,9 @@ async function initReader() {
   renderActions();
   await loadCodexStatus();
   await loadAnalysisProviders();
+  window.EnginePicker?.onChange(refreshReaderEngines);
   await loadLocalLibrary();
+  $("#sendSelectionToPrompts")?.addEventListener("click", sendSelectionToPrompts);
   $("#sourceFile").addEventListener("change", event => setReaderSource(event.target.files[0]));
   $("#translationFile")?.addEventListener("change", event => setReaderTranslation(event.target.files[0]));
   $("#markdownAssets").addEventListener("change", event => {

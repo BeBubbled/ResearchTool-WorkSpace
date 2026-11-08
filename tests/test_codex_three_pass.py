@@ -28,10 +28,19 @@ from codex_three_pass import (
     infer_api_protocol,
     normalize_api_base_url,
     phase_length_rule,
+    split_parts,
     sse_events,
     validate_phase_lengths,
 )
 import web_panel
+
+
+def parts_markdown(label):
+    """One single-read result: every part, each starting with its marker line."""
+    return "\n\n".join(
+        f"<!-- three-pass:{part} -->\n# {label} · {part}\n\nEvidence-grounded result."
+        for part in ("pass1", "pass2", "pass3", "synthesis")
+    )
 
 
 class FakeRuntime:
@@ -75,7 +84,7 @@ class FakeRuntime:
         self.turn_count += 1
         turn_id = f"turn-{self.turn_count}"
         if params.get("outputSchema"):
-            text = json.dumps({"markdown": f"# Phase {self.turn_count}\n\nEvidence-grounded result."})
+            text = json.dumps({"markdown": parts_markdown(f"Phase {self.turn_count}")})
         else:
             text = "这是基于论文与报告的后续回答。"
         for listener in self.listeners:
@@ -155,7 +164,7 @@ class InterruptibleRuntime(FakeRuntime):
 class FollowupInterruptibleRuntime(FakeRuntime):
     def request(self, method, params=None, timeout=30):
         params = params or {}
-        if method == "turn/start" and self.turn_count >= 4:
+        if method == "turn/start" and self.turn_count >= 1:  # the analysis itself is one turn
             self.turn_count += 1
             return {"turn": {"id": f"turn-{self.turn_count}", "status": "inProgress", "items": [], "error": None}}
         if method == "turn/interrupt":
@@ -183,11 +192,11 @@ class FakeDirectClient:
         self.calls.append(("responses", request))
         if self.fail_optional and len(self.calls) == 1:
             raise RuntimeError("Unsupported parameter: text.format")
-        return SimpleNamespace(id=f"resp-{len(self.calls)}", output_text=json.dumps({"markdown": f"# API result {len(self.calls)}"}))
+        return SimpleNamespace(id=f"resp-{len(self.calls)}", output_text=json.dumps({"markdown": parts_markdown(f"API result {len(self.calls)}")}))
 
     def create_chat(self, **request):
         self.calls.append(("chat_completions", request))
-        content = json.dumps({"markdown": f"# Chat result {len(self.calls)}"})
+        content = json.dumps({"markdown": parts_markdown(f"Chat result {len(self.calls)}")})
         return SimpleNamespace(id=f"chat-{len(self.calls)}", choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
@@ -463,19 +472,29 @@ class ThreePassManagerTest(unittest.TestCase):
             input_markdown="# Test Paper\n\n" + ("Evidence paragraph. " * 40),
         )
 
-    def test_four_phases_persist_report_and_thread(self):
+    def test_single_read_fills_every_part_in_one_turn(self):
         session = self.create_session()
         wait_for(lambda: session.status == "ready")
         wait_for_event(session, "completed")
-        self.assertEqual(self.runtime.turn_count, 4)
+        self.assertEqual(self.runtime.turn_count, 1)  # the paper is read once, not once per pass
         self.assertEqual(session.thread_id, "thread-test")
         self.assertTrue(session.report_path.is_file())
         self.assertEqual(set(session.results), {"pass1", "pass2", "pass3", "synthesis"})
         persisted = json.loads(session.metadata_path.read_text(encoding="utf-8"))
         self.assertEqual(persisted["status"], "ready")
         self.assertEqual(persisted["threadId"], "thread-test")
-        self.assertIn("approximately 250 visible Chinese characters", self.manager._phase_prompt(session, "pass1"))
-        self.assertIn("approximately 600 visible Chinese characters", self.manager._phase_prompt(session, "pass3"))
+        prompt = self.manager._single_read_prompt(session)
+        self.assertIn("single-read mode", prompt)
+        self.assertIn("about 250 visible Chinese characters", prompt)  # Pass 1 target
+        self.assertIn("about 600 visible Chinese characters", prompt)  # Pass 3 target
+        self.assertIn("检查消融实验", prompt)
+        for part in ("pass1", "pass2", "pass3", "synthesis"):
+            self.assertIn(f"<!-- three-pass:{part} -->", prompt)
+            self.assertIn("Evidence-grounded result.", session.results[part])
+            self.assertNotIn("three-pass:", session.results[part])
+        self.assertEqual([e["data"]["phase"] for e in session.events if e["event"] == "phase_completed"],
+                         ["pass1", "pass2", "pass3", "synthesis"])
+        self.assertEqual([e["data"]["phase"] for e in session.events if e["event"] == "phase"], ["reading"])
         self.assertEqual(session.options["phaseLengths"], default_phase_lengths())
 
     def test_custom_phase_lengths_are_frozen_and_language_aware(self):
@@ -533,8 +552,8 @@ class ThreePassManagerTest(unittest.TestCase):
         self.manager.ask(session, "复现风险是什么？")
         wait_for(lambda: len(session.messages) == 1 and session.status == "ready")
         wait_for_event(session, "message")
-        self.assertEqual(self.runtime.turn_count, 5)
-        self.assertIn("Phase 5", session.messages[0]["answer"])
+        self.assertEqual(self.runtime.turn_count, 2)
+        self.assertIn("Phase 2", session.messages[0]["answer"])
         self.assertTrue((session.root / "messages.jsonl").is_file())
 
     def test_api_key_authentication_fails_before_starting_thread(self):
@@ -624,11 +643,11 @@ class ThreePassManagerTest(unittest.TestCase):
         )
         wait_for(lambda: session.status == "ready")
         manager.ask(session, "Can this follow-up be cancelled?")
-        wait_for(lambda: session.active_turn_id == "turn-5")
+        wait_for(lambda: session.active_turn_id == "turn-2")
         manager.cancel(session)
         wait_for(lambda: session.status == "ready" and not session.busy)
         wait_for_event(session, "followup_cancelled")
-        self.assertEqual(runtime.interrupted, ["turn-5"])
+        self.assertEqual(runtime.interrupted, ["turn-2"])
         self.assertEqual(session.messages, [])
 
     def test_stale_sse_cursor_receives_full_snapshot(self):
@@ -717,7 +736,8 @@ class DirectApiThreePassTest(unittest.TestCase):
         session = self.create_session()
         wait_for(lambda: session.status == "ready")
         wait_for_event(session, "completed")
-        self.assertEqual(len(self.client.calls), 4)
+        self.assertEqual(len(self.client.calls), 1)  # one call reads the paper and fills every part
+        self.assertEqual(set(session.results), {"pass1", "pass2", "pass3", "synthesis"})
         self.assertTrue(all(kind == "responses" for kind, _request in self.client.calls))
         self.assertTrue(all(request["store"] is False for _kind, request in self.client.calls))
         metadata = session.metadata_path.read_text(encoding="utf-8")
@@ -744,7 +764,7 @@ class DirectApiThreePassTest(unittest.TestCase):
             prompt="paper",
             options={"reasoningEffort": "high", "maxOutputTokens": 4000, "temperature": 0.2},
         )
-        self.assertEqual(markdown, "# API result 2")
+        self.assertEqual(markdown, parts_markdown("API result 2"))
         self.assertEqual(len(client.calls), 2)
         self.assertTrue(warnings)
         self.assertIsNone(effective["temperature"])
@@ -759,19 +779,41 @@ class DirectApiThreePassTest(unittest.TestCase):
         self.assertGreater(plan["estimatedCalls"], 4)
         self.assertEqual(plan["chunkCount"], len(chunks))
 
-    def test_chunk_prompts_use_compact_internal_notes_and_merge_uses_visible_target(self):
+    def test_chunk_notes_cover_every_part_and_final_call_uses_visible_targets(self):
         session = self.create_session()
-        prompt = self.manager._phase_prompt(
-            session,
-            "pass2",
-            "source",
-            "previous",
-            "1/2",
-            intermediate=True,
-        )
-        self.assertIn("internal chunk note", prompt)
-        self.assertNotIn("approximately 450 visible", prompt)
+        notes = self.manager._single_read_prompt(session, "source", "part 1/2 of the paper", notes=True)
+        self.assertIn("internal notes", notes)
+        self.assertIn("under 250 visible", notes)
+        self.assertNotIn("about 450 visible", notes)
+        final = self.manager._single_read_prompt(session, "notes", "notes from the whole paper", notes=False)
+        self.assertIn("about 450 visible Chinese characters", final)
+        for part in ("pass1", "pass2", "pass3", "synthesis"):
+            self.assertIn(f"<!-- three-pass:{part} -->", notes)
+            self.assertIn(f"<!-- three-pass:{part} -->", final)
         self.assertIn("approximately 450 visible Chinese characters", phase_length_rule(session, "pass2"))
+
+    def test_long_paper_is_read_once_chunk_by_chunk(self):
+        source = "# Long Paper\n\n" + "\n\n".join(f"## Section {i}\n\n" + ("long evidence " * 900) for i in range(6))
+        plan, chunks = build_chunk_plan(source, 8000, 1000)
+        self.assertGreater(len(chunks), 1)
+        session = self.create_session()
+        wait_for(lambda: session.status == "ready")
+        (session.root / "input.md").write_text(source, encoding="utf-8")
+        session.chunk_plan = plan
+        session.results.clear()
+        self.client.calls.clear()
+        self.manager._run_analysis(session)
+        # one notes call per chunk + at most (chunks - 1) condensing calls + one final call
+        self.assertGreaterEqual(len(self.client.calls), len(chunks) + 1)
+        self.assertLessEqual(len(self.client.calls), plan["estimatedCalls"])
+        self.assertEqual(session.status, "ready")
+        self.assertEqual(set(session.results), {"pass1", "pass2", "pass3", "synthesis"})
+
+    def test_missing_part_is_reported_not_silently_saved(self):
+        with self.assertRaises(CodexProtocolError):
+            split_parts("<!-- three-pass:pass1 -->\nonly one part")
+        parts = split_parts("<!-- three-pass:pass1 -->\nA\n<!-- three-pass:pass2 -->\nB\n<!-- three-pass:pass3 -->\nC\n<!-- three-pass:synthesis -->\nD")
+        self.assertEqual(parts, {"pass1": "A", "pass2": "B", "pass3": "C", "synthesis": "D"})
 
 
 class CodexClientEnvironmentTest(unittest.TestCase):
@@ -987,7 +1029,7 @@ class ThreePassApiTest(unittest.TestCase):
         self.assertEqual(listing.get_json()["analyses"][0]["id"], analysis_id)
         report = self.client.get(f"/api/reader/analyses/{analysis_id}/report")
         self.assertEqual(report.status_code, 200)
-        self.assertIn("Phase 4", report.get_data(as_text=True))
+        self.assertIn("Phase 1 · synthesis", report.get_data(as_text=True))
         report.close()
         followup = self.client.post(
             f"/api/reader/analyses/{analysis_id}/messages",
@@ -1291,12 +1333,12 @@ class ThreePassApiTest(unittest.TestCase):
             def __init__(self, pages):
                 self.pages = pages
 
-        with patch.object(web_panel, "PdfReader", return_value=Reader([Page("page one " * 40), Page("page two " * 40)])):
+        with patch.object(web_panel.pdf_core, "PdfReader", return_value=Reader([Page("page one " * 40), Page("page two " * 40)])):
             normalized = web_panel.reader_analysis_input(document)
         self.assertIn("## [Page 1]", normalized)
         self.assertIn("## [Page 2]", normalized)
 
-        with patch.object(web_panel, "PdfReader", return_value=Reader([Page("tiny")])):
+        with patch.object(web_panel.pdf_core, "PdfReader", return_value=Reader([Page("tiny")])):
             with self.assertRaisesRegex(ValueError, "OCR"):
                 web_panel.reader_analysis_input(document)
 

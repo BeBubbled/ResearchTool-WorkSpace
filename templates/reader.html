@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/reader.css?v=20260923-merged-settings-reader">
+  <link rel="stylesheet" href="/static/reader.css?v=20261108-prompts">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
@@ -14,7 +14,7 @@
 <body>
   {% set client_active = "reader" %}{% include "_client_nav.html" %}
   <header class="reader-header">
-    <a class="brand" href="/">← 科研工具箱</a>
+    <span class="brand">Research Toolkit</span>
     <div><p class="eyebrow">PAPER LENS</p><h1>科研论文阅读器</h1></div>
     <p class="header-copy">为机器学习、深度学习、扩散模型与数学理论而设计 · <a href="/settings#mathpix">全局 AI / OCR / 语音 / GitHub 配置</a></p>
   </header>
@@ -248,8 +248,9 @@
           </section>
           <p id="selectionPreview"></p>
           <button id="saveSelectionNote" class="save-selection-note" type="button">＋ 加入阅读笔记</button>
-          <div class="prompt-actions-heading"><strong>Prompt</strong><span>对选区执行</span></div>
+          <div class="prompt-actions-heading"><strong>Prompt</strong><span>对选区执行 · <a href="/prompts?category=%E7%B2%BE%E8%AF%BB%E5%88%92%E9%80%89%E5%8A%A8%E4%BD%9C" target="_blank" rel="noopener">编辑动作</a></span></div>
           <div id="actionButtons" class="action-buttons"></div>
+          <button id="sendSelectionToPrompts" class="prompt-handoff-button" type="button" title="把选区、相邻原文和补充问题带到 Prompt 工作台，再提交到 ChatGPT">送到 ChatGPT（经 Prompt 工作台）↗</button>
         </div>
       </article>
 
@@ -358,6 +359,7 @@
       <button id="readerPanelBackdrop" class="reader-panel-backdrop" type="button" aria-label="关闭侧边面板"></button>
     </section>
   </main>
-  <script src="/static/reader.js?v=20261108-client-shell"></script>
+  <script src="/static/prompt_handoff.js?v=1"></script>
+  <script src="/static/reader.js?v=20261108-single-read"></script>
 </body>
 </html>

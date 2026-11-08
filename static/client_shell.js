@@ -58,7 +58,7 @@
     const toast = document.createElement("div");
     toast.className = "client-toast";
     toast.setAttribute("role", "status");
-    toast.innerHTML = `<span>设置已保存。部分改动需刷新当前页面后生效。</span><button type="button" data-reload>刷新页面</button><button type="button" class="quiet" data-dismiss>稍后</button>`;
+    toast.innerHTML = `<span>设置已保存，AI 引擎状态已自动更新；其他改动刷新页面后生效。</span><button type="button" data-reload>刷新页面</button><button type="button" class="quiet" data-dismiss>稍后</button>`;
     toast.querySelector("[data-reload]").addEventListener("click", () => location.reload());
     toast.querySelector("[data-dismiss]").addEventListener("click", () => toast.remove());
     document.body.append(toast);

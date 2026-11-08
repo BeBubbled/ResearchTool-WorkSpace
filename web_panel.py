@@ -51,6 +51,9 @@ from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, 
 from claude_code_cli import ClaudeCodeRunner
 from google_translate import GoogleTranslator
 from local_paths import LocalPathService, create_local_paths_blueprint
+import pdf_core
+from pdf_core import PdfError
+from engines import EngineCatalog
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
@@ -73,10 +76,6 @@ try:
 except ImportError:  # Dependency checks keep the rest of the panel usable.
     OpenAI = None  # type: ignore[assignment,misc]
 
-try:
-    from pypdf import PdfReader
-except ImportError:  # Filename fallback keeps the reader usable without it.
-    PdfReader = None  # type: ignore[assignment,misc]
 
 from sheet_to_anki import SheetToAnkiError, clean_cell, read_table, require_columns
 
@@ -6448,31 +6447,10 @@ def reader_source_artifact(job: Job) -> Path:
 
 
 def reader_source_cache_key(source: Path) -> str:
-    digest = hashlib.sha256()
-    digest.update(f"reader-cache-v{READER_CACHE_SCHEMA_VERSION}\0{source.suffix.lower()}\0".encode())
-    with source.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return pdf_core.file_fingerprint(source, f"reader-cache-v{READER_CACHE_SCHEMA_VERSION}\0{source.suffix.lower()}\0")
 
 
-def clean_reader_title(value: Any) -> str | None:
-    title = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value or ""))
-    title = re.sub(r"\s+", " ", title).strip(" \t\r\n-–—_|")
-    if not title or len(title) > 500:
-        return None
-    if (
-        re.fullmatch(
-            r"[{(]?[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[})]?",
-            title,
-            flags=re.IGNORECASE,
-        )
-        or re.fullmatch(r"[0-9a-f]{24,64}", title, flags=re.IGNORECASE)
-    ):
-        return None
-    if title.casefold() in {"untitled", "document", "pdf", "mathpix", "ocr document", "ocr 文档"}:
-        return None
-    return title
+clean_reader_title = pdf_core.clean_title
 
 
 def reader_source_display_title(source_name: str) -> str | None:
@@ -6487,13 +6465,7 @@ def reader_source_display_title(source_name: str) -> str | None:
 
 
 def pdf_document_title(source: Path) -> str | None:
-    if PdfReader is None:
-        return None
-    try:
-        metadata = PdfReader(str(source), strict=False).metadata
-        return clean_reader_title(metadata.title if metadata else None)
-    except Exception:
-        return None
+    return pdf_core.pdf_title(source)
 
 
 def cached_ocr_html_title(source: Path) -> str | None:
@@ -7767,12 +7739,15 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
         if job.tool.id == "pdf_ocr_translate":
             job.source_stem = safe_output_stem(upload.filename or relative.name)
             target = input_dir / f"{job.source_stem}.pdf"
-            upload.save(target)
+            pdf_core.save_pdf_upload(upload.stream, target)
             continue
         work_name = safe_work_name(str(item.get("workName") or relative.stem), suffix)
         target = input_dir / relative.parent / f"{index:04d}_{work_name}"
         target.parent.mkdir(parents=True, exist_ok=True)
-        upload.save(target)
+        if suffix == ".pdf":
+            pdf_core.save_pdf_upload(upload.stream, target)
+        else:
+            upload.save(target)
         if needs_ordered_copies:
             shutil.copyfile(target, ordered_dir / target.name)
 
@@ -7936,6 +7911,19 @@ def test_claude_code_config():
     return jsonify({"claude": paper_revision_claude_runner.status(), "test": result})
 app.register_blueprint(create_paper_revision_blueprint(paper_revision_service))
 
+engine_catalog = EngineCatalog(
+    claude_status=paper_revision_claude_runner.status,
+    codex_status=codex_status_with_preferences,
+    google_status=paper_revision_google.status,
+    llm_presets=public_llm_presets,
+)
+
+
+@app.get("/api/engines")
+def list_engines():
+    """Unified, non-secret status of every AI engine (Claude Code, Codex, Google, API presets)."""
+    return jsonify({"engines": engine_catalog.snapshot(refresh=request.args.get("refresh") == "1")})
+
 
 def research_studio_paper_source(cache_key: str) -> Path | None:
     """Use an original cached PDF, including PDFs whose reading view uses OCR."""
@@ -7999,25 +7987,14 @@ def health():
     return render_template("health.html")
 
 
-READER_ACTIONS = {
-    "translate": "翻译选区：忠实翻译为简体中文，保留 LaTeX、变量名、引用编号、代码和专有名词；必要时在译文后用一句话说明关键术语。",
-    "explain": "解释选区：先给一句结论，再逐句解释术语、变量和逻辑；优先给机器学习论文中的具体含义。",
-    "three_pass": (
-        "Three-Pass 解读：在一次回答中完成三个层次的精简阅读，不要拆成多次请求。"
-        "严格使用 `## Pass 1 · 快速定位`、`## Pass 2 · 结构与证据`、`## Pass 3 · 深读与批判` 三个小标题。"
-        "Pass 1 只说明选区主题、目的及其在章节中的位置，不超过 120 个汉字；"
-        "Pass 2 连接核心主张、方法步骤、公式/证据与必要假设，不超过 220 个汉字；"
-        "Pass 3 指出深层含义、潜在缺口、失效条件或复现问题，不超过 260 个汉字。"
-        "总回答不超过 700 个汉字；每层最多 3 个要点，不复述同一内容。"
-    ),
-    "formula": "解释公式：列出所有符号及张量形状/取值域，说明每一项的作用、输入输出、假设和训练/推理时的意义。",
-    "geometry": "解释公式的几何意义：明确向量/参数/概率分布所处的空间，说明方向、距离、角度、投影、流形或优化几何；没有严格几何解释时要直说并给直觉。",
-    "derivation": "推导这一步：从可见的前提开始，逐行给出代数、概率或微积分变形；指出使用的恒等式、近似或条件，不能凭空补全未给出的前提。",
-    "summary": "总结选区和相邻上下文：说明问题、方法、关键机制、结论以及它在整篇论文中的作用。",
-    "intuition": "给出直觉解释：使用一个小型数值、二维几何或训练过程例子，但不要改变原公式或暗示未证实结论。",
-    "assumptions": "批判性阅读：识别显式/隐式假设、潜在失效情形、计算代价、数据分布要求与需要实验验证的主张。",
-    "implementation": "转换为实现视角：说明张量形状、伪代码步骤、数值稳定性、常用默认值和在 PyTorch/JAX 中容易出错的位置。",
-}
+def reader_action_instruction(action: str) -> str | None:
+    """Selection actions live in the Prompt library (built-in, editable in /prompts)."""
+    item = prompt_workbench.reader_action(action)
+    return f"{item['title']}：{item['content']}" if item else None
+
+
+def reader_action_list() -> list[dict[str, str]]:
+    return [{"id": item["action"], "label": item["title"]} for item in prompt_workbench.reader_actions()]
 
 
 def reader_llm_config(data: dict[str, Any]) -> dict[str, Any]:
@@ -8112,7 +8089,7 @@ def write_reader_live_translation(
 def ask_reader_llm(config: dict[str, Any], action: str, selection: str, block: dict[str, Any], context: list[dict[str, Any]], custom_question: str) -> str:
     if OpenAI is None:
         raise RuntimeError("The OpenAI Python SDK is not installed.")
-    instruction = READER_ACTIONS.get(action)
+    instruction = reader_action_instruction(action)
     if not instruction:
         raise ValueError("Unsupported reader action.")
     context_text = "\n\n".join(
@@ -8258,25 +8235,23 @@ def reader_analysis_input(document: ReaderDocument) -> str:
         f"render kind: {document.render_kind}.\n\n"
     )
     if document.render_kind == "pdf":
-        if PdfReader is None:
-            raise RuntimeError("pypdf 未安装，无法为 Codex 提取 PDF 文字。")
         if not document.source_filename:
             raise RuntimeError("PDF 原文件不可用。")
         source = document.root / "input" / document.source_filename
         if not source.is_file():
             raise RuntimeError("PDF 原文件不可用。")
         try:
-            reader = PdfReader(str(source), strict=False)
-            pages = []
-            readable_characters = 0
-            for index, page in enumerate(reader.pages, start=1):
-                text = (page.extract_text() or "").strip()
-                readable_characters += len(re.sub(r"\s+", "", text))
-                pages.append(f"## [Page {index}]\n\n{text or '[No readable text extracted on this page]'}")
+            texts = pdf_core.extract_pages(source)
+        except PdfError:
+            raise
         except Exception as exc:
             raise RuntimeError(f"无法提取 PDF 文字：{exc}") from exc
+        pages = [
+            f"## [Page {index}]\n\n{text or '[No readable text extracted on this page]'}"
+            for index, text in enumerate(texts, start=1)
+        ]
         minimum = max(300, len(pages) * 40)
-        if readable_characters < minimum:
+        if pdf_core.readable_characters(texts) < minimum:
             raise ValueError("PDF 没有足够稳定的文字层。请重新导入并开启 OCR 后再运行 Three-Pass。")
         return header + "\n\n".join(pages)
     if document.render_kind == "html":
@@ -8620,7 +8595,7 @@ def download_reader_analysis_report(analysis_id: str):
 def reader_config():
     return jsonify({
         "llmPresets": public_llm_presets(),
-        "actions": [{"id": key, "label": label.split("：", 1)[0]} for key, label in READER_ACTIONS.items()],
+        "actions": reader_action_list(),
         "speech": public_azure_speech_config(),
         "readerFeatureVersion": READER_FEATURE_VERSION,
         "readerUpdatePolicy": READER_UPDATE_POLICY,
@@ -8995,6 +8970,14 @@ def reader_format_family(suffix: str) -> str | None:
     return None
 
 
+def save_reader_upload(upload: Any, destination: Path) -> None:
+    """PDFs go through the shared validator (magic bytes, size limit); other formats are saved as-is."""
+    if destination.suffix.lower() == ".pdf":
+        pdf_core.save_pdf_upload(upload.stream, destination)
+    else:
+        upload.save(destination)
+
+
 @app.post("/api/reader/documents")
 def create_reader_document():
     uploaded = request.files.get("file")
@@ -9081,7 +9064,7 @@ def create_reader_document():
         input_dir = root / "input"
         input_dir.mkdir(parents=True, exist_ok=True)
         destination = input_dir / safe_work_name(uploaded.filename, suffix)
-        uploaded.save(destination)
+        save_reader_upload(uploaded, destination)
         asset_uploads = request.files.getlist("assets")
         if asset_uploads and source_type not in {"markdown", "html"}:
             raise ValueError("Only Markdown, MMD, and HTML documents can include a separate image directory.")
@@ -9102,7 +9085,7 @@ def create_reader_document():
                 translated_name = f"{Path(translated_name).stem}_translated{translated_suffix}"
             translated_destination = output_dir / translated_name
             translated_destination.parent.mkdir(parents=True, exist_ok=True)
-            translated_upload.save(translated_destination)
+            save_reader_upload(translated_upload, translated_destination)
             document.translated_filename = translated_destination.relative_to(output_dir).as_posix()
         saved_assets: set[Path] = set()
         for asset, item in zip(asset_uploads, asset_manifest):

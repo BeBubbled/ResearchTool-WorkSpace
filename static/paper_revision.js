@@ -534,18 +534,14 @@
     if (!engineOptions) return;
     renderSession();
     const workflow = Workflow.read($('workflowEditor'));
-    const used = new Set(Object.entries(workflow).filter(([stage]) => stage !== 'translate_fallback' || workflow.translate.engine === 'google').map(([, item]) => item.engine));
     $('workflowSummary').textContent = `翻译 ${Workflow.describe(engineOptions, workflow.translate)}` +
       (workflow.translate.engine === 'google' ? `（补译 ${Workflow.describe(engineOptions, workflow.translate_fallback)}）` : '') +
       ` · 修订 ${Workflow.describe(engineOptions, workflow.revise)}${workflowTouched ? ' · 本次已改动' : ''}`;
-    const notes = [];
-    if (used.has('claude') && !engineOptions.claude?.plan) notes.push(engineOptions.claude?.error || 'Claude Code 未登录');
-    if (used.has('codex') && !engineOptions.codex?.ready) notes.push('Codex 未登录');
-    if (used.has('google') && !engineOptions.google?.configured) notes.push('Google 翻译未配置 Key');
-    $('workflowHint').replaceChildren(notes.length ? `⚠ ${notes.join('；')} · ` : '默认值来自 ',
-      settingsLink(notes.length ? 'claude' : 'workflow', notes.length ? '前往全局设置' : '全局设置 → 双语改稿'),
-      notes.length ? '' : '；这里的改动只对当次会话有效。');
-    $('workflowHint').classList.toggle('warning', notes.length > 0);
+    const issues = window.EnginePicker.issues(engineOptions, Workflow.usedEngines(workflow));
+    $('workflowHint').replaceChildren(issues.length ? `⚠ ${issues.map(i => i.message).join('；')} · ` : '默认值来自 ',
+      settingsLink(issues.length ? issues[0].settingsTab : 'workflow', issues.length ? '前往全局设置' : '全局设置 → 双语改稿'),
+      issues.length ? '' : '；这里的改动只对当次会话有效。');
+    $('workflowHint').classList.toggle('warning', issues.length > 0);
     $('billing').textContent = Workflow.billing(workflow) || '所选引擎';
   }
   $('translateToggle').addEventListener('change', async () => {
@@ -556,6 +552,9 @@
   });
   $('usage').addEventListener('change', () => { if (project) renderControls(); });
   $('projectSelect').addEventListener('change', () => { clearTimeout(pollTimer); clearError(); if ($('projectSelect').value) openProject($('projectSelect').value).catch(fail); });
+  // Settings drawer saved (e.g. logged in to Claude, added a Google key) → refresh engines without a reload.
+  // EnginePicker already refreshed the engine caches server-side, so a plain read is current.
+  window.EnginePicker.onChange(() => { api(base).then(r => setEngineOptions(r.options)).catch(() => {}); });
   $('refresh').addEventListener('click', () => {
     clearError();
     api(`${base}?refresh=1`).then(r => setEngineOptions(r.options)).catch(() => {});
@@ -726,6 +725,27 @@
     if (($('commentDialog').open && $('commentText').value.trim()) || commentsUnexported()) { e.preventDefault(); e.returnValue = ''; }
   });
   $('exportComments').addEventListener('click', () => { setTimeout(() => load(project.id, true).catch(() => {}), 800); });
+  // Second opinion from ChatGPT: comments + current English source go to the Prompt workbench (it owns the bridge).
+  function sendCommentsToPrompts() {
+    if (!project || !window.PromptHandoff) return;
+    if (!project.comments.length) { fail(new Error('本轮还没有批注。先在中文或英文上圈选文字添加批注，再送到 ChatGPT。')); return; }
+    const sideName = {zh: '中文对照', en: '英文原文'};
+    const blocks = project.comments.map((comment, index) => {
+      const sides = [...new Set(comment.anchors.map(a => sideName[a.side || 'zh']))].join(' / ');
+      const quote = comment.anchors.map(a => a.quote).join(' … ');
+      return `【批注 ${index + 1}】（${sides} · 范围：${scopes[comment.scope] || comment.scope}）\n引用：「${quote}」\n批注：${comment.text}`;
+    });
+    const text = [
+      `请审阅论文《${project.title}》（v${project.revision}）的以下修改批注。对每条批注，给出对应英文句子的修改建议：保留 LaTeX 命令、引用键和公式，只改与批注相关的内容，并用中文简要说明理由。附件 ZIP 中的 source/ 是当前英文 LaTeX 原稿。`,
+      ...blocks,
+    ].join('\n\n');
+    const safeTitle = (project.title || 'paper').replace(/[\\/:*?"<>|\s]+/g, ' ').trim().slice(0, 100) || 'paper';
+    try {
+      window.PromptHandoff.send({text, source: {label: '双语改稿', title: project.title},
+        attachments: [{name: `${safeTitle}-v${project.revision}.zip`, url: `${base}/${encodeURIComponent(project.id)}/export?revision=${project.revision}`}]});
+    } catch (error) { fail(error); }
+  }
+  $('sendCommentsToPrompts').addEventListener('click', sendCommentsToPrompts);
   $('importComments').addEventListener('click', () => $('importCommentsFile').click());
   $('importCommentsFile').addEventListener('change', async () => {
     const file = $('importCommentsFile').files[0]; $('importCommentsFile').value = '';

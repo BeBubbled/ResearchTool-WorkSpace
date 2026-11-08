@@ -28,6 +28,7 @@ from google_translate import MAX_REQUEST_CHARS, MAX_SEGMENTS, GoogleTranslateErr
 from claude_code_cli import EFFORTS as CLAUDE_EFFORTS, MODELS as CLAUDE_MODELS
 from latex_display import collect_macros, prettify
 from claude_project import find_claude_project
+import engines
 from claude_code_cli import ClaudeSessionMissing
 
 TOKEN = re.compile(r"⟦L\d{6}⟧")
@@ -989,18 +990,14 @@ class PaperRevision:
             defaults = workflow_shape(self.workflow_defaults())
         except ValueError:
             defaults = copy.deepcopy(DEFAULT_WORKFLOW)
-        claude = self.claude_status(refresh=refresh)
         return {
             "stages": [{"id": key, "label": spec["label"], "engines": list(spec["engines"])} for key, spec in STAGES.items()],
             "defaults": defaults, "recommended": DEFAULT_WORKFLOW,
-            "claude": {k: claude.get(k) for k in ("available", "plan", "subscriptionType", "error", "models", "efforts")},
-            "codex": {"ready": bool(codex.get("chatgptAuthenticated") and codex.get("defaultModel")),
-                      "defaultModel": codex.get("defaultModel") or "", "defaultEffort": codex.get("defaultReasoningEffort") or "",
-                      "models": [{"id": m.get("id"), "label": m.get("displayName") or m.get("id"),
-                                  "efforts": [str(e) for e in m.get("supportedEfforts") or []]}
-                                 for m in codex.get("models") or [] if isinstance(m, dict) and m.get("id")]},
-            "api": [{"id": p["id"], "name": p.get("name") or p["id"], "model": p.get("model", "")} for p in self.llm_presets()],
-            "google": self.google_status(),
+            # Same shapes as GET /api/engines, so the shared picker reads both.
+            "claude": engines.normalize_claude(self.claude_status(refresh=refresh)),
+            "codex": engines.normalize_codex(codex),
+            "api": engines.normalize_api(self.llm_presets()),
+            "google": engines.normalize_google(self.google_status()),
         }
 
     def save_workflow_defaults(self, data):

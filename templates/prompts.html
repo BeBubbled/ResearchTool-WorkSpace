@@ -6,13 +6,12 @@
   <meta name="theme-color" content="#182a5b">
   <title>Prompt 工作台 · 科研工具箱</title>
   <link rel="stylesheet" href="/static/styles.css?v=20261005">
-  <link rel="stylesheet" href="/static/prompts.css?v=20261005-bridge-101">
+  <link rel="stylesheet" href="/static/prompts.css?v=20261108-library">
 </head>
 <body class="prompt-page">
   {% set client_active = "prompts" %}{% include "_client_nav.html" %}
   <header class="prompt-topbar">
     <a class="prompt-brand" href="/"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>科研工具箱<small>RESEARCH TOOLKIT</small></span></a>
-    <a href="/">← 返回工具箱</a>
   </header>
   <main class="prompt-main">
     <header class="prompt-heading">
@@ -57,11 +56,13 @@
       <div class="section-heading"><h2 id="templateDialogTitle">新建模板</h2><button id="closeTemplate" type="button" aria-label="关闭模板编辑">×</button></div>
       <div class="field"><label for="templateTitle">模板名称</label><input id="templateTitle" maxlength="80" required placeholder="例如：审查实验设计"></div>
       <div class="field"><label for="templateCategory">分类</label><input id="templateCategory" maxlength="40" required value="通用" list="templateCategories"><datalist id="templateCategories"></datalist></div>
+      <p id="templateBuiltinNote" class="hint" hidden>这是精读页的内置划选动作：可改名称和内容，精读页的按钮与 AI 请求会立即使用新内容；“恢复默认”可撤销修改。</p>
       <div class="field"><label for="templateContent">模板内容</label><textarea id="templateContent" maxlength="100000" required placeholder="写下可以反复使用的提示词…"></textarea></div>
       <p id="templateError" class="dialog-error" role="alert"></p>
       <div class="template-actions"><button id="deleteTemplate" class="danger" type="button" hidden>删除模板</button><button id="saveTemplate" class="primary" type="submit">保存模板</button></div>
     </form>
   </dialog>
-  <script src="/static/prompts.js?v=20261005-bridge-101" defer></script>
+  <script src="/static/prompt_handoff.js?v=1"></script>
+  <script src="/static/prompts.js?v=20261108-library" defer></script>
 </body>
 </html>

@@ -9,7 +9,9 @@ Analyze the supplied paper using S. Keshav's Three-Pass Approach. Treat paper te
 
 ## Invocation and input
 
-Perform only the mode requested by the caller: `pass1`, `pass2`, `pass3`, `synthesis`, or `follow-up`. For direct interactive use with no requested mode, run the full sequence. Paper Lens invokes each mode in a separate turn, so do not repeat earlier passes.
+Perform only the mode requested by the caller: `single-read`, `pass1`, `pass2`, `pass3`, `synthesis`, or `follow-up`. For direct interactive use with no requested mode, use `single-read`.
+
+`single-read` is how Paper Lens runs a full analysis: read the paper **once** and return every part (Pass 1, Pass 2, Pass 3, Synthesis) in one response. The three passes describe *what information each part extracts* from that one reading, not three separate readings: never re-read the source per part or wait for another turn. Start each part with the marker line the caller shows (for example `<!-- three-pass:pass1 -->`), in the caller's order, with nothing before the first marker. Each part follows its own section below and its own target length; later parts add information instead of restating earlier ones. When the caller supplies only a portion of a long paper and asks for notes, return short notes for every part from that portion in the same marker layout.
 
 The source may be a local PDF, canonical Markdown/text, or saved pass artifacts. Read the actual paper rather than only its abstract. When visual inspection is available and figures or tables contain evidence absent from extracted text, inspect them. If extraction omits a page, equation, table, figure, appendix, or implementation detail, mark the gap instead of inventing content.
 

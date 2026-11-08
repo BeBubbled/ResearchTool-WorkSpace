@@ -542,7 +542,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(options["defaults"]["translate"], {"engine": "google"})
         self.assertEqual(options["defaults"]["context"], {"engine": "codex", "model": "", "effort": ""})
         self.assertEqual([s["id"] for s in options["stages"]], list(DEFAULT_WORKFLOW))
-        self.assertEqual(options["api"], [{"id": "test", "name": "test", "model": "api-model"}])
+        self.assertEqual([{k: p[k] for k in ("id", "name", "model")} for p in options["api"]], [{"id": "test", "name": "test", "model": "api-model"}])
         bad = self.client.put("/api/paper-revision/workflow", headers=HEADERS, json={"workflow": {"revise": {"engine": "google"}}})
         self.assertEqual(bad.status_code, 400)
         listing = self.client.get("/api/paper-revision/projects", headers=HEADERS).get_json()

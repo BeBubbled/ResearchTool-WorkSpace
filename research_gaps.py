@@ -27,10 +27,8 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Blueprint, Response, jsonify, request
 
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None  # type: ignore[assignment,misc]
+import pdf_core
+from pdf_core import MAX_PDF_BYTES, PdfError
 
 
 SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org/graph/v1"
@@ -39,7 +37,6 @@ SEMANTIC_SCHOLAR_FIELDS = (
     "paperId,title,abstract,year,venue,authors,url,externalIds,openAccessPdf,"
     "publicationDate,citationCount,referenceCount"
 )
-MAX_PDF_BYTES = 50 * 1024 * 1024
 MAX_ANALYSIS_CHARS = 96_000
 ANALYSIS_CHUNK_CHARS = 10_000
 MIN_FULLTEXT_CHARS = 2_000
@@ -153,37 +150,15 @@ def split_text(text: str, chunk_chars: int = ANALYSIS_CHUNK_CHARS) -> list[str]:
     return chunks[:max_chunks]
 
 
-def pdf_metadata_authors(value: Any) -> list[str]:
-    raw = clean_text(value, 2_000)
-    if not raw:
-        return []
-    return list(dict.fromkeys(
-        author for author in (clean_text(item, 300) for item in re.split(r"\s*(?:;|\band\b)\s*", raw, flags=re.I))
-        if author
-    ))[:50]
-
-
 def valid_pdf_title(value: Any, fallback: str) -> str:
-    title = clean_text(value, 1_000)
-    generic = {"untitled", "document", "pdf", "microsoft word", "acrobat distiller"}
-    if not title or normalized_title(title) in generic:
-        return clean_text(fallback, 1_000) or "未命名论文"
-    return title
+    return pdf_core.clean_title(clean_text(value, 1_000), 1_000) or clean_text(fallback, 1_000) or "未命名论文"
 
 
 def extract_pdf_document(path: Path) -> tuple[str, int, str, list[str]]:
-    if PdfReader is None:
-        raise RuntimeError("pypdf is required to extract PDF text.")
-    reader = PdfReader(str(path), strict=False)
-    if reader.is_encrypted:
-        try:
-            if reader.decrypt("") == 0:
-                raise ValueError("PDF 已加密，无法读取。")
-        except Exception as exc:
-            raise ValueError("PDF 已加密，无法读取。") from exc
+    reader = pdf_core.open_pdf(path)
     metadata = reader.metadata
     title = valid_pdf_title(getattr(metadata, "title", "") if metadata else "", path.stem)
-    authors = pdf_metadata_authors(getattr(metadata, "author", "") if metadata else "")
+    authors = pdf_core.split_authors(getattr(metadata, "author", "") if metadata else "")
     pages: list[str] = []
     for index, page in enumerate(reader.pages):
         content = clean_multiline(page.extract_text() or "", 100_000)
@@ -200,11 +175,7 @@ def extract_pdf_text(path: Path) -> tuple[str, int]:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return pdf_core.file_fingerprint(path)
 
 
 def extract_local_text(path: Path, render_kind: str) -> tuple[str, str]:
@@ -258,27 +229,13 @@ def download_pdf(url: str, destination: Path, session: requests.Session | None =
         response.raise_for_status()
         declared = int(response.headers.get("Content-Length") or 0)
         if declared > MAX_PDF_BYTES:
-            raise ValueError("Open-access PDF is larger than 50 MB.")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(".download")
-        total = 0
-        prefix = b""
+            raise pdf_core.size_error(MAX_PDF_BYTES)
         try:
-            with temporary.open("wb") as handle:
-                for chunk in response.iter_content(64 * 1024):
-                    if not chunk:
-                        continue
-                    if not prefix:
-                        prefix = chunk[:5]
-                    total += len(chunk)
-                    if total > MAX_PDF_BYTES:
-                        raise ValueError("Open-access PDF is larger than 50 MB.")
-                    handle.write(chunk)
-            if prefix != b"%PDF-":
-                raise ValueError("Open-access URL did not return a PDF file.")
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+            pdf_core.copy_pdf_stream(response.iter_content(64 * 1024), destination, max_bytes=MAX_PDF_BYTES)
+        except PdfError as exc:
+            if exc.code in {"not_pdf", "empty"}:
+                raise ValueError("Open-access URL did not return a PDF file.") from exc
+            raise
         return destination
     raise ValueError("Open-access PDF redirected too many times.")
 

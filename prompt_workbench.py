@@ -37,6 +37,30 @@ DEFAULT_TEMPLATES = [
     {"id": "format", "title": "结构化回答", "category": "输出要求", "content": "请使用中文回答，先给结论，再解释依据。必要时使用表格、示例和 LaTeX 公式；明确区分事实、推断与尚不确定的内容。"},
 ]
 
+# 文献精读的划选动作。它们是 Prompt 库里的内置模板（id 前缀 "reader:"）：可以在 Prompt 工作台里
+# 改名称和内容（保存为本机覆盖），删除即恢复默认；精读页的划选按钮和 AI 请求都读这里。
+READER_ACTION_CATEGORY = "精读划选动作"
+READER_ACTION_PREFIX = "reader:"
+READER_ACTION_DEFAULTS = {
+    "translate": ("翻译选区", "忠实翻译为简体中文，保留 LaTeX、变量名、引用编号、代码和专有名词；必要时在译文后用一句话说明关键术语。"),
+    "explain": ("解释选区", "先给一句结论，再逐句解释术语、变量和逻辑；优先给机器学习论文中的具体含义。"),
+    "three_pass": ("Three-Pass 解读", (
+        "在一次回答中完成三个层次的精简阅读，不要拆成多次请求。"
+        "严格使用 `## Pass 1 · 快速定位`、`## Pass 2 · 结构与证据`、`## Pass 3 · 深读与批判` 三个小标题。"
+        "Pass 1 只说明选区主题、目的及其在章节中的位置，不超过 120 个汉字；"
+        "Pass 2 连接核心主张、方法步骤、公式/证据与必要假设，不超过 220 个汉字；"
+        "Pass 3 指出深层含义、潜在缺口、失效条件或复现问题，不超过 260 个汉字。"
+        "总回答不超过 700 个汉字；每层最多 3 个要点，不复述同一内容。"
+    )),
+    "formula": ("解释公式", "列出所有符号及张量形状/取值域，说明每一项的作用、输入输出、假设和训练/推理时的意义。"),
+    "geometry": ("解释公式的几何意义", "明确向量/参数/概率分布所处的空间，说明方向、距离、角度、投影、流形或优化几何；没有严格几何解释时要直说并给直觉。"),
+    "derivation": ("推导这一步", "从可见的前提开始，逐行给出代数、概率或微积分变形；指出使用的恒等式、近似或条件，不能凭空补全未给出的前提。"),
+    "summary": ("总结选区和相邻上下文", "说明问题、方法、关键机制、结论以及它在整篇论文中的作用。"),
+    "intuition": ("给出直觉解释", "使用一个小型数值、二维几何或训练过程例子，但不要改变原公式或暗示未证实结论。"),
+    "assumptions": ("批判性阅读", "识别显式/隐式假设、潜在失效情形、计算代价、数据分布要求与需要实验验证的主张。"),
+    "implementation": ("转换为实现视角", "说明张量形状、伪代码步骤、数值稳定性、常用默认值和在 PyTorch/JAX 中容易出错的位置。"),
+}
+
 
 class PromptWorkbench:
     def __init__(self, root: Path, extension_dir: Path):
@@ -57,6 +81,59 @@ class PromptWorkbench:
         staging = path.with_suffix(".tmp")
         staging.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
         staging.replace(path)
+
+    # ---- built-in reader actions (with local overrides) ----
+    def _action_overrides(self) -> dict:
+        path = self.root / "reader_actions.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, ValueError):
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _save_action_overrides(self, overrides: dict) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / "reader_actions.json"
+        staging = path.with_suffix(".tmp")
+        staging.write_text(json.dumps(overrides, ensure_ascii=False, indent=2), encoding="utf-8")
+        staging.replace(path)
+
+    def reader_actions(self) -> list[dict]:
+        """Every reader action as a library template: builtin, editable, resettable."""
+        overrides = self._action_overrides()
+        items = []
+        for action, (title, content) in READER_ACTION_DEFAULTS.items():
+            custom = overrides.get(action) if isinstance(overrides.get(action), dict) else {}
+            items.append({
+                "id": READER_ACTION_PREFIX + action, "action": action,
+                "title": custom.get("title") or title, "category": READER_ACTION_CATEGORY,
+                "content": custom.get("content") or content,
+                "builtin": True, "scope": "reader", "customized": bool(custom),
+            })
+        return items
+
+    def reader_action(self, action: str) -> dict | None:
+        return next((item for item in self.reader_actions() if item["action"] == action), None)
+
+    def set_reader_action(self, action: str, title: str, content: str) -> dict:
+        default_title, default_content = READER_ACTION_DEFAULTS[action]
+        overrides = self._action_overrides()
+        custom = {key: value for key, value, default in (("title", title, default_title), ("content", content, default_content)) if value != default}
+        if custom:
+            overrides[action] = custom
+        else:
+            overrides.pop(action, None)
+        self._save_action_overrides(overrides)
+        return self.reader_action(action)
+
+    def reset_reader_action(self, action: str) -> dict:
+        overrides = self._action_overrides()
+        overrides.pop(action, None)
+        self._save_action_overrides(overrides)
+        return self.reader_action(action)
+
+    def library(self) -> list[dict]:
+        return [*self.templates(), *self.reader_actions()]
 
     def cleanup(self):
         """Called on workbench access; abandoned uploads also expire after restart."""
@@ -157,7 +234,15 @@ def create_prompt_blueprint(service: PromptWorkbench):
     @bp.get("/api/prompts/templates")
     def list_templates():
         with service.lock:
-            return jsonify(templates=service.templates(), maxFiles=MAX_FILES, maxBytes=MAX_BYTES, maxPrompt=MAX_PROMPT)
+            return jsonify(templates=service.library(), maxFiles=MAX_FILES, maxBytes=MAX_BYTES, maxPrompt=MAX_PROMPT)
+
+    def builtin_action(template_id):
+        if not template_id.startswith(READER_ACTION_PREFIX):
+            return None
+        action = template_id[len(READER_ACTION_PREFIX):]
+        if action not in READER_ACTION_DEFAULTS:
+            abort(404, description="模板不存在。")
+        return action
 
     @bp.post("/api/prompts/templates")
     def add_template():
@@ -171,7 +256,15 @@ def create_prompt_blueprint(service: PromptWorkbench):
 
     @bp.put("/api/prompts/templates/<template_id>")
     def edit_template(template_id):
-        fields = template_fields(json_object())
+        data = json_object()
+        action = builtin_action(template_id)
+        if action:  # builtin: name and content are editable, category is fixed
+            fields = template_fields({**data, "category": READER_ACTION_CATEGORY})
+            if len(fields["content"]) > 4000:
+                abort(400, description="精读动作的内容不能超过 4000 字符。")
+            with service.lock:
+                return jsonify(template=service.set_reader_action(action, fields["title"], fields["content"]))
+        fields = template_fields(data)
         with service.lock:
             items = service.templates()
             item = next((row for row in items if row["id"] == template_id), None)
@@ -183,6 +276,10 @@ def create_prompt_blueprint(service: PromptWorkbench):
 
     @bp.delete("/api/prompts/templates/<template_id>")
     def delete_template(template_id):
+        action = builtin_action(template_id)
+        if action:  # builtins are never removed; deleting resets them to the default text
+            with service.lock:
+                return jsonify(ok=True, template=service.reset_reader_action(action))
         with service.lock:
             items = service.templates()
             if not any(row["id"] == template_id for row in items):

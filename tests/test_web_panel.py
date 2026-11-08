@@ -189,6 +189,7 @@ class ToolboxApiTest(unittest.TestCase):
                 self.assertEqual(html.count('class="client-rail"'), 1)
                 self.assertIn(f'data-client-nav="{key}" aria-current="page"', html)
                 self.assertIn("/static/client_shell.js", html)
+                self.assertIn("/static/engine_picker.js", html)
                 self.assertNotIn("/#settings/", html)
                 self.assertNotIn("/#llm-settings", html)
 
@@ -201,6 +202,35 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertIn("settings-embedded", embedded)
         self.assertNotIn('class="client-rail"', embedded)
         self.assertNotIn("/static/client_shell.js", embedded)
+        self.assertIn("/static/engine_picker.js", embedded)
+
+    def test_engines_endpoint_merges_every_engine_without_secrets(self) -> None:
+        catalog = web_panel.EngineCatalog(
+            claude_status=lambda refresh=False: {"available": True, "plan": True, "models": [{"id": "opus", "label": "Opus"}], "efforts": ["high"]},
+            codex_status=lambda refresh=False: {"chatgptAuthenticated": False, "error": "codex login needed"},
+            google_status=lambda: {"configured": True},
+            llm_presets=lambda: [{"id": "p1", "name": "Preset", "model": "m", "apiKey": "sk-secret", "baseUrl": "https://x"}],
+        )
+        with patch.object(web_panel, "engine_catalog", catalog):
+            response = self.client.get("/api/engines")
+        self.assertEqual(response.status_code, 200)
+        engines = response.get_json()["engines"]
+        self.assertTrue(engines["claude"]["ready"])
+        self.assertFalse(engines["codex"]["ready"])
+        self.assertEqual(engines["codex"]["error"], "codex login needed")
+        self.assertTrue(engines["google"]["ready"])
+        self.assertEqual(engines["api"][0]["id"], "p1")
+        self.assertEqual(sorted(engines["ready"]), ["api", "claude", "google"])
+        self.assertNotIn("sk-secret", response.get_data(as_text=True))
+
+    def test_reader_upload_rejects_non_pdf_bytes_with_pdf_suffix(self) -> None:
+        response = self.client.post(
+            "/api/reader/documents",
+            data={"file": (io.BytesIO(b"not a pdf at all"), "fake.pdf"), "useOcr": "false", "generateTranslation": "false"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("不是 PDF", response.get_json()["error"])
 
     def test_local_guard_preserves_blueprint_header_checks(self) -> None:
         for path in ("/api/prompts/templates", "/api/researchstudio/jobs"):
@@ -1901,6 +1931,16 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertIn("几何意义", call["messages"][1]["content"])
         self.assertIn("$x_t", call["messages"][1]["content"])
 
+    def test_reader_actions_follow_prompt_library_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            library = web_panel.PromptWorkbench(Path(folder), web_panel.PROJECT_ROOT / "browser_extension" / "prompt_bridge")
+            library.set_reader_action("explain", "通俗解释", "用本科生能懂的话解释。")
+            with patch.object(web_panel, "prompt_workbench", library):
+                actions = self.client.get("/api/reader/config").get_json()["actions"]
+                self.assertIn({"id": "explain", "label": "通俗解释"}, actions)
+                self.assertEqual(web_panel.reader_action_instruction("explain"), "通俗解释：用本科生能懂的话解释。")
+                self.assertIsNone(web_panel.reader_action_instruction("missing"))
+
     def test_reader_three_pass_action_uses_one_bounded_structured_answer(self) -> None:
         config = {"name": "test", "baseUrl": "https://llm.example", "apiKey": "key", "model": "model"}
         block = {"id": "b3", "section": "Method", "content": "A selected method paragraph."}
@@ -2411,7 +2451,7 @@ class ToolboxApiTest(unittest.TestCase):
             return FakeResponse(content=f"mock {extension}".encode())
 
         original_pdf = Path(self.temp_dir.name) / "paper.pdf"
-        original_pdf.write_bytes(b"%PDF mock")
+        original_pdf.write_bytes(b"%PDF-1.4 mock")
         with patch.dict("os.environ", {"MATHPIX_APP_ID": "id", "MATHPIX_APP_KEY": "key", "LLM_BASE_URL": "https://llm.example", "LLM_API_KEY": "llm-key", "LLM_MODEL": "model"}), \
              patch.object(web_panel.requests, "post", return_value=FakeResponse({"pdf_id": "mock-pdf"})) as post, \
              patch.object(web_panel.requests, "get", side_effect=fake_get), \
@@ -2426,7 +2466,7 @@ class ToolboxApiTest(unittest.TestCase):
                         "repairLlm": {"mode": "preset", "presetId": "default"},
                     }),
                     "manifest": json.dumps([{ "relativePath": "paper.pdf", "workName": "ignored" }]),
-                    "files": (io.BytesIO(b"%PDF mock"), "paper.pdf"),
+                    "files": (io.BytesIO(b"%PDF-1.4 mock"), "paper.pdf"),
                 },
                 content_type="multipart/form-data",
             )
@@ -2457,7 +2497,7 @@ class ToolboxApiTest(unittest.TestCase):
         archive.close()
         local_output = original_pdf.with_suffix("")
         self.assertEqual({path.name for path in local_output.iterdir()}, names | {"paper.pdf", "paper.assets"})
-        self.assertEqual((local_output / "paper.pdf").read_bytes(), b"%PDF mock")
+        self.assertEqual((local_output / "paper.pdf").read_bytes(), b"%PDF-1.4 mock")
         self.assertEqual((local_output / "paper.assets" / crop_name).read_bytes(), b"image bytes")
         self.assertEqual((local_output / "paper.assets" / fallback_name).read_bytes(), b"fallback image")
         self.assertEqual(
@@ -2990,7 +3030,7 @@ class ToolboxApiTest(unittest.TestCase):
                     "tool": "pdf_ocr_translate",
                     "options": json.dumps({"localSourcePath": str(original_pdf), "repairMarkdown": False}),
                     "manifest": json.dumps([{"relativePath": "same-name.pdf", "workName": "same-name"}]),
-                    "files": (io.BytesIO(b"%PDF upload"), "same-name.pdf"),
+                    "files": (io.BytesIO(b"%PDF-1.4 upload"), "same-name.pdf"),
                 },
                 content_type="multipart/form-data",
             )
@@ -3004,7 +3044,7 @@ class ToolboxApiTest(unittest.TestCase):
         payload = {
             "tool": "pdf_ocr_translate",
             "manifest": json.dumps([{"relativePath": "repair-config.pdf", "workName": "repair-config"}]),
-            "files": (io.BytesIO(b"%PDF upload"), "repair-config.pdf"),
+            "files": (io.BytesIO(b"%PDF-1.4 upload"), "repair-config.pdf"),
         }
         with patch.dict("os.environ", {"MATHPIX_APP_ID": "id", "MATHPIX_APP_KEY": "key"}, clear=True):
             enabled = self.client.post(

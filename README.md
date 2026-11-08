@@ -50,7 +50,22 @@ This project is developed entirely through ViveCoding. The code is provided as-i
 
 各模块页面左侧共用一条导航栏（窄屏时改为底部导航）：**精读**（`/reader`）、**改稿**（`/paper-revision`）、**Prompt**（`/prompts`），以及“更多”中的工具箱（`/`）、研究空白地图（`/research-gaps`）和 ResearchStudio（`/researchstudio`），底部是**设置**（`/settings`）。
 
-全局设置已独立为 `/settings` 页面（标签页地址如 `/settings#codex`）。在任一模块中点击“AI 设置”或“管理全局配置”之类的链接，会在当前页右侧以抽屉形式打开设置，不必离开正在阅读或改稿的页面；保存后关闭抽屉，会提示刷新当前页面以应用改动。旧的 `/#settings/<tab>` 与 `/#llm-settings` 链接会自动转到新地址。
+全局设置已独立为 `/settings` 页面（标签页地址如 `/settings#codex`）。在任一模块中点击“AI 设置”或“管理全局配置”之类的链接，会在当前页右侧以抽屉形式打开设置，不必离开正在阅读或改稿的页面。保存后关闭抽屉，AI 引擎相关的改动（登录、默认模型、API 预设、Google Key）会在精读和改稿页面直接生效，其他改动会提示刷新当前页面。旧的 `/#settings/<tab>` 与 `/#llm-settings` 链接会自动转到新地址。
+
+### Prompt 库统一与送到 ChatGPT
+
+- **精读划选动作进入 Prompt 库**：精读页选区菜单里的 10 个动作（翻译选区、解释公式、Three-Pass 解读等）现在是 Prompt 工作台里的内置模板，分类为“精读划选动作”。可以在 `/prompts` 修改名称和内容，精读页的按钮与 AI 请求会直接使用新内容；“恢复默认”可撤销修改。修改保存在本机的 `reader_actions.json`，内置模板不能删除。选区菜单的“编辑动作”链接会直接打开这个分类。
+- **从精读、改稿送到 ChatGPT**：ChatGPT 桥接扩展只在 `/prompts` 页面运行，所以其他页面会把内容交给 Prompt 工作台（`static/prompt_handoff.js`），在新标签页中打开 `/prompts` 并自动带入：
+  - 精读选区菜单的“送到 ChatGPT（经 Prompt 工作台）”：带入选区、相邻原文和补充问题；PDF 文献会同时附上原文 PDF。
+  - 改稿批注面板的“送到 ChatGPT”：带入本轮全部批注（引用原文、批注内容和修改范围），并附上当前版本的英文 LaTeX 原稿 ZIP。
+  - 带入后可以继续追加模板、增删附件，检查后再点“提交到 ChatGPT”。交接内容只保存在本机浏览器，10 分钟内有效，只能带入一次；附件只会从本机工具的 `/api/` 地址读取。
+- 左侧导航栏已覆盖各模块，因此去掉了工具箱侧栏里重复的模块入口，以及精读、Prompt、改稿、ResearchStudio 页头里的“返回工具箱”和互相跳转的链接。
+
+### 共享引擎层与 PDF 核心
+
+- **统一引擎状态**：`GET /api/engines`（`?refresh=1` 强制重查）一次返回 Claude Code、Codex、Google 翻译和全部 API 预设的状态，格式统一：`ready`、`error`、可选模型与推理强度、对应的设置标签页；不包含任何 API Key。实现在 `engines.py`，任一引擎查询失败不会影响其他引擎。
+- **共享引擎选择器**：`static/engine_picker.js`（`window.EnginePicker`）提供“引擎 + 模型 + 推理强度”选择控件、未就绪提示和计费说明。双语改稿的工作流编辑器（页面和 全局设置 → 双语改稿）都基于它；设置抽屉保存后，它通知各页面刷新引擎状态。
+- **PDF 核心**：`pdf_core.py` 统一处理 PDF 上传与下载校验（开头 1 KB 内须有 `%PDF-` 标记，所有入口统一上限 100 MB，写入是原子的，失败时不留残余文件）、内容指纹、元数据标题与作者，以及文字层提取。精读、工具箱 PDF OCR、研究空白地图和 ResearchStudio 共用这些逻辑。研究空白地图下载开放获取 PDF 的上限从 50 MB 提高到 100 MB；精读上传 PDF 现在也会校验文件内容和大小。
 
 ### 双语论文改稿
 
@@ -164,7 +179,7 @@ job. Results are downloaded from the panel; original files are never renamed.
 - 文档专属阅读状态还会同步写入对应缓存目录的 `reader-state.json`（最多 200 条笔记、500 条文字格式记录、4 MB），浏览器本地存储作为即时副本；再次从本地文档库打开时会选择较新的状态，因此任务目录清理后笔记、格式、生词和回答仍可恢复。
 - 论文顶部的“阅读设置”可分别定制中文、英文和数学文本字体，并调整字号、字距、行距、段距，以及页眉、正文、页脚各自的上/右/下/左边距；也可为每个划词动作指定 LLM、开启自动执行并选择默认动作。设置会即时作用于 OCR/译文、Markdown、划词回答和阅读笔记，并保存在当前浏览器。原生 PDF 页面仍使用 PDF 自带的嵌入字体，仅调整页面外围留白。
 - 侧栏提供独立的“AI、语音与 GitHub 配置”菜单，以标签页统一管理 OpenAI-compatible LLM 预设、Codex、Three-Pass 篇幅、Azure Speech 和 Markdown 图片仓库。Three-Pass 可为 Pass 1、Pass 2、Pass 3 与综合报告分别选择短/中/长或 100–12,000 的自定义目标篇幅，新建分析会冻结当时设置。Codex 面板读取当前 ChatGPT 套餐、可用模型及剩余额度，并可保存本工具箱使用的默认模型和推理强度；支持 Instant 的 GPT-5.6/6 模型会把 `none` 显示为 `Instant（none）`。这些设置不会改写全局 Codex CLI 配置。整篇翻译只能选择这里保存的 LLM 预设；各类 Token/API Key 仅保存在本机 `.env` 与当前后端进程中，不会返回浏览器或写入任务日志。
-- 阅读器右侧的“AI 三遍阅读”可选择两种后端：默认的本机 `codex app-server` 使用 ChatGPT/Codex 登录额度，也可选择全局 LLM 预设直接调用 API（OpenAI 官方地址自动使用 Responses API，其他兼容服务默认使用 Chat Completions）。两种后端都依次执行 Pass 1、Pass 2、Pass 3 和综合报告，保存 Markdown 报告并支持追问；API 模式会明确要求确认独立计费，超出安全上下文时按页码和标题自适应分块并再次确认预计调用次数。Codex 可在阅读器内通过浏览器或设备码登录，也可在终端运行 `codex login`。原生 PDF 必须具有足够文字层，扫描件请在导入时开启 OCR。
+- 阅读器右侧的“AI 三遍阅读”可选择两种后端：默认的本机 `codex app-server` 使用 ChatGPT/Codex 登录额度，也可选择全局 LLM 预设直接调用 API（OpenAI 官方地址自动使用 Responses API，其他兼容服务默认使用 Chat Completions）。两种后端都只通读论文一次，在同一次回答里同时填写 Pass 1（鸟瞰与 Five Cs）、Pass 2（主张与证据）、Pass 3（按关注点的虚拟复现）和综合报告——三个 Pass 指的是每部分要提取哪类信息，而不是读三遍；每部分仍按各自的篇幅设置，结果仍分别保存为 `pass1.md`、`pass2.md`、`pass3.md` 和 `report.md`，并支持追问。Codex 后端整篇分析只用一个 turn。API 模式会明确要求确认独立计费；论文放得下时只调用一次，超出安全上下文时按页码和标题自适应分块，每块读一次并同时为所有部分记笔记，最后一次调用汇总填写，导入前会确认预计调用次数（约为块数的两倍）。Codex 可在阅读器内通过浏览器或设备码登录，也可在终端运行 `codex login`。原生 PDF 必须具有足够文字层，扫描件请在导入时开启 OCR。
 - 真实 Codex 烟雾测试不会被默认测试发现；如需显式验证登录、Skill、四阶段报告和追问，请运行 `python tests/smoke_codex_three_pass.py path/to/paper.md --confirm-usage`（会运行 5 个真实 turn 并消耗额度）。
 - ResearchTool 默认把 npm `latest` 稳定版 Codex 安装到 `.runtime/codex/releases/<version>/`，每 24 小时检查一次；新版本先在临时目录安装并验证，空闲时切换，保留上一版并在 App Server 初始化失败时自动回滚。离线时继续使用最后一个可用版本，登录仍复用用户现有的 Codex/ChatGPT 凭据。设置 `CODEX_BIN` 可关闭托管模式并显式指定外部 CLI。
 - 真实 API 烟雾测试同样需要显式确认：`python tests/smoke_api_three_pass.py path/to/paper.md --preset-id <预设ID> --confirm-usage`；长文还必须增加 `--confirm-chunked`，该测试会产生 API 费用。
