@@ -511,3 +511,6 @@ body { background:radial-gradient(circle at 12% 0,rgba(190,203,195,.22),transpar
 
 .prompt-actions-heading a { color:var(--accent); text-decoration:none; }.prompt-actions-heading a:hover { text-decoration:underline; }
 .prompt-handoff-button { width:100%; margin-top:8px; padding:7px 10px; border:1px dashed #b9cfca; border-radius:6px; color:#2f5c56; background:#f8fbfa; font-size:11px; cursor:pointer; }.prompt-handoff-button:hover { border-style:solid; background:#eef6f4; }
+a.toolbar-text-button { text-decoration:none; }
+body.reader-opening #uploadCard { display:none; }
+body.reader-opening main::before { content:"正在打开论文…"; display:block; padding:48px 24px; color:#5a6782; text-align:center; }

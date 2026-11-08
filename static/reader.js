@@ -3903,6 +3903,12 @@ async function submitThreePassFollowup(event) {
 async function showReadyDocument(data, restoredFromCache = false) {
   readerState.document = data;
   renderAlignmentProgress(data);
+  const workspaceLink = $("#openWorkspace");
+  if (workspaceLink) {
+    const cached = /^[0-9a-f]{64}$/.test(data.cacheKey || "");
+    workspaceLink.classList.toggle("hidden", !cached);
+    if (cached) workspaceLink.href = `/library/${data.cacheKey}`;
+  }
   await loadDocumentNotes();
   $("#uploadCard").classList.add("hidden");
   $("#readerShell").classList.remove("hidden");
@@ -3920,7 +3926,13 @@ async function openReaderDocumentFromQuery() {
   const libraryKey = new URLSearchParams(window.location.search).get("library");
   if (libraryKey && /^[0-9a-f]{64}$/.test(libraryKey)) {
     history.replaceState(null, "", "/reader");
-    await openLocalDocument(libraryKey, null);
+    // Hide the import form while the library paper opens; it reappears only if opening fails.
+    document.body.classList.add("reader-opening");
+    try {
+      await openLocalDocument(libraryKey, null);
+    } finally {
+      document.body.classList.remove("reader-opening");
+    }
     return true;
   }
   const documentId = new URLSearchParams(window.location.search).get("document");

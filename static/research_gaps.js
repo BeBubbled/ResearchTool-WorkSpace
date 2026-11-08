@@ -89,7 +89,7 @@
       state.readerLibrary = library.documents || [];
       renderConfig();
       renderProjectSelect();
-      const remembered = localStorage.getItem("researchGapProjectId");
+      const remembered = new URLSearchParams(location.search).get("project") || localStorage.getItem("researchGapProjectId");
       const initial = state.projects.find(item => item.id === remembered) || state.projects[0];
       if (initial) await selectProject(initial.id);
       else renderNoProjects();

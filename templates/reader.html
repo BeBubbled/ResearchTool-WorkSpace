@@ -5,14 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/reader.css?v=20261108-prompts">
+  <link rel="stylesheet" href="/static/reader.css?v=20261108-workspace2">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
   <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
-<body>
-  {% set client_active = "reader" %}{% include "_client_nav.html" %}
+<body{% if embed %} class="reader-embedded"{% endif %}>
+  {% if embed %}<script src="/static/engine_picker.js?v=1"></script>
+  <style>.reader-embedded .reader-header, .reader-embedded #newPaper, .reader-embedded #openWorkspace { display:none !important; }</style>
+  {% else %}{% set client_active = "reader" %}{% include "_client_nav.html" %}{% endif %}
   <header class="reader-header">
     <span class="brand">Research Toolkit</span>
     <div><p class="eyebrow">PAPER LENS</p><h1>科研论文阅读器</h1></div>
@@ -89,6 +91,7 @@
           </div>
           <div class="toolbar-actions">
             <button id="outlineToggle" class="toolbar-text-button panel-toggle-button" type="button" aria-label="打开文档目录" title="打开文档目录" aria-controls="outlinePanel" aria-expanded="true"><span class="toolbar-icon" aria-hidden="true">☰</span><span class="toolbar-label">目录</span></button>
+            <a id="openWorkspace" class="toolbar-text-button hidden" href="/library" title="在论文工作区中查看笔记、Three-Pass、研究项目和成果"><span class="toolbar-icon" aria-hidden="true">▦</span><span class="toolbar-label">工作区</span></a>
             <button id="newPaper" class="toolbar-text-button" type="button" aria-label="导入另一篇论文" title="导入另一篇论文"><span class="toolbar-icon" aria-hidden="true">←</span><span class="toolbar-label">导入另一篇</span></button>
             <div class="view-switch toolbar-view-switch" id="viewSwitch" hidden>
               <button type="button" data-view="original" class="active" aria-label="显示原文" title="显示原文"><span class="toolbar-full-label">原文</span><span class="toolbar-compact-label" aria-hidden="true">原</span></button>
@@ -360,6 +363,6 @@
     </section>
   </main>
   <script src="/static/prompt_handoff.js?v=1"></script>
-  <script src="/static/reader.js?v=20261108-single-read"></script>
+  <script src="/static/reader.js?v=20261108-workspace2"></script>
 </body>
 </html>

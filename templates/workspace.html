@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ document.title }} · 论文工作区</title>
+  <meta name="theme-color" content="#182a5b">
+  <link rel="stylesheet" href="/static/styles.css?v=20261106-claude-google-settings">
+  <link rel="stylesheet" href="/static/library.css?v=4">
+  <link rel="stylesheet" href="/static/workspace.css?v=1">
+</head>
+<body class="library-page workspace-page" data-paper="{{ document.id }}">
+  {% set client_active = "library" %}{% include "_client_nav.html" %}
+  <div class="workspace-shell">
+    <header class="workspace-top">
+      <div class="workspace-title">
+        <a class="workspace-back" href="/library">← 文献库</a>
+        <h1 id="workspaceTitle" title="{{ document.title }}">{{ document.title }}</h1>
+        <p id="workspaceMeta" class="workspace-meta"></p>
+      </div>
+      <nav class="workspace-tabs" role="tablist" aria-label="论文工作区">
+        <button type="button" role="tab" data-tab="overview" id="tab-overview" aria-controls="panel-overview">概览</button>
+        <button type="button" role="tab" data-tab="read" id="tab-read" aria-controls="panel-read">阅读</button>
+        <button type="button" role="tab" data-tab="notes" id="tab-notes" aria-controls="panel-notes">笔记 <span class="tab-count" data-count="notes"></span></button>
+        <button type="button" role="tab" data-tab="analyses" id="tab-analyses" aria-controls="panel-analyses">Three-Pass <span class="tab-count" data-count="analyses"></span></button>
+        <button type="button" role="tab" data-tab="gaps" id="tab-gaps" aria-controls="panel-gaps">研究空白 <span class="tab-count" data-count="gaps"></span></button>
+        <button type="button" role="tab" data-tab="studio" id="tab-studio" aria-controls="panel-studio">成果生成 <span class="tab-count" data-count="studio"></span></button>
+      </nav>
+    </header>
+    <main class="workspace-body">
+      <section id="panel-overview" class="workspace-panel" role="tabpanel" aria-labelledby="tab-overview" hidden></section>
+      <section id="panel-read" class="workspace-panel workspace-read" role="tabpanel" aria-labelledby="tab-read" hidden></section>
+      <section id="panel-notes" class="workspace-panel" role="tabpanel" aria-labelledby="tab-notes" hidden></section>
+      <section id="panel-analyses" class="workspace-panel" role="tabpanel" aria-labelledby="tab-analyses" hidden></section>
+      <section id="panel-gaps" class="workspace-panel" role="tabpanel" aria-labelledby="tab-gaps" hidden></section>
+      <section id="panel-studio" class="workspace-panel" role="tabpanel" aria-labelledby="tab-studio" hidden></section>
+    </main>
+  </div>
+  <script src="/static/workspace.js?v=2" defer></script>
+</body>
+</html>

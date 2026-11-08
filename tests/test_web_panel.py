@@ -231,6 +231,47 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertIn('id="libraryList"', page)
         self.assertIn("/static/library.js", page)
 
+    def test_paper_workspace_collects_notes_and_serves_page(self) -> None:
+        created = self.client.post(
+            "/api/reader/documents",
+            data={"useOcr": "false", "generateTranslation": "false",
+                  "file": (io.BytesIO(b"# Workspace Paper\n\nBody text.\n"), "workspace.md")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(created.status_code, 202, created.get_json())
+        document_id = created.get_json()["id"]
+        for _ in range(100):
+            status = self.client.get(f"/api/reader/documents/{document_id}").get_json()
+            if status["status"] in {"ready", "failed"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(status["status"], "ready", status)
+        key = status["cacheKey"]
+        notes = {"notes": [
+            {"id": "n1", "kind": "selection", "section": "Intro", "text": "Body text.", "createdAt": 1000},
+            {"id": "n2", "kind": "answer", "action": "解释", "selection": "Body", "text": "**Answer**", "createdAt": 2000},
+        ]}
+        self.assertEqual(self.client.put(f"/api/reader/documents/{document_id}/state", json=notes).status_code, 200)
+
+        workspace = self.client.get(f"/api/library/{key}/workspace").get_json()
+        self.assertEqual(workspace["document"]["links"]["workspace"], f"/library/{key}")
+        self.assertEqual([note["id"] for note in workspace["notes"]], ["n2", "n1"])
+        self.assertEqual((workspace["files"], workspace["analyses"], workspace["gaps"], workspace["studio"]), ([], [], [], []))
+        self.assertEqual(self.client.get(f"/api/library/{key}/pdf").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/library/{'c' * 64}/workspace").status_code, 404)
+
+        page = self.client.get(f"/library/{key}").get_data(as_text=True)
+        self.assertIn(f'data-paper="{key}"', page)
+        self.assertIn("/static/workspace.js", page)
+        self.assertIn('class="client-rail"', page)
+        missing = self.client.get(f"/library/{'c' * 64}")
+        self.assertEqual((missing.status_code, missing.headers["Location"]), (302, "/library"))
+        embedded = self.client.get("/reader?embed=1").get_data(as_text=True)
+        self.assertNotIn('class="client-rail"', embedded)
+        self.assertIn("reader-embedded", embedded)
+        self.assertIn("/static/engine_picker.js", embedded)
+        self.assertIn('class="client-rail"', self.client.get("/reader").get_data(as_text=True))
+
     def test_mathpix_ocr_reuses_identical_pdf_and_falls_back(self) -> None:
         source = Path(self.temp_dir.name) / "same.pdf"
         source.write_bytes(b"%PDF-1.4 identical paper")

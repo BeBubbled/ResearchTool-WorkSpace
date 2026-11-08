@@ -51,6 +51,40 @@ class PaperLibraryTest(unittest.TestCase):
                 self.assertIsNone(self.library.analysis_source(bad))
                 self.assertIsNone(self.library.pdf_source(bad))
 
+    def test_workspace_gathers_one_paper_across_modules(self) -> None:
+        library = PaperLibrary(
+            list_entries=lambda: list(self.entries.values()), get_entry=self.entries.get,
+            cached_file=lambda key, storage, name: self.files.get((key, storage, name)),
+            raw_manifest=lambda key: {"document": {"sourceFilename": "paper.pdf"}} if key == PDF_KEY else {},
+            usage=lambda: {"gaps": {PDF_KEY: [{"id": "p1", "name": "扩散模型综述"}]}},
+            notes=lambda key: [{"id": "old", "text": "a", "createdAt": 1}, {"id": "new", "kind": "answer", "text": "b", "createdAt": 5}, "junk"],
+            analyses=lambda key: [{"id": "x1", "status": "completed", "reportReady": True, "reportUrl": "/r/x1", "secret": "no"},
+                                  {"id": "x2", "status": "failed", "reportUrl": "/r/x2"}],
+            studio_jobs=lambda: [{"id": "s1", "paperId": PDF_KEY, "label": "海报", "status": "succeeded"},
+                                 {"id": "s2", "paperId": MD_KEY, "label": "博客"}],
+        )
+        workspace = library.workspace(PDF_KEY)
+        self.assertEqual([note["id"] for note in workspace["notes"]], ["new", "old"])
+        self.assertEqual(workspace["notes"][1]["kind"], "selection")
+        self.assertEqual([(a["id"], a["reportUrl"]) for a in workspace["analyses"]], [("x1", "/r/x1"), ("x2", None)])
+        self.assertNotIn("secret", workspace["analyses"][0])
+        self.assertEqual([job["id"] for job in workspace["studio"]], ["s1"])
+        self.assertEqual(workspace["gaps"], [{"id": "p1", "name": "扩散模型综述"}])
+        self.assertEqual(workspace["files"], [{"kind": "pdf", "label": "原始 PDF", "url": f"/api/library/{PDF_KEY}/pdf"}])
+        self.assertIsNone(library.workspace("c" * 64))
+
+    def test_workspace_survives_a_failing_module(self) -> None:
+        def broken(*_):
+            raise RuntimeError("database locked")
+        library = PaperLibrary(
+            list_entries=lambda: list(self.entries.values()), get_entry=self.entries.get,
+            cached_file=lambda key, storage, name: self.files.get((key, storage, name)),
+            notes=broken, analyses=broken, studio_jobs=broken,
+        )
+        workspace = library.workspace(MD_KEY)
+        self.assertEqual((workspace["notes"], workspace["analyses"], workspace["studio"], workspace["files"]), ([], [], [], []))
+        self.assertEqual(workspace["document"]["links"]["workspace"], f"/library/{MD_KEY}")
+
     def test_listing_has_usage_links_and_filters(self) -> None:
         documents = self.library.documents()
         self.assertEqual([d["id"] for d in documents], [PDF_KEY, MD_KEY])

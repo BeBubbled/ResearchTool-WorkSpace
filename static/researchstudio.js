@@ -13,7 +13,7 @@
     paper2video:"生成可编辑演示文稿及带字幕的讲解视频。",
     paper2reel:"依次完成素材、海报、双语博客和视频，汇总为交互展示页。"
   };
-  let config, selected = "", pollTimer, submitting = false;
+  let config, selected = /^[0-9a-f]{32}$/.test(new URLSearchParams(location.search).get("job") || "") ? new URLSearchParams(location.search).get("job") : "", pollTimer, submitting = false;
   async function api(url, options = {}) {
     const response = await fetch(url, {...options, headers:{"X-ResearchStudio":"1", ...options.headers}});
     const data = await response.json();

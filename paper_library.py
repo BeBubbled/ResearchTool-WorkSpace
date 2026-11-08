@@ -27,18 +27,26 @@ class PaperLibrary:
         cached_file: Callable[[str, str, str], Path | None],
         raw_manifest: Callable[[str], dict[str, Any]] = lambda key: {},
         usage: Callable[[], dict[str, dict[str, list[dict[str, str]]]]] | None = None,
+        notes: Callable[[str], list[dict[str, Any]]] = lambda key: [],
+        analyses: Callable[[str], list[dict[str, Any]]] = lambda key: [],
+        studio_jobs: Callable[[], list[dict[str, Any]]] = lambda: [],
     ) -> None:
         """
         list_entries / get_entry: reader-cache library entries (see web_panel.reader_cache_library_entry).
         cached_file(cache_key, storage, filename): a file inside one cache entry, or None.
         raw_manifest(cache_key): the cache manifest, for older entries that predate "document".
         usage(): {module: {cache_key: [{id, name}]}} — where each paper is referenced.
+        notes(cache_key) / analyses(cache_key): reading notes and Three-Pass snapshots of one paper.
+        studio_jobs(): ResearchStudio jobs; the workspace keeps those made from this paper.
         """
         self.list_entries = list_entries
         self.get_entry = get_entry
         self.cached_file = cached_file
         self.raw_manifest = raw_manifest
         self.usage = usage or (lambda: {})
+        self.notes = notes
+        self.analyses = analyses
+        self.studio_jobs = studio_jobs
 
     # ---- sources other modules consume ----
     def analysis_source(self, cache_key: str) -> dict[str, Any] | None:
@@ -87,6 +95,7 @@ class PaperLibrary:
             "updatedAt": entry.get("updatedAt") or 0,
             "usedBy": used,
             "links": {
+                "workspace": f"/library/{key}",
                 "reader": f"/reader?library={key}",
                 **({"studio": f"/researchstudio?paperId={key}"} if has_pdf else {}),
                 "gaps": f"/research-gaps?libraryPaper={key}",
@@ -115,3 +124,71 @@ class PaperLibrary:
         except Exception:
             usage = {}
         return self._public(entry, usage)
+
+    # ---- one paper's workspace ----
+    @staticmethod
+    def _safe(call: Callable[[], Any], fallback: Any) -> Any:
+        try:
+            return call()
+        except Exception:  # one module failing must not hide the rest of the workspace
+            return fallback
+
+    def workspace(self, cache_key: str) -> dict[str, Any] | None:
+        """Everything the client knows about one paper: files, notes, Three-Pass, projects, Studio jobs."""
+        document = self.document(cache_key)
+        if not document:
+            return None
+        notes = [note for note in self._safe(lambda: self.notes(cache_key), []) if isinstance(note, dict)]
+        notes.sort(key=lambda note: float(note.get("updatedAt") or note.get("createdAt") or 0), reverse=True)
+        analyses = [_analysis(item) for item in self._safe(lambda: self.analyses(cache_key), []) if isinstance(item, dict)]
+        studio = [_studio_job(job) for job in self._safe(self.studio_jobs, [])
+                  if isinstance(job, dict) and job.get("paperId") == cache_key]
+        files = [{"kind": "pdf", "label": "原始 PDF", "url": f"/api/library/{cache_key}/pdf"}] if document["hasPdf"] else []
+        return {
+            "document": document,
+            "files": files,
+            "notes": [_note(note) for note in notes],
+            "analyses": analyses,
+            "gaps": document["usedBy"].get("gaps", []),
+            "studio": studio,
+        }
+
+
+def _text(value: Any, limit: int) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _note(note: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _text(note.get("id"), 80),
+        "kind": "answer" if note.get("kind") == "answer" else "selection",
+        "section": _text(note.get("section"), 200),
+        "action": _text(note.get("action"), 120),
+        "question": _text(note.get("question"), 2000),
+        "selection": _text(note.get("selection"), 4000),
+        "text": _text(note.get("text"), 30000),
+        "createdAt": note.get("createdAt") or 0,
+    }
+
+
+def _analysis(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _text(item.get("id"), 64),
+        "status": _text(item.get("status"), 40),
+        "phaseLabel": _text(item.get("phaseLabel"), 80),
+        "backend": _text(item.get("backend"), 20),
+        "model": _text(item.get("model"), 120),
+        "language": _text(item.get("language"), 20),
+        "createdAt": item.get("createdAt") or 0,
+        "reportUrl": item.get("reportUrl") if item.get("reportReady") else None,
+    }
+
+
+def _studio_job(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _text(job.get("id"), 64),
+        "label": _text(job.get("label") or job.get("module"), 80),
+        "status": _text(job.get("status"), 40),
+        "error": _text(job.get("error"), 400),
+        "createdAt": job.get("createdAt") or 0,
+    }

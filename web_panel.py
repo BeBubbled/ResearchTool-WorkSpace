@@ -40,7 +40,7 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment, Declaration, Doctype, NavigableString, ProcessingInstruction, Tag
 from dotenv import load_dotenv, set_key, unset_key
-from flask import Flask, Response, jsonify, render_template, request, send_file, stream_with_context
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, stream_with_context
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
@@ -7848,6 +7848,16 @@ def research_gap_llm_request(preset_id: str, messages: list[dict[str, str]]) -> 
     return result
 
 
+def library_paper_analyses(cache_key: str) -> list[dict[str, Any]]:
+    """Three-Pass analyses saved with one library paper (Codex and API backends)."""
+    root = reader_cache_root(cache_key) / "analyses"
+    if not root.is_dir():
+        return []
+    sessions = three_pass_manager.list_from_root(root) + get_api_three_pass_manager().list_from_root(root)
+    sessions.sort(key=lambda item: item.created_at, reverse=True)
+    return [session.snapshot() for session in sessions]
+
+
 def library_usage() -> dict[str, dict[str, list[dict[str, str]]]]:
     return {"gaps": research_gap_service.reader_usage()}
 
@@ -7859,6 +7869,9 @@ paper_library = PaperLibrary(
     cached_file=lambda key, storage, filename: reader_cached_file(reader_cache_root(key) / storage, filename),
     raw_manifest=lambda key: read_reader_cache_manifest(key),
     usage=library_usage,
+    notes=lambda key: read_reader_persistent_state(key).get("notes", []),
+    analyses=lambda key: library_paper_analyses(key),
+    studio_jobs=lambda: research_studio_service.list_jobs(),
 )
 
 
@@ -8021,6 +8034,25 @@ def get_library_document(cache_key: str):
     return jsonify({"document": document})
 
 
+@app.get("/api/library/<cache_key>/workspace")
+def get_library_workspace(cache_key: str):
+    """One paper's workspace: files, notes, Three-Pass analyses, research projects and Studio jobs."""
+    workspace = paper_library.workspace(cache_key)
+    if not workspace:
+        return json_error("文献库中没有这篇论文。", 404)
+    return jsonify(workspace)
+
+
+@app.get("/api/library/<cache_key>/pdf")
+def get_library_pdf(cache_key: str):
+    path = paper_library.pdf_source(cache_key)
+    if not path:
+        return json_error("这篇论文没有保存原始 PDF。", 404)
+    entry = paper_library.document(cache_key) or {}
+    name = secure_filename(str(entry.get("title") or "")) or "paper"
+    return send_file(path, mimetype="application/pdf", download_name=f"{name}.pdf")
+
+
 def research_studio_project_source(project_id: str) -> dict[str, Any] | None:
     try:
         return research_gap_service.export_project(project_id)
@@ -8046,6 +8078,14 @@ def library_page():
     return render_template("library.html")
 
 
+@app.get("/library/<cache_key>")
+def library_workspace_page(cache_key: str):
+    document = paper_library.document(cache_key)
+    if not document:
+        return redirect("/library")
+    return render_template("workspace.html", document=document)
+
+
 @app.get("/settings")
 def settings_page():
     return render_template("settings.html", embed=request.args.get("embed") == "1")
@@ -8053,7 +8093,7 @@ def settings_page():
 
 @app.get("/reader")
 def reader():
-    return render_template("reader.html")
+    return render_template("reader.html", embed=request.args.get("embed") == "1")
 
 
 @app.get("/research-gaps")

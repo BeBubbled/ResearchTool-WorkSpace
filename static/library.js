@@ -17,7 +17,7 @@
   function usedBy(item) {
     const gaps = item.usedBy?.gaps || [];
     if (!gaps.length) return '<span class="library-unused">尚未用于研究项目</span>';
-    return `研究空白地图：${gaps.map(p => `<a href="/research-gaps">${escapeHtml(p.name)}</a>`).join('、')}`;
+    return `研究空白地图：${gaps.map(p => `<a href="/research-gaps?project=${encodeURIComponent(p.id)}">${escapeHtml(p.name)}</a>`).join('、')}`;
   }
 
   function render() {
@@ -30,12 +30,13 @@
     $('libraryList').innerHTML = documents.map(item => `
       <article class="library-card">
         <div class="library-card-main">
-          <h3>${escapeHtml(item.title)}</h3>
+          <h3><a class="library-title-link" href="${escapeHtml(item.links.workspace)}">${escapeHtml(item.title)}</a></h3>
           <p class="library-meta">${escapeHtml(describe(item))}${item.sourceName ? ` · <span title="${escapeHtml(item.sourceName)}">${escapeHtml(item.sourceName)}</span>` : ''}</p>
           <p class="library-usage">${usedBy(item)}</p>
         </div>
         <div class="library-actions">
-          <a class="button primary" href="${escapeHtml(item.links.reader)}">精读</a>
+          <a class="button primary" href="${escapeHtml(item.links.workspace)}">打开工作区</a>
+          <a class="button secondary" href="${escapeHtml(item.links.reader)}">精读</a>
           <a class="button secondary" href="${escapeHtml(item.links.gaps)}" title="加入当前研究项目">加入研究空白</a>
           ${item.links.studio ? `<a class="button secondary" href="${escapeHtml(item.links.studio)}">ResearchStudio</a>` : '<span class="button secondary disabled" title="只有导入了原始 PDF 的论文才能用于 ResearchStudio">ResearchStudio</span>'}
         </div>
