@@ -1,6 +1,7 @@
 {#- Unified client rail. Include with: {% set client_active = "reader" %}{% include "_client_nav.html" %} -#}
 {%- set client_items = [
   ("reader", "/reader", "精读", "文献精读 · PDF 阅读、OCR、翻译与 Three-Pass", '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20v3H6.5A2.5 2.5 0 0 1 4 20.5z"/><path d="M9 7.5h7M9 11h5"/>'),
+  ("library", "/library", "文献库", "文献库 · 所有论文，精读、研究空白与 Studio 共用", '<path d="M5 4h3v16H5zM10 4h3v16h-3z"/><path d="M15.2 5.2l2.9-.8 3.9 14.5-2.9.8z"/>'),
   ("revision", "/paper-revision", "改稿", "双语论文改稿 · 中文批注，英文修订", '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>'),
   ("prompts", "/prompts", "Prompt", "Prompt 工作台 · 模板、附件与 ChatGPT 投递", '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12.5h5"/>'),
 ] -%}
@@ -23,5 +24,5 @@
 </nav>
 <script>document.body.classList.add("has-client-rail");</script>
 <script src="/static/engine_picker.js?v=1"></script>
-<link rel="stylesheet" href="/static/client_shell.css?v=2">
+<link rel="stylesheet" href="/static/client_shell.css?v=3">
 <script src="/static/client_shell.js?v=2" defer></script>

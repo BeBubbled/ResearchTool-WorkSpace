@@ -1,0 +1,34 @@
+/* 文献库 page. */
+.library-page { background:#f5f7fc; }
+.library-main { max-width:1180px; margin:0 auto; padding:28px clamp(16px,4vw,44px) 60px; }
+.library-header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin-bottom:18px; }
+.library-header h2 { margin:0 0 6px; }
+.library-header p { margin:0; max-width:680px; color:#5a6782; line-height:1.6; }
+.library-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:14px; }
+.library-toolbar input[type="search"] { flex:1 1 280px; min-width:0; padding:9px 12px; border:1px solid #d6deeb; border-radius:8px; background:#fff; font:inherit; }
+.library-filter { display:flex; align-items:center; gap:6px; color:#3b4763; font-size:13px; }
+.library-list { display:grid; gap:10px; }
+.library-card { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 16px; border:1px solid #dde4f0; border-radius:10px; background:#fff; }
+.library-card-main { min-width:0; }
+.library-card h3 { margin:0 0 4px; font-size:15px; line-height:1.4; overflow-wrap:anywhere; }
+.library-meta { margin:0; color:#68758f; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.library-usage { margin:6px 0 0; color:#3b4763; font-size:12px; }
+.library-usage a { color:#253b7a; }
+.library-unused { color:#98a2b6; }
+.library-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; flex:none; }
+.library-actions .button { padding:6px 12px; font-size:13px; text-decoration:none; white-space:nowrap; }
+.library-actions .disabled { opacity:.45; cursor:not-allowed; }
+.library-empty { padding:40px 20px; border:1px dashed #cfd8e8; border-radius:10px; text-align:center; color:#5a6782; }
+.library-empty strong { display:block; margin-bottom:6px; color:#1d2943; font-size:15px; }
+@media (max-width:760px) {
+  .library-header { flex-direction:column; }
+  .library-card { flex-direction:column; align-items:stretch; }
+  .library-actions { justify-content:flex-start; }
+  .library-meta { white-space:normal; }
+}
+.library-page .button { display:inline-flex; align-items:center; justify-content:center; padding:7px 13px; border:1px solid #c9d3e6; border-radius:7px; background:#fff; color:#253b7a; font-size:13px; font-weight:600; text-decoration:none; line-height:1.2; }
+.library-page .button:hover { border-color:#253b7a; background:#f2f5fc; }
+.library-page .button.primary { border-color:#253b7a; background:#253b7a; color:#fff; }
+.library-page .button.primary:hover { background:#1b2d63; }
+.library-page .button.disabled, .library-page .button.disabled:hover { border-color:#e1e6f0; background:#f7f8fb; color:#a3abbd; cursor:not-allowed; }
+.library-page .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }

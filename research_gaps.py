@@ -649,6 +649,20 @@ class ResearchGapService:
             ).fetchall()
         return [self._project_json(row) for row in rows]
 
+    def reader_usage(self) -> dict[str, list[dict[str, str]]]:
+        """Which research projects include each reader-library paper (by reader cache key)."""
+        with self.store.connect() as db:
+            rows = db.execute(
+                """SELECT DISTINCT pa.reader_cache_key key, p.id id, p.name name FROM papers pa
+                JOIN projects p ON p.id = pa.project_id
+                WHERE pa.reader_cache_key IS NOT NULL AND pa.reader_cache_key != ''
+                ORDER BY p.updated_at DESC"""
+            ).fetchall()
+        usage: dict[str, list[dict[str, str]]] = {}
+        for row in rows:
+            usage.setdefault(row["key"], []).append({"id": row["id"], "name": row["name"]})
+        return usage
+
     def get_project(self, project_id: str) -> dict[str, Any]:
         with self.store.connect() as db:
             row = db.execute(

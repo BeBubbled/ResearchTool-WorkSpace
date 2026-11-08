@@ -45,7 +45,7 @@
     }
     $("module").value = config.modules.some(x => x.id === prior) ? prior : "idea-spark";
     for (const [id, items, label] of [["paperId",config.papers,"不选择"],["projectId",config.projects,"不附加项目"]]) {
-      const old = $(id).value;
+      const old = $(id).value || (id === "paperId" ? new URLSearchParams(location.search).get("paperId") || "" : "");
       $(id).replaceChildren(option("",label));
       items.forEach(x => $(id).append(option(x.id,x.title || x.name)));
       if (items.some(x => x.id === old)) $(id).value = old;

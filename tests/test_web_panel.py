@@ -179,7 +179,7 @@ class ToolboxApiTest(unittest.TestCase):
     def test_client_shell_rail_on_module_pages(self) -> None:
         pages = {
             "/": "toolbox", "/reader": "reader", "/paper-revision": "revision", "/prompts": "prompts",
-            "/research-gaps": "gaps", "/researchstudio": "studio", "/settings": "settings",
+            "/research-gaps": "gaps", "/researchstudio": "studio", "/settings": "settings", "/library": "library",
         }
         for path, key in pages.items():
             with self.subTest(path=path):
@@ -222,6 +222,46 @@ class ToolboxApiTest(unittest.TestCase):
         self.assertEqual(engines["api"][0]["id"], "p1")
         self.assertEqual(sorted(engines["ready"]), ["api", "claude", "google"])
         self.assertNotIn("sk-secret", response.get_data(as_text=True))
+
+    def test_library_endpoints_and_page(self) -> None:
+        self.assertEqual(self.client.get("/api/library").get_json(), {"documents": []})
+        self.assertEqual(self.client.get(f"/api/library/{'c' * 64}").status_code, 404)
+        self.assertEqual(self.client.get("/api/library", headers={"Origin": "https://evil.example"}).status_code, 403)
+        page = self.client.get("/library").get_data(as_text=True)
+        self.assertIn('id="libraryList"', page)
+        self.assertIn("/static/library.js", page)
+
+    def test_mathpix_ocr_reuses_identical_pdf_and_falls_back(self) -> None:
+        source = Path(self.temp_dir.name) / "same.pdf"
+        source.write_bytes(b"%PDF-1.4 identical paper")
+        job = SimpleNamespace(phase="", log=lambda *_: None, warnings=[])
+        uploads = []
+
+        def submit(_job, _source, formats):
+            uploads.append(list(formats))
+            return f"pdf-{len(uploads)}"
+
+        def converted(_job, pdf_id, formats):
+            if pdf_id == "pdf-gone":
+                raise RuntimeError("404 not found")
+            return set(formats)
+
+        with patch.dict("os.environ", {"MATHPIX_APP_ID": "account-a"}), \
+             patch.object(web_panel, "submit_mathpix_pdf", side_effect=submit), \
+             patch.object(web_panel, "wait_for_conversion_status", side_effect=converted):
+            self.assertEqual(web_panel.mathpix_ocr(job, source, ["mmd.zip", "docx"])[0], "pdf-1")
+            # Same PDF, subset of formats: reused without a new upload.
+            self.assertEqual(web_panel.mathpix_ocr(job, source, ["docx"]), ("pdf-1", {"docx"}))
+            self.assertEqual(len(uploads), 1)
+            # A format never produced before needs a new upload.
+            self.assertEqual(web_panel.mathpix_ocr(job, source, ["html.zip"])[0], "pdf-2")
+            with patch.dict("os.environ", {"MATHPIX_APP_ID": "account-b"}):
+                self.assertEqual(web_panel.mathpix_ocr(job, source, ["html.zip"])[0], "pdf-3")
+            # An expired earlier result falls back to a fresh upload.
+            fingerprint = web_panel.pdf_core.file_fingerprint(source)
+            web_panel.record_mathpix_result(fingerprint, "pdf-gone", {"html.zip"})
+            self.assertEqual(web_panel.mathpix_ocr(job, source, ["html.zip"])[0], "pdf-4")
+        self.assertTrue(web_panel.mathpix_registry_path().is_relative_to(web_panel.READER_CACHE_DIR))
 
     def test_reader_upload_rejects_non_pdf_bytes_with_pdf_suffix(self) -> None:
         response = self.client.post(

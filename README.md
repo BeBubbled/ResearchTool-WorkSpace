@@ -52,6 +52,13 @@ This project is developed entirely through ViveCoding. The code is provided as-i
 
 全局设置已独立为 `/settings` 页面（标签页地址如 `/settings#codex`）。在任一模块中点击“AI 设置”或“管理全局配置”之类的链接，会在当前页右侧以抽屉形式打开设置，不必离开正在阅读或改稿的页面。保存后关闭抽屉，AI 引擎相关的改动（登录、默认模型、API 预设、Google Key）会在精读和改稿页面直接生效，其他改动会提示刷新当前页面。旧的 `/#settings/<tab>` 与 `/#llm-settings` 链接会自动转到新地址。
 
+### 统一文献库与 OCR
+
+- **文献库**（左侧导航“文献库”，`/library`）：在精读中打开过的论文都保存在本机阅读缓存里，按文件内容的指纹识别，同一篇论文只存一份。文献库页面列出全部论文，可按标题或文件名搜索，也可只看有原始 PDF 的；每篇论文显示它被哪些研究空白地图项目引用，并提供“精读”“加入研究空白”“ResearchStudio”三个入口。
+- **接口**：`GET /api/library`（`?q=` 搜索，`?pdf=1` 只要有原始 PDF 的）和 `GET /api/library/<cache key>`。实现在 `paper_library.py`：研究空白地图取文献库里最完整的正文（OCR 版 HTML、Markdown 或 PDF），ResearchStudio 取原始 PDF，两者不再各自解析阅读缓存。
+- **页面互链**：`/reader?library=<key>` 直接在精读中打开某篇论文；`/research-gaps?libraryPaper=<key>` 打开“本地阅读库”导入面板并高亮这篇论文（需要先有研究项目）；`/researchstudio?paperId=<key>` 预先选好这篇论文。只有导入时保留了原始 PDF 的论文才能用于 ResearchStudio，较早用 OCR 导入的论文可能只缓存了 OCR 结果。
+- **统一的 Mathpix OCR**：工具箱的 PDF OCR 和精读的 OCR 导入走同一个入口。系统按 PDF 内容指纹记录 Mathpix 已生成过哪些格式；同一个 PDF 再次 OCR、且所需格式之前都生成过时，直接复用原结果，不重新上传、不重复计费。复用记录 30 天内有效，并且只在同一个 Mathpix 账号（App ID）下复用；原结果不可用时自动重新上传。记录保存在阅读缓存目录下的 `mathpix-ocr.json`。注意：工具箱 OCR（MMD 等格式）和精读 OCR（HTML 包）要的格式不同，所以两者之间暂不互相复用，只有同一模块重复处理同一 PDF 时才复用。
+
 ### Prompt 库统一与送到 ChatGPT
 
 - **精读划选动作进入 Prompt 库**：精读页选区菜单里的 10 个动作（翻译选区、解释公式、Three-Pass 解读等）现在是 Prompt 工作台里的内置模板，分类为“精读划选动作”。可以在 `/prompts` 修改名称和内容，精读页的按钮与 AI 请求会直接使用新内容；“恢复默认”可撤销修改。修改保存在本机的 `reader_actions.json`，内置模板不能删除。选区菜单的“编辑动作”链接会直接打开这个分类。

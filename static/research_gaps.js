@@ -82,7 +82,7 @@
     bindEvents();
     try {
       const [config, projects, library] = await Promise.all([
-        api("/config"), api("/projects"), fetch("/api/reader/library").then(response => response.ok ? response.json() : { documents: [] }),
+        api("/config"), api("/projects"), fetch("/api/library").then(response => response.ok ? response.json() : { documents: [] }),
       ]);
       state.config = config;
       state.projects = projects.projects || [];
@@ -93,6 +93,7 @@
       const initial = state.projects.find(item => item.id === remembered) || state.projects[0];
       if (initial) await selectProject(initial.id);
       else renderNoProjects();
+      focusLibraryPaper(new URLSearchParams(location.search).get("libraryPaper"));
     } catch (error) {
       toast(error.message, true);
       renderNoProjects();
@@ -333,6 +334,21 @@
     renderLocalLibrary();
     dom.importDialog.showModal();
     loadLatestFolderImport().catch(error => toast(error.message, true));
+  }
+
+  // /research-gaps?libraryPaper=<cache key> (from the library): open 本地阅读库 with that paper highlighted.
+  function focusLibraryPaper(key) {
+    if (!key || !/^[0-9a-f]{64}$/.test(key)) return;
+    history.replaceState(null, "", location.pathname);
+    if (!state.project) { toast("请先新建一个研究项目，再从本地阅读库添加这篇论文。"); return; }
+    openImportDialog();
+    document.querySelector('[data-import-tab="local"]')?.click();
+    const button = dom.localLibraryResults.querySelector(`[data-import-reader="${key}"]`);
+    if (!button) { toast("文献库中没有找到这篇论文。", true); return; }
+    const row = button.closest(".import-result");
+    row.classList.add("library-focus");
+    row.scrollIntoView({ block: "center" });
+    button.focus();
   }
 
   function renderLocalLibrary() {

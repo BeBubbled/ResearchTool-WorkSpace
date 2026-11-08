@@ -3916,6 +3916,13 @@ async function showReadyDocument(data, restoredFromCache = false) {
 }
 
 async function openReaderDocumentFromQuery() {
+  // /reader?library=<cache key>: open a paper from the shared library (links from 文献库 and other modules).
+  const libraryKey = new URLSearchParams(window.location.search).get("library");
+  if (libraryKey && /^[0-9a-f]{64}$/.test(libraryKey)) {
+    history.replaceState(null, "", "/reader");
+    await openLocalDocument(libraryKey, null);
+    return true;
+  }
   const documentId = new URLSearchParams(window.location.search).get("document");
   if (!documentId) return false;
   const response = await fetch(`/api/reader/documents/${encodeURIComponent(documentId)}`);
@@ -4076,7 +4083,7 @@ async function loadLocalLibrary() {
 }
 
 async function openLocalDocument(cacheKey, button) {
-  const card = button.closest(".local-document");
+  const card = button?.closest(".local-document");
   const translation = card?.querySelector("[data-local-translation]");
   const includeTranslation = translation?.checked === true;
   const hasTranslation = translation?.dataset.hasTranslation === "true";

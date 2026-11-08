@@ -54,6 +54,7 @@ from local_paths import LocalPathService, create_local_paths_blueprint
 import pdf_core
 from pdf_core import PdfError
 from engines import EngineCatalog
+from paper_library import PaperLibrary
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
@@ -3678,6 +3679,76 @@ def submit_mathpix_pdf(job: Job, source: Path, requested_formats: list[str]) -> 
     return pdf_id
 
 
+# ---- One Mathpix pipeline for the toolbox and the reader ----
+# Both modules call mathpix_ocr(). It remembers, per PDF content fingerprint, which Mathpix pdf_id
+# already produced which formats, so OCR of an identical PDF (re-run in the toolbox, re-imported into
+# the reader without local cache, …) reuses the finished result instead of uploading and paying again.
+# Any problem with an old result (expired, other Mathpix account, …) falls back to a fresh upload.
+MATHPIX_REUSE_SECONDS = 30 * 24 * 3600
+mathpix_registry_lock = threading.Lock()
+
+
+def mathpix_registry_path() -> Path:
+    return READER_CACHE_DIR / "mathpix-ocr.json"  # resolved per call: lives beside the reader cache
+
+
+def read_mathpix_registry() -> dict[str, Any]:
+    try:
+        data = json.loads(mathpix_registry_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def mathpix_reusable_pdf_id(fingerprint: str, formats: list[str]) -> str | None:
+    with mathpix_registry_lock:
+        entry = read_mathpix_registry().get(fingerprint)
+    if not isinstance(entry, dict) or time.time() - float(entry.get("at") or 0) > MATHPIX_REUSE_SECONDS:
+        return None
+    if entry.get("appId") != (os.getenv("MATHPIX_APP_ID") or "").strip():
+        return None  # results belong to the Mathpix account that created them
+    if not set(formats) <= set(entry.get("formats") or []):
+        return None
+    pdf_id = str(entry.get("pdfId") or "")
+    return pdf_id if re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", pdf_id) else None
+
+
+def record_mathpix_result(fingerprint: str, pdf_id: str, formats: set[str]) -> None:
+    with mathpix_registry_lock:
+        registry = read_mathpix_registry()
+        previous = registry.get(fingerprint) if isinstance(registry.get(fingerprint), dict) else {}
+        known = set(previous.get("formats") or []) if previous.get("pdfId") == pdf_id else set()
+        registry[fingerprint] = {"pdfId": pdf_id, "formats": sorted(known | formats), "at": time.time(),
+                                 "appId": (os.getenv("MATHPIX_APP_ID") or "").strip()}
+        cutoff = time.time() - MATHPIX_REUSE_SECONDS
+        registry = {key: value for key, value in registry.items()
+                    if isinstance(value, dict) and float(value.get("at") or 0) >= cutoff}
+        path = mathpix_registry_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_durable_text(path, json.dumps(registry, ensure_ascii=False, indent=1))
+
+
+def mathpix_ocr(job: Job, source: Path, formats: list[str]) -> tuple[str, set[str]]:
+    """OCR ``source`` and make ``formats`` available; returns (pdf_id, completed formats)."""
+    fingerprint = pdf_core.file_fingerprint(source)
+    reusable = mathpix_reusable_pdf_id(fingerprint, formats)
+    if reusable:
+        job.phase = "ocr"
+        job.log("[OCR] This PDF was already processed by Mathpix; reusing that result without a new upload.")
+        try:
+            completed = wait_for_conversion_status(job, reusable, formats)
+            if set(formats) <= completed:
+                return reusable, completed
+            job.log("[OCR] The earlier result is incomplete; uploading again.")
+        except Exception as exc:  # expired, deleted, network: a fresh upload is always correct
+            job.log(f"[OCR] The earlier result is unavailable ({str(exc)[:160]}); uploading again.")
+    pdf_id = submit_mathpix_pdf(job, source, formats)
+    completed = wait_for_conversion_status(job, pdf_id, formats)
+    if completed:
+        record_mathpix_result(fingerprint, pdf_id, completed)
+    return pdf_id, completed
+
+
 def run_pdf_ocr(job: Job, files: list[Path]) -> None:
     if len(files) != 1:
         raise ValueError("PDF OCR requires exactly one PDF.")
@@ -3686,8 +3757,7 @@ def run_pdf_ocr(job: Job, files: list[Path]) -> None:
     source = files[0]
     output_dir = job.root / "output"
     output_dir.mkdir(exist_ok=True)
-    pdf_id = submit_mathpix_pdf(job, source, requested_formats)
-    completed_formats = wait_for_conversion_status(job, pdf_id, requested_formats)
+    pdf_id, completed_formats = mathpix_ocr(job, source, requested_formats)
     if MMD_BUNDLE_FORMAT not in completed_formats:
         raise RuntimeError("Mathpix could not create the required self-contained MMD bundle.")
     mmd_output = output_dir / f"{job.source_stem}.mmd"
@@ -3714,8 +3784,7 @@ def run_reader_html_ocr(job: Job, source: Path) -> Path:
     """OCR a reader PDF directly to the self-contained browser format."""
     output_dir = job.root / "output"
     output_dir.mkdir(exist_ok=True)
-    pdf_id = submit_mathpix_pdf(job, source, [HTML_BUNDLE_FORMAT])
-    completed = wait_for_conversion_status(job, pdf_id, [HTML_BUNDLE_FORMAT])
+    pdf_id, completed = mathpix_ocr(job, source, [HTML_BUNDLE_FORMAT])
     if HTML_BUNDLE_FORMAT not in completed:
         raise RuntimeError("Mathpix could not create the required self-contained HTML bundle.")
     response = requests.get(
@@ -7779,20 +7848,23 @@ def research_gap_llm_request(preset_id: str, messages: list[dict[str, str]]) -> 
     return result
 
 
+def library_usage() -> dict[str, dict[str, list[dict[str, str]]]]:
+    return {"gaps": research_gap_service.reader_usage()}
+
+
+# The one paper library: reader cache entries, consumed by Research Gaps, ResearchStudio and /api/library.
+paper_library = PaperLibrary(
+    list_entries=lambda: reader_cache_library(),
+    get_entry=lambda key: reader_cache_library_entry(key),
+    cached_file=lambda key, storage, filename: reader_cached_file(reader_cache_root(key) / storage, filename),
+    raw_manifest=lambda key: read_reader_cache_manifest(key),
+    usage=library_usage,
+)
+
+
 def research_gap_reader_source(cache_key: str) -> dict[str, Any] | None:
     """Resolve the richest durable reader artifact for research analysis."""
-    entry = reader_cache_library_entry(cache_key)
-    if not entry:
-        return None
-    storage_root = str(entry.get("storageRoot") or "")
-    render_kind = str(entry.get("renderKind") or "")
-    filename = entry.get("documentFilename") if render_kind == "html" else entry.get("sourceFilename")
-    if not storage_root or not filename:
-        return None
-    source = reader_cached_file(reader_cache_root(cache_key) / storage_root, str(filename))
-    if not source:
-        return None
-    return {"entry": entry, "path": str(source)}
+    return paper_library.analysis_source(cache_key)
 
 
 research_gap_service = ResearchGapService(
@@ -7927,24 +7999,26 @@ def list_engines():
 
 def research_studio_paper_source(cache_key: str) -> Path | None:
     """Use an original cached PDF, including PDFs whose reading view uses OCR."""
-    if not re.fullmatch(r"[0-9a-f]{64}", cache_key):
-        return None
-    manifest = read_reader_cache_manifest(cache_key)
-    document = manifest.get("document") or {}
-    for section in (document, manifest.get("ocr") or {}):
-        filename = str(section.get("sourceFilename") or section.get("sourceName") or "")
-        if Path(filename).suffix.lower() != ".pdf":
-            continue
-        for storage in ("source", "ocr"):
-            source = reader_cached_file(reader_cache_root(cache_key) / storage, filename)
-            if source:
-                return source
-    return None
+    return paper_library.pdf_source(cache_key)
 
 
 def research_studio_papers() -> list[dict[str, str]]:
-    return [{"id": entry["id"], "title": entry["title"]} for entry in reader_cache_library()
-            if research_studio_paper_source(entry["id"])]
+    return [{"id": item["id"], "title": item["title"]} for item in paper_library.documents(pdf_only=True)]
+
+
+@app.get("/api/library")
+def list_library():
+    """Every paper in the local library, with where it is used and links into each module."""
+    return jsonify({"documents": paper_library.documents(
+        query=request.args.get("q", "")[:200], pdf_only=request.args.get("pdf") == "1")})
+
+
+@app.get("/api/library/<cache_key>")
+def get_library_document(cache_key: str):
+    document = paper_library.document(cache_key)
+    if not document:
+        return json_error("文献库中没有这篇论文。", 404)
+    return jsonify({"document": document})
 
 
 def research_studio_project_source(project_id: str) -> dict[str, Any] | None:
@@ -7965,6 +8039,11 @@ app.register_blueprint(create_research_studio_blueprint(research_studio_service)
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/library")
+def library_page():
+    return render_template("library.html")
 
 
 @app.get("/settings")
