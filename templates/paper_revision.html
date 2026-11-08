@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>双语改稿 · 科研工具箱</title>
-  <link rel="stylesheet" href="/static/paper_revision.css?v=11">
+  <link rel="stylesheet" href="/static/paper_revision.css?v=12">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
 </head>
 <body>
@@ -66,7 +66,7 @@
     <div id="projectMainField" class="main-tex-field" hidden><label for="projectMain">主 .tex 文件</label><select id="projectMain"></select></div>
     <p class="hint">更换来源或主文件会按新的主文件重新读取并生成新版本：英文没变的句子保留中文；本次未提交的批注先移入备份。只改名称不会产生新版本。</p>
     <p id="projectError" role="alert"></p>
-    <div class="session-actions"><button type="submit">保存</button><button id="cancelProjectDialog" type="button" class="secondary">取消</button></div></form></dialog>
+    <div class="session-actions"><button type="submit">保存</button><button id="cancelProjectDialog" type="button" class="secondary">取消</button><button id="removeProject" type="button" class="quiet" title="只从本面板移除；论文的 .tex 文件不会被删除">从面板移除此项目…</button></div></form></dialog>
   <dialog id="commentDialog"><form id="commentForm"><div class="drawer-heading"><h2>添加修改意见</h2><button id="closeDialog" class="quiet" type="button" aria-label="关闭">×</button></div><blockquote id="selectedQuote"></blockquote><p id="selectedLocation" class="hint"></p><label for="commentText">Comment</label><textarea id="commentText" rows="5" maxlength="4000" required placeholder="例如：这里因果说得太强，请改为更审慎的表述，并与上一句衔接。"></textarea><label for="scope">允许修改的最大范围</label><select id="scope"><option value="auto">自动判断 · 选中段落及同节相邻段落</option><option value="paragraph">仅选中段落</option><option value="section">选中内容所在章节 / 小节</option><option value="document">全文 · 术语或论证需要全局统一时</option></select><p class="hint">始终优先修改对应句子；需要扩大范围时，修订记录会说明原因。跨段选区可一次添加批注。</p><p id="commentError" role="alert"></p><button type="submit">保存批注</button></form></dialog>
   <button id="selectionButton" class="selection-button" hidden>＋ 添加批注</button>
   <script src="/static/local_paths.js?v=1"></script>
@@ -74,6 +74,6 @@
   <script src="/static/engine_picker.js?v=1"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
   <script src="/static/prompt_handoff.js?v=1"></script>
-  <script src="/static/paper_revision.js?v=16"></script>
+  <script src="/static/paper_revision.js?v=17"></script>
 </body>
 </html>

@@ -629,6 +629,16 @@
     });
   }
   ['closeProjectDialog', 'cancelProjectDialog'].forEach(id => $(id).addEventListener('click', () => $('projectDialog').close()));
+  $('removeProject').addEventListener('click', async () => {
+    const source = project.origin?.path ? `\n\n论文文件（${project.origin.path}）不会被删除，之后仍可重新导入。` : '';
+    if (!confirm(`从面板移除“${project.title}”？\n本工具里的版本历史、中文对照和批注将一并移除。${source}`)) return;
+    const button = $('removeProject'); button.disabled = true; $('projectError').textContent = '';
+    try {
+      await post('remove', {});
+      try { localStorage.removeItem('paperRevisionProject'); } catch { /* preference only */ }
+      location.reload();
+    } catch (error) { $('projectError').textContent = error.message; button.disabled = false; }
+  });
   $('projectForm').addEventListener('submit', async e => {
     e.preventDefault(); const button = e.submitter; button.disabled = true; $('projectError').textContent = '';
     const origin = project.origin || {}, path = $('projectPath').value.trim();

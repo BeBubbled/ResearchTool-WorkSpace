@@ -305,6 +305,22 @@ class RevisionTests(unittest.TestCase):
         return self.service.add_comment(self.pid, {"revision": p["revision"], "text": "将绝对断言改为审慎描述", "scope": scope,
             "anchors": [{"unit_id": unit["id"], "block_id": block["id"], "start": 2, "end": 5, "quote": unit["zh"][2:5]}]})
 
+    def test_remove_project_hides_it_but_keeps_paper_files(self):
+        paper = Path(self.temp.name) / "paper"
+        paper.mkdir()
+        (paper / "main.tex").write_text(SOURCE, encoding="utf-8")
+        local = self.service.create("Local", [{"name": "main.tex", "text": SOURCE}],
+                                    origin={"kind": "local", "path": str(paper), "main": "main.tex"})
+        response = self.client.post(f"/api/paper-revision/projects/{local['id']}/remove", json={}, headers=HEADERS)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertNotIn(local["id"], [p["id"] for p in self.service.list_projects()])
+        self.assertIn(self.pid, [p["id"] for p in self.service.list_projects()])
+        self.assertEqual((paper / "main.tex").read_text(encoding="utf-8"), SOURCE)
+        self.assertEqual(len(list((Path(self.temp.name) / "_removed").glob(f"{local['id']}-*/project.json"))), 1)
+        with self.assertRaises(KeyError):
+            self.service.read(local["id"])
+        self.assertEqual(self.client.post(f"/api/paper-revision/projects/{local['id']}/remove", json={}, headers=HEADERS).status_code, 404)
+
     def test_reparse_fixes_old_sections_and_keeps_chinese_and_comments(self):
         self.translated()
         self.comment()

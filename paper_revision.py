@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -741,6 +742,20 @@ class PaperRevision:
                 p = self.read(path.parent.name)
                 result.append({key: p[key] for key in ("id", "title", "revision", "updated")})
             return sorted(result, key=lambda p: p["updated"], reverse=True)
+
+    def remove_project(self, pid):
+        """Remove a project from the panel. Only the tool's own record (versions, comments,
+        translations) is moved aside to `_removed/`; the paper's files on disk are never touched."""
+        with self.lock:
+            project = self.read(pid)
+            if (project.get("job") or {}).get("status") in ACTIVE:
+                raise Conflict("本轮正在执行，请等待完成或停止后再移除项目。")
+            removed = self.root / "_removed"
+            removed.mkdir(exist_ok=True)
+            shutil.move(str(self.folder(pid)), str(removed / f"{pid}-{int(time.time())}"))
+            for key in [k for k in self.macro_cache if k[0] == pid]:
+                del self.macro_cache[key]
+            return {"removed": pid, "title": project["title"]}
 
     def create(self, title, files, origin=None, translate=True):
         if not files or len(files) > 100 or sum(len(f["text"].encode("utf-8")) + (3 if f.get("bom") else 0) for f in files) > MAX_IMPORT_BYTES:
@@ -2073,6 +2088,10 @@ def create_paper_revision_blueprint(service):
     @bp.post("/api/paper-revision/projects/<pid>/retranslate")
     def retranslate(pid):
         return jsonify(service.clear_translation(pid, request.get_json()))
+
+    @bp.post("/api/paper-revision/projects/<pid>/remove")
+    def remove_project(pid):
+        return jsonify(service.remove_project(pid))
 
     @bp.post("/api/paper-revision/projects/<pid>/reparse")
     def reparse(pid):

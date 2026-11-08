@@ -627,3 +627,4 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 #projectDialog input { width:100% }
 #projectDialog .path-picker input { flex:1 }
 #projectError { color:#a3412a; font-size:13px }
+#removeProject { margin-left:auto; color:#a3412a }
