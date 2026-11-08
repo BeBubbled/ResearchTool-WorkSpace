@@ -13,16 +13,17 @@
 {%- macro client_link(item) -%}
   {%- set key, href, label, full, icon = item -%}
   <a class="client-rail-item{% if client_active == key %} active{% endif %}" href="{{ href }}" title="{{ full }}" data-client-nav="{{ key }}"{% if client_active == key %} aria-current="page"{% endif %}>
-    <svg viewBox="0 0 24 24" aria-hidden="true">{{ icon | safe }}</svg><span>{{ label }}</span>
+    <svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" aria-hidden="true">{{ icon | safe }}</svg><span>{{ label }}</span>
   </a>
 {%- endmacro %}
+{#- Stylesheet and body class come before the rail so it never paints unstyled (black SVG flash) between pages. -#}
+<link rel="stylesheet" href="/static/client_shell.css?v=4">
+<script>document.body.classList.add("has-client-rail");</script>
 <nav class="client-rail" aria-label="Research Toolkit 客户端导航">
   <a class="client-rail-brand" href="/reader" title="Research Toolkit"><span class="client-brand-mark" aria-hidden="true"><i></i><i></i><i></i></span></a>
   <div class="client-rail-group">{% for item in client_items %}{{ client_link(item) }}{% endfor %}</div>
   <div class="client-rail-group client-rail-more" aria-label="更多">{% for item in client_more %}{{ client_link(item) }}{% endfor %}</div>
   <div class="client-rail-group client-rail-bottom">{{ client_link(("settings", "/settings", "设置", "全局设置 · AI、翻译、OCR、语音与 GitHub", '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>')) }}</div>
 </nav>
-<script>document.body.classList.add("has-client-rail");</script>
 <script src="/static/engine_picker.js?v=1"></script>
-<link rel="stylesheet" href="/static/client_shell.css?v=3">
 <script src="/static/client_shell.js?v=2" defer></script>
