@@ -5,14 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
   <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/reader.css?v=20261108-inspector">
+  <link rel="stylesheet" href="/static/reader.css?v=20261108-toolbar">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
   <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body{% if embed %} class="reader-embedded"{% endif %}>
-  {% if embed %}<link rel="stylesheet" href="/static/client_shell.css?v=8"><script src="/static/engine_picker.js?v=1"></script>
+  {% if embed %}<link rel="stylesheet" href="/static/client_shell.css?v=8"><script src="/static/engine_picker.js?v=2"></script>
   <style>.reader-embedded .module-bar, .reader-embedded #newPaper { display:none !important; }</style>
   {% else %}{% set client_active = "reader" %}{% include "_client_nav.html" %}{% endif %}
   <header class="module-bar"><h1 class="module-bar-title">精读</h1><span class="module-bar-sub">PDF / Markdown 阅读 · OCR · 整篇翻译 · 划词解读 · Three-Pass</span><div class="module-bar-actions"><a class="module-bar-link" href="/settings#reader">精读设置</a><a class="module-bar-link" href="/settings#mathpix">OCR 与 AI</a></div></header>
@@ -88,14 +88,20 @@
           <div class="toolbar-actions">
             <button id="outlineToggle" data-command="显示 / 隐藏目录" data-shortcut="mod+\" class="toolbar-text-button panel-toggle-button" type="button" aria-label="打开文档目录" title="打开文档目录" aria-controls="outlinePanel" aria-expanded="true"><span class="toolbar-icon" aria-hidden="true">☰</span><span class="toolbar-label">目录</span></button>
             <button id="newPaper" data-command="导入另一篇论文" class="toolbar-text-button" type="button" aria-label="导入另一篇论文" title="导入另一篇论文"><span class="toolbar-icon" aria-hidden="true">←</span><span class="toolbar-label">导入另一篇</span></button>
-            <div class="view-switch toolbar-view-switch" id="viewSwitch" hidden>
-              <button type="button" data-view="original" data-command="视图：原文" data-shortcut="1" class="active" aria-label="显示原文" title="显示原文"><span class="toolbar-full-label">原文</span><span class="toolbar-compact-label" aria-hidden="true">原</span></button>
-              <button type="button" data-view="translated" data-command="视图：译文" data-shortcut="2" aria-label="显示译文" title="显示译文"><span class="toolbar-full-label">译文</span><span class="toolbar-compact-label" aria-hidden="true">译</span></button>
-              <button id="liveTranslationViewButton" data-command="视图：点段翻译" data-shortcut="3" type="button" data-view="liveTranslation" aria-label="点段翻译" title="点段翻译"><span class="toolbar-full-label">点段翻译</span><span class="toolbar-compact-label" aria-hidden="true">翻</span></button>
-              <button id="interleavedViewButton" data-command="视图：段落对照" data-shortcut="4" type="button" data-view="interleaved" aria-label="段落对照" title="段落对照"><span class="toolbar-full-label">段落对照</span><span class="toolbar-compact-label" aria-hidden="true">段</span></button>
-              <button id="sideBySideViewButton" data-command="视图：左右对照" data-shortcut="5" type="button" data-view="sideBySide" aria-label="左右对照" title="左右对照"><span class="toolbar-full-label">左右对照</span><span class="toolbar-compact-label" aria-hidden="true">对</span></button>
+            <div class="view-switch toolbar-view-switch view-menu" id="viewSwitch" hidden>
+              <button id="viewMenuButton" type="button" class="toolbar-text-button view-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="viewMenuList" title="切换阅读视图（1–5）"><span class="toolbar-label">视图：</span><span id="viewMenuLabel">原文</span> ▾</button>
+              <div id="viewMenuList" class="toolbar-popover view-menu-list" role="group" aria-label="阅读视图" data-popover hidden>
+                <button type="button" data-view="original" data-command="视图：原文" data-shortcut="1" class="active" aria-label="显示原文" title="显示原文"><span class="toolbar-full-label">原文</span><span class="toolbar-compact-label" aria-hidden="true">原</span></button>
+                <button type="button" data-view="translated" data-command="视图：译文" data-shortcut="2" aria-label="显示译文" title="显示译文"><span class="toolbar-full-label">译文</span><span class="toolbar-compact-label" aria-hidden="true">译</span></button>
+                <button id="liveTranslationViewButton" data-command="视图：点段翻译" data-shortcut="3" type="button" data-view="liveTranslation" aria-label="点段翻译" title="点段翻译"><span class="toolbar-full-label">点段翻译</span><span class="toolbar-compact-label" aria-hidden="true">翻</span></button>
+                <button id="interleavedViewButton" data-command="视图：段落对照" data-shortcut="4" type="button" data-view="interleaved" aria-label="段落对照" title="段落对照"><span class="toolbar-full-label">段落对照</span><span class="toolbar-compact-label" aria-hidden="true">段</span></button>
+                <button id="sideBySideViewButton" data-command="视图：左右对照" data-shortcut="5" type="button" data-view="sideBySide" aria-label="左右对照" title="左右对照"><span class="toolbar-full-label">左右对照</span><span class="toolbar-compact-label" aria-hidden="true">对</span></button>
+              </div>
             </div>
             <div id="zoomControls" class="zoom-controls hidden"><button id="zoomOut" data-command="缩小 PDF" type="button" aria-label="缩小" title="缩小 PDF">−</button><span id="zoomLevel">100%</span><button id="zoomIn" data-command="放大 PDF" type="button" aria-label="放大" title="放大 PDF">＋</button></div>
+<div class="speech-menu">
+              <button id="speechMenuButton" type="button" class="toolbar-text-button speech-menu-button hidden" aria-haspopup="true" aria-expanded="false" aria-controls="speechPopover" title="朗读：点击段落朗读、语速与停止"><span class="toolbar-icon" data-speech-menu-icon aria-hidden="true">🔊</span><span class="toolbar-label">朗读 ▾</span></button>
+              <div id="speechPopover" class="toolbar-popover speech-popover" role="group" aria-label="朗读" data-popover hidden>
             <label id="speechRateControl" class="speech-rate-control hidden"><span class="toolbar-label">语速</span>
               <select id="speechPlaybackRate" aria-label="Azure 朗读语速">
                 <option value="0.5">0.5×</option>
@@ -109,6 +115,8 @@
             </label>
             <button id="startSpeech" data-command="开关点击朗读" class="speech-start-button hidden" type="button" aria-label="关闭点击段落朗读" title="关闭点击段落朗读" aria-pressed="true"><span class="toolbar-icon" data-speech-icon aria-hidden="true">🔊</span><span class="toolbar-label" data-speech-label>点击朗读：开</span></button>
             <button id="stopSpeech" data-command="停止朗读" class="speech-stop-button hidden" type="button" aria-label="停止朗读" title="停止朗读" disabled><span class="toolbar-icon" aria-hidden="true">■</span><span class="toolbar-label">停止朗读</span></button>
+              </div>
+            </div>
             <button id="selectionSettingsButton" data-command="排版：目录、字体、字号与间距" class="settings-button" type="button" aria-label="打开排版设置" title="排版：目录、字体、字号与间距" aria-expanded="false" aria-controls="selectionSettingsPanel">
               <span class="toolbar-icon toolbar-icon-text" aria-hidden="true">Aa</span><span class="toolbar-label">排版</span>
             </button>
@@ -293,6 +301,7 @@
                 <label>Temperature<input id="threePassTemperature" type="number" min="0" max="2" step="0.1" placeholder="自动"></label>
               </div>
               <label class="three-pass-billing-confirm"><input id="threePassBillingConfirmed" type="checkbox">我确认本次分析将使用 API Key 并产生 API 费用</label>
+              <p id="threePassBillingAck" class="three-pass-disclosure billing-ack-note" hidden>已在 <a href="/settings#billing">设置 › 费用确认</a> 中确认这些引擎的费用，已自动勾选；这次不需要可以取消。</p>
               <a class="manage-presets-link" href="/settings#llm">管理全局 API 预设 →</a>
             </section>
             <div class="three-pass-model-grid three-pass-common-grid">
@@ -341,6 +350,6 @@
   </main>
   <script src="/static/prompt_handoff.js?v=1"></script>
   <script src="/static/inspector.js?v=1"></script>
-  <script src="/static/reader.js?v=20261108-inspector"></script>
+  <script src="/static/reader.js?v=20261108-billing"></script>
 </body>
 </html>

@@ -11,7 +11,7 @@
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]));
   const SETTINGS_PANES = [
-    ["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["mathpix", "Mathpix OCR"], ["google", "Google 翻译"],
+    ["general", "通用与快捷键"], ["billing", "费用确认"], ["advanced", "高级：导出 / 导入浏览器设置"], ["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["mathpix", "Mathpix OCR"], ["google", "Google 翻译"],
     ["speech", "Azure 语音"], ["github", "GitHub 图片"], ["reader", "精读默认行为"], ["workflow", "双语改稿工作流"], ["three-pass", "Three-Pass 篇幅"], ["studio", "ResearchStudio 环境"],
   ];
   const CODE_KEYS = { Backslash: "\\", Comma: ",", Period: ".", Slash: "/", Enter: "enter", Escape: "escape", BracketLeft: "[", BracketRight: "]", Space: "space" };
@@ -36,7 +36,13 @@
   }
 
   const typing = target => Boolean(target?.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true']"));
-  const visible = node => Boolean(node && !node.closest("[hidden]") && !node.disabled && node.getClientRects().length);
+  // Controls inside a closed toolbar popover ([data-popover]) still count: their shortcuts must keep working.
+  const visible = node => {
+    if (!node || node.disabled) return false;
+    const popover = node.closest("[data-popover]");
+    if (popover) return !node.closest("[hidden]:not([data-popover])") && !node.classList.contains("hidden") && Boolean(popover.parentElement?.getClientRects().length);
+    return !node.closest("[hidden]") && node.getClientRects().length > 0;
+  };
   const moduleName = () => document.querySelector(".module-bar-title")?.textContent.trim() || "当前页面";
   const label = node => node.dataset.command || node.getAttribute("aria-label") || node.title || node.textContent.trim();
 

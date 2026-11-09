@@ -2,12 +2,14 @@
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["llm", "mathpix", "codex", "claude", "google", "reader", "workflow", "three-pass", "studio", "speech", "github"];
+const SETTINGS_TABS = ["general", "llm", "mathpix", "codex", "claude", "billing", "google", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
 // Sidebar groups (macOS System Settings style): accounts & engines, services, then per-module defaults.
 const SETTINGS_GROUPS = [
-  { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"]] },
+  { label: "通用", items: [["general", "通用"]] },
+  { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["billing", "费用确认"]] },
   { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
   { label: "功能", items: [["reader", "精读"], ["workflow", "双语改稿"], ["three-pass", "Three-Pass"], ["studio", "ResearchStudio"]] },
+  { label: "高级", items: [["advanced", "高级"]] },
 ];
 const LAST_PANE_KEY = "research-toolkit.settings.last-pane";
 function storedPane() {
@@ -47,6 +49,113 @@ const READER_MARGIN_DEFAULTS = {
 };
 const READER_MARGIN_ZONES = [["header", "页眉"], ["body", "正文"], ["footer", "页脚"]];
 const READER_MARGIN_SIDES = [["top", "上"], ["right", "右"], ["bottom", "下"], ["left", "左"]];
+
+// ---- 通用 / 费用确认 / 高级: browser-side preferences (nothing here reaches the server or .env).
+const BILLING_ENGINES = [
+  ["codex", "Codex", "使用 ChatGPT / Codex 套餐额度：精读 Three-Pass、研究空白地图、ResearchStudio、双语改稿。"],
+  ["claude", "Claude Code", "使用 Claude 套餐额度：双语改稿的翻译、修订与检查。"],
+  ["api", "API 预设", "按所选预设的 API Key 单独计费：划词解读、Three-Pass 直接 API、双语改稿。"],
+  ["google", "Google 翻译", "Cloud Translation 基础版按字符计费，每月前 50 万字符免费：双语改稿的快速翻译。"],
+];
+// Remembered layout state (pane widths, open tabs, sort orders…) — cleared by 重置界面布局.
+const LAYOUT_PREFIXES = ["research-toolkit.inspector.", "research-toolkit.library.", "research-toolkit.settings.", "research-toolkit.prompts.", "paper-lens.selection-more-open", "health.trend-scale", "paperRevision.commentDialogPos"];
+// Exportable browser preferences: layout state plus reader defaults and cost acknowledgements.
+const EXPORT_PREFIXES = [...LAYOUT_PREFIXES, "research-toolkit.billing-ack", "paper-lens.selection-settings.v1"];
+const storedKeys = prefixes => {
+  const keys = [];
+  try { for (let i = 0; i < localStorage.length; i += 1) { const key = localStorage.key(i); if (prefixes.some(prefix => key.startsWith(prefix))) keys.push(key); } } catch {}
+  return keys.sort();
+};
+
+function renderGeneralSettingsPanel() {
+  const shortcut = (keys, text) => `<tr><td><kbd>${keys}</kbd></td><td>${text}</td></tr>`;
+  const mod = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl";
+  return `
+      <section class="settings-tab-panel general-settings" data-settings-panel="general" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>通用</h3><span class="preset-id">保存在此浏览器</span></div>
+          <p class="hint">命令面板、快捷键与界面布局。各模块的默认值在“功能”分组里。</p></div>
+        </div>
+        <p id="generalSettingsStatus" class="manager-message hidden" role="status"></p>
+        <div class="reader-settings-group">
+          <h4>命令面板与快捷键</h4>
+          <table class="shortcut-table">${shortcut(`${mod} K`, "命令面板：执行当前页面的命令、前往模块或设置、打开文献库里的论文")}${shortcut("?", "显示当前页面的快捷键")}${shortcut("/", "聚焦工具箱或文献库的搜索框")}${shortcut("Alt 1…4", "切换右侧检查器的标签（精读、改稿）或视图（研究空白）")}${shortcut(`${mod} \\`, "开关左侧目录或章节")}${shortcut(`${mod} Enter`, "改稿：提交本轮；Prompt：提交到 ChatGPT")}</table>
+          <p class="hint">字母和数字快捷键在输入框里不生效；带 ${mod} 的组合键随时可用。</p>
+        </div>
+        <div class="reader-settings-group">
+          <div class="reader-group-heading"><h4>界面布局</h4><button type="button" data-reset-layout>重置界面布局</button></div>
+          <p class="hint">检查器的宽度和打开的标签、面板开关、文献库的来源与排序、上次打开的设置面板等会记在浏览器里。当前记住了 <strong>${storedKeys(LAYOUT_PREFIXES).length}</strong> 项。重置不影响精读默认值、费用确认和任何账号配置。</p>
+        </div>
+      </section>`;
+}
+
+function renderBillingSettingsPanel() {
+  const ack = window.EnginePicker?.billingAck?.get() || {};
+  return `
+      <section class="settings-tab-panel billing-settings" data-settings-panel="billing" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>费用确认</h3><span class="preset-id">保存在此浏览器</span></div>
+          <p class="hint">为常用的引擎确认一次费用后，提交任务时会自动勾选使用确认（勾选框仍然显示，可以针对单次取消）。未确认的引擎仍需每次手动勾选。</p></div>
+        </div>
+        <p id="billingSettingsStatus" class="manager-message hidden" role="status"></p>
+        <div class="reader-settings-group">${BILLING_ENGINES.map(([engine, label, text]) => `
+          <label class="reader-switch-row"><span><strong>${label}</strong><small>${text}</small></span><input type="checkbox" role="switch" data-billing-ack="${engine}" ${ack[engine] === true ? "checked" : ""}></label>`).join("")}
+        </div>
+      </section>`;
+}
+
+function renderAdvancedSettingsPanel() {
+  return `
+      <section class="settings-tab-panel advanced-settings" data-settings-panel="advanced" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>高级</h3><span class="preset-id">浏览器设置</span></div>
+          <p class="hint">导出或导入保存在此浏览器里的设置：精读默认行为、费用确认和界面布局，便于换浏览器或换电脑。API Key、账号和其他全局配置保存在项目 .env 与后端，不在导出文件里。</p></div>
+        </div>
+        <p id="advancedSettingsStatus" class="manager-message hidden" role="status"></p>
+        <div class="reader-settings-group">
+          <h4>浏览器设置</h4>
+          <p class="hint">当前共 <strong>${storedKeys(EXPORT_PREFIXES).length}</strong> 项。</p>
+          <div class="speech-editor-actions"><button type="button" data-export-browser-settings>导出为 JSON</button><button type="button" data-import-browser-settings>从 JSON 导入…</button><input type="file" accept=".json,application/json" data-import-browser-file hidden></div>
+        </div>
+      </section>`;
+}
+
+function wireBrowserSettings() {
+  const status = (id, text, ok = true) => { const node = form.querySelector(id); if (!node) return; node.textContent = text; node.className = `manager-message ${ok ? "ok" : "bad"}`; };
+  form.querySelectorAll("[data-billing-ack]").forEach(input => input.addEventListener("change", () => {
+    window.EnginePicker?.billingAck?.set(input.dataset.billingAck, input.checked);
+    status("#billingSettingsStatus", input.checked ? "已确认，提交时会自动勾选使用确认。" : "已取消确认，提交时需要手动勾选。");
+  }));
+  form.querySelector("[data-reset-layout]")?.addEventListener("click", () => {
+    const keys = storedKeys(LAYOUT_PREFIXES);
+    keys.forEach(key => { try { localStorage.removeItem(key); } catch {} });
+    renderLlmManager();
+    status("#generalSettingsStatus", `已重置 ${keys.length} 项界面布局，其他页面刷新后生效。`);
+  });
+  form.querySelector("[data-export-browser-settings]")?.addEventListener("click", () => {
+    const values = {};
+    storedKeys(EXPORT_PREFIXES).forEach(key => { try { values[key] = localStorage.getItem(key); } catch {} });
+    const blob = new Blob([JSON.stringify({ format: "research-toolkit-browser-settings", version: 1, exportedAt: new Date().toISOString(), values }, null, 2)], { type: "application/json" });
+    const link = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "research-toolkit-browser-settings.json" });
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    status("#advancedSettingsStatus", `已导出 ${Object.keys(values).length} 项。`);
+  });
+  const file = form.querySelector("[data-import-browser-file]");
+  form.querySelector("[data-import-browser-settings]")?.addEventListener("click", () => file?.click());
+  file?.addEventListener("change", async () => {
+    try {
+      const data = JSON.parse(await file.files[0].text());
+      if (data?.format !== "research-toolkit-browser-settings" || typeof data.values !== "object") throw new Error("这不是本工具导出的浏览器设置文件。");
+      const entries = Object.entries(data.values).filter(([key, value]) => EXPORT_PREFIXES.some(prefix => key.startsWith(prefix)) && typeof value === "string");
+      entries.forEach(([key, value]) => localStorage.setItem(key, value));
+      renderLlmManager();
+      status("#advancedSettingsStatus", `已导入 ${entries.length} 项，其他页面刷新后生效。`);
+    } catch (error) {
+      status("#advancedSettingsStatus", error.message || "导入失败。", false);
+    }
+  });
+}
 
 // ResearchStudio's environment check (moved here from the Studio page): per-workflow readiness and setup.
 async function loadStudioConfig(refresh = false) {
@@ -486,6 +595,9 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
       </section>
 ${renderReaderSettingsPanel()}
 ${renderStudioSettingsPanel()}
+${renderGeneralSettingsPanel()}
+${renderBillingSettingsPanel()}
+${renderAdvancedSettingsPanel()}
       <section class="settings-tab-panel workflow-manager" data-settings-panel="workflow" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
@@ -634,6 +746,7 @@ ${renderStudioSettingsPanel()}
   form.querySelector("[data-test-github]")?.addEventListener("click", event => testGlobalGithubConfig(event.currentTarget));
   form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
   wireReaderSettings();
+  wireBrowserSettings();
   form.querySelector("[data-refresh-studio]")?.addEventListener("click", async event => {
     event.currentTarget.disabled = true;
     await loadStudioConfig(true);

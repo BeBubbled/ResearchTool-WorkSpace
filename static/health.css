@@ -432,3 +432,9 @@ tbody tr:last-child td { border-bottom:0; }
 .trend-chart { background:repeating-linear-gradient(to bottom,#e5e9e5 0 1px,transparent 1px 33.333%); }
 .source-tag { color:#766b78; border-color:#ddd4da; background:#f3eff2; }
 .show-more { color:#6f6572; border-color:#ddd4da; background:#f8f4f6; }
+
+/* 周 / 月 / 年 segmented control for the sleep trend. */
+.trend-scale { display:inline-flex; gap:2px; padding:3px; border-radius:8px; background:rgba(84,105,95,.09); }
+.trend-scale button { padding:4px 12px; border:0; border-radius:6px; background:transparent; color:#5d6d68; font:inherit; font-size:12px; font-weight:650; cursor:pointer; }
+.trend-scale button[aria-checked="true"] { background:#fff; color:#2f4a3f; box-shadow:0 1px 3px rgba(66,78,71,.16); }
+.trend-chart.dense .trend-bar-wrap { min-width:4px; }

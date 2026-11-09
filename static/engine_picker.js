@@ -153,8 +153,18 @@
     return parts.join('；');
   }
 
+  // Per-engine cost acknowledgement (设置 › 费用确认), kept in this browser. When every engine a submission
+  // uses is acknowledged, modules pre-tick their usage checkbox; the checkbox stays visible and the server
+  // still requires it, so the user can always untick it for one run.
+  const ACK_KEY = 'research-toolkit.billing-ack';
+  const billingAck = {
+    get() { try { const value = JSON.parse(localStorage.getItem(ACK_KEY) || '{}'); return value && typeof value === 'object' ? value : {}; } catch { return {}; } },
+    set(engine, value) { const next = {...billingAck.get(), [engine]: Boolean(value)}; try { localStorage.setItem(ACK_KEY, JSON.stringify(next)); } catch {} return next; },
+    covers(engines) { const ack = billingAck.get(); const list = [...new Set((engines || []).filter(Boolean))]; return list.length > 0 && list.every(engine => ack[engine] === true); },
+  };
+
   window.EnginePicker = {
     EFFORTS, SETTINGS_TAB, load, refresh, onChange, current: () => catalog,
-    choices, field, read: readField, describe, issues, billing, ready,
+    choices, field, read: readField, describe, issues, billing, ready, billingAck,
   };
 })();

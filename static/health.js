@@ -20,6 +20,7 @@
     visibleNights: [],
     source: "all",
     range: "30",
+    trendScale: (() => { try { return localStorage.getItem("health.trend-scale") || "week"; } catch { return "week"; } })(),
     rowsShown: 12,
     rawCount: 0,
     filename: "",
@@ -31,7 +32,7 @@
       "importError", "importSection", "dashboard", "archiveSummary", "sourceFilter", "rangeFilter",
       "exportCsv", "importAnother", "avgSleep", "avgSleepNote", "goalBar", "avgBedtime",
       "bedtimeNote", "avgEfficiency", "efficiencyNote", "nightCount", "nightCountNote",
-      "trendChart", "stageDonut", "stageTotal", "stageLegend", "stageCoverage", "insightStrip",
+      "trendChart", "trendTitle", "stageDonut", "stageTotal", "stageLegend", "stageCoverage", "insightStrip",
       "nightRows", "showMore",
     ].forEach(id => { dom[id] = document.getElementById(id); });
   }
@@ -58,6 +59,11 @@
       state.rowsShown = 12;
       rebuildNights();
     });
+    document.querySelectorAll("[data-trend-scale]").forEach(button => button.addEventListener("click", () => {
+      state.trendScale = button.dataset.trendScale;
+      try { localStorage.setItem("health.trend-scale", state.trendScale); } catch {}
+      renderTrend();
+    }));
     dom.rangeFilter.addEventListener("change", () => {
       state.range = dom.rangeFilter.value;
       state.rowsShown = 12;
@@ -398,7 +404,7 @@
     const dateRange = nights.length ? `${formatDate(nights[nights.length - 1].date)} — ${formatDate(nights[0].date)}` : "无可用记录";
     dom.archiveSummary.textContent = `${dateRange} · ${formatNumber(state.records.length)} 条睡眠记录`;
     renderMetrics(nights);
-    renderTrend(nights);
+    renderTrend();
     renderStages(nights);
     renderInsights(nights);
     renderNightRows();
@@ -420,10 +426,34 @@
     dom.nightCountNote.textContent = `${formatNumber(nights.reduce((sum, night) => sum + night.recordCount, 0))} 条原始记录`;
   }
 
-  function renderTrend(nights) {
-    const recent = nights.slice(0, 14).reverse();
+  // 周 = last 7 nights, 月 = last 30 nights, 年 = one bar per month (average night) over the last 12 months.
+  // The trend reads all nights of the chosen source; the 时间范围 select only scopes the summary cards and table.
+  function trendBars() {
+    const nights = state.allNights;
+    if (state.trendScale !== "year") return nights.slice(0, state.trendScale === "month" ? 30 : 7).reverse();
+    const months = new Map();
+    nights.forEach(night => {
+      const key = night.date.slice(0, 7);
+      if (!months.has(key)) months.set(key, []);
+      months.get(key).push(night);
+    });
+    return [...months].slice(0, 12).reverse().map(([month, group]) => {
+      const staged = group.filter(night => !night.estimated);
+      const stages = {};
+      ["deep", "rem", "core", "other"].forEach(stage => { stages[stage] = average(staged.map(night => night.stages[stage] || 0)); });
+      const stageSum = Object.values(stages).reduce((sum, value) => sum + value, 0);
+      return { date: `${month}-01`, month, count: group.length, totalSleep: average(group.map(night => night.totalSleep)), estimated: !staged.length || !stageSum, stages, stageTotal: stageSum };
+    });
+  }
+
+  function renderTrend() {
+    const recent = trendBars();
+    const titles = { week: "最近 7 晚睡眠", month: "最近 30 晚睡眠", year: "近 12 个月 · 每晚平均" };
+    if (dom.trendTitle) dom.trendTitle.textContent = titles[state.trendScale] || titles.week;
+    document.querySelectorAll("[data-trend-scale]").forEach(button => button.setAttribute("aria-checked", String(button.dataset.trendScale === state.trendScale)));
+    dom.trendChart.classList.toggle("dense", state.trendScale === "month");
     dom.trendChart.innerHTML = "";
-    recent.forEach(night => {
+    recent.forEach((night, index) => {
       const wrap = document.createElement("div");
       wrap.className = "trend-bar-wrap";
       const totalHeight = Math.max(2, Math.min(100, (night.totalSleep / (12 * 3600000)) * 100));
@@ -441,20 +471,23 @@
           if (!night.stages[stage]) return;
           const segment = document.createElement("i");
           segment.className = stage;
-          segment.style.height = `${(night.stages[stage] / night.totalSleep) * 100}%`;
+          segment.style.height = `${(night.stages[stage] / (night.stageTotal || night.totalSleep)) * 100}%`;
           bar.append(segment);
         });
       }
       const tooltip = document.createElement("span");
       tooltip.className = "trend-tooltip";
-      tooltip.textContent = `${formatDate(night.date)} · ${formatDuration(night.totalSleep)}${night.estimated ? "（估算）" : ""}`;
+      tooltip.textContent = night.month
+        ? `${night.month.replace("-", " 年 ")} 月 · 平均 ${formatDuration(night.totalSleep)} · ${night.count} 晚`
+        : `${formatDate(night.date)} · ${formatDuration(night.totalSleep)}${night.estimated ? "（估算）" : ""}`;
       const label = document.createElement("span");
       label.className = "trend-label";
-      label.textContent = shortDate(night.date);
+      // Month view: label every fifth night so 30 labels don't collide.
+      label.textContent = night.month ? `${Number(night.month.slice(5))} 月` : (state.trendScale === "month" && index % 5 ? "" : shortDate(night.date));
       wrap.append(bar, tooltip, label);
       dom.trendChart.append(wrap);
     });
-    dom.trendChart.setAttribute("aria-label", recent.length ? `最近 ${recent.length} 晚平均睡眠 ${formatDuration(average(recent.map(n => n.totalSleep)))}` : "没有睡眠记录");
+    dom.trendChart.setAttribute("aria-label", recent.length ? `${titles[state.trendScale] || titles.week}：平均 ${formatDuration(average(recent.map(n => n.totalSleep)))}` : "没有睡眠记录");
   }
 
   function renderStages(nights) {

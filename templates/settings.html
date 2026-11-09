@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#182a5b">
   <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
-  <link rel="stylesheet" href="/static/settings_page.css?v=5">
+  <link rel="stylesheet" href="/static/settings_page.css?v=6">
 </head>
 <body class="settings-page{% if embed %} settings-embedded{% endif %}">
   {% if not embed %}{% set client_active = "settings" %}{% include "_client_nav.html" %}{% endif %}
@@ -15,9 +15,9 @@
   <main class="settings-main">
     <div id="settingsRoot" class="tool-form settings-root"></div>
   </main>
-  <script src="/static/engine_picker.js?v=1"></script>
+  <script src="/static/engine_picker.js?v=2"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/settings.js?v=5"></script>
+  <script src="/static/settings.js?v=6"></script>
   <script>
     (() => {
       const embedded = {{ "true" if embed else "false" }};

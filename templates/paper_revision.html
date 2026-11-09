@@ -83,7 +83,7 @@
           <p id="sessionInfo" class="hint"></p>
           <div class="session-actions"><button id="sessionFolder" type="button" class="quiet">更改项目目录…</button><button id="sessionReset" type="button" class="quiet">重新开始会话</button><button id="sessionCopy" type="button" class="quiet" hidden>复制打开命令</button></div>
         </div></section>
-      <div class="consent"><label><input id="usage" type="checkbox">提交时使用所选模型处理论文与批注（<span id="billing">API 独立计费</span>）</label></div>
+      <div class="consent"><label><input id="usage" type="checkbox">提交时使用所选模型处理论文与批注（<span id="billing">API 独立计费</span>）</label><p id="usageAck" class="hint billing-ack-note" hidden>已在 <a href="/settings#billing">设置 › 费用确认</a> 中确认这些引擎的费用，已自动勾选；这次不需要可以取消。</p></div>
       <div class="session-actions sheet-actions"><button type="button" class="secondary" data-close-submit>取消</button><button id="confirmSubmit" type="submit" class="primary">确认提交</button></div>
     </form>
   </dialog>
@@ -103,10 +103,10 @@
   <button id="selectionButton" data-command="为选中文字添加批注" data-shortcut="c" class="selection-button" hidden>＋ 添加批注</button>
   <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/paper_revision_import.js?v=2"></script>
-  <script src="/static/engine_picker.js?v=1"></script>
+  <script src="/static/engine_picker.js?v=2"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
   <script src="/static/prompt_handoff.js?v=1"></script>
   <script src="/static/inspector.js?v=1"></script>
-  <script src="/static/paper_revision.js?v=18"></script>
+  <script src="/static/paper_revision.js?v=20"></script>
 </body>
 </html>

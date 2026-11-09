@@ -555,3 +555,18 @@ body.reader-opening main::before { content:"正在打开论文…"; display:bloc
 .selection-more-toggle { margin-left:auto; color:#5d6d68 !important; background:#fff !important; }
 .selection-more { margin-top:10px; padding-top:10px; border-top:1px solid #e1ece8; }
 .selection-more[hidden] { display:none; }
+
+/* Toolbar popovers: 视图 ▾ (five reading views) and 朗读 ▾ (click-to-read, rate, stop). */
+.view-menu, .speech-menu { position:relative; display:inline-flex; }
+.toolbar-popover { position:absolute; z-index:15; top:calc(100% + 6px); right:0; min-width:170px; display:grid; gap:4px; padding:8px; border:1px solid #c9dcd6; border-radius:10px; background:#fff; box-shadow:0 14px 34px rgba(15,66,56,.18); }
+.toolbar-popover[hidden] { display:none !important; }
+.view-menu-list button { display:flex; justify-content:flex-start; width:100%; padding:7px 10px !important; border:0 !important; border-radius:6px; background:transparent !important; color:var(--ink) !important; font-size:12.5px !important; text-align:left; }
+.view-menu-list button:hover { background:var(--soft) !important; }
+.view-menu-list button.active { background:var(--soft) !important; color:var(--accent) !important; font-weight:800; }
+.view-menu-list .toolbar-full-label { display:inline !important; }
+.view-menu-list .toolbar-compact-label { display:none !important; }
+.view-menu-button #viewMenuLabel { font-weight:800; }
+.speech-popover { min-width:200px; }
+.speech-popover > * { width:100%; justify-content:flex-start; }
+.speech-popover .speech-rate-control { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.speech-popover .toolbar-label { display:inline !important; }

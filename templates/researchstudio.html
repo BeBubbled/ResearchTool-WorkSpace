@@ -49,11 +49,12 @@
           <div id="availability" class="notice" aria-live="polite">正在检查环境…</div>
           <p class="hint env-links"><button id="refresh" class="link-button" type="button">重新检查环境</button> · <a href="/settings#studio">安装说明与依赖详情</a></p>
           <label class="consent"><input id="confirmUsage" type="checkbox" required><span>使用全局 Codex 模型和套餐额度运行。论文内容会交给模型处理，检索会访问公开文献服务，语音默认使用 Edge TTS。</span></label>
+          <p id="usageAck" class="hint billing-ack-note" hidden>已在 <a href="/settings#billing">设置 › 费用确认</a> 中确认这些引擎的费用，已自动勾选；这次不需要可以取消。</p>
           <p class="hint">每个任务使用独立目录，输入文件保留原样。长流程可能需要较多时间与额度。</p>
           <div class="sheet-actions"><button type="button" class="secondary" data-close-new-job>取消</button><button id="submit" type="submit" disabled>开始生成</button></div>
         </form>
     <p id="formError" role="alert"></p>
   </dialog>
-  <script src="/static/researchstudio.js?v=20261108-sheet"></script>
+  <script src="/static/researchstudio.js?v=20261108-billing"></script>
 </body>
 </html>

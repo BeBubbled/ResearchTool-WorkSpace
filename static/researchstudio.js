@@ -135,7 +135,14 @@
   $("paperId").addEventListener("change",() => { if ($("paperId").value) $("paper").value = ""; });
   const dialog = $("newJobDialog");
   document.addEventListener("click", event => {
-    if (event.target.closest("[data-open-new-job]")) { $("formError").textContent = ""; dialog.showModal(); $("module").focus(); }
+    if (event.target.closest("[data-open-new-job]")) {
+      $("formError").textContent = "";
+      // 设置 › 费用确认: Codex allowance acknowledged once → pre-tick the usage box (it can still be unticked).
+      const acknowledged = !!window.EnginePicker?.billingAck?.covers(["codex"]);
+      if (acknowledged) $("confirmUsage").checked = true;
+      $("usageAck").hidden = !acknowledged;
+      dialog.showModal(); $("module").focus();
+    }
     if (event.target.closest("[data-close-new-job]")) dialog.close();
   });
   $("jobList").addEventListener("click", event => { const item = event.target.closest("[data-job-id]"); if (item) selectJob(item.dataset.jobId); });

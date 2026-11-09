@@ -57,3 +57,8 @@
 .studio-setup { margin-top:16px; padding:14px 18px; border:1px solid var(--line); border-radius:10px; background:#fff; font-size:13px; line-height:1.7; }
 .studio-setup h4 { margin:0 0 6px; }
 .studio-setup code { overflow-wrap:anywhere; }
+
+/* 通用: shortcut list. */
+.shortcut-table { border-collapse:collapse; font-size:13px; }
+.shortcut-table td { padding:5px 12px 5px 0; vertical-align:top; }
+.shortcut-table kbd { padding:1px 7px; border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; background:#fff; font:12px/1.6 ui-monospace,Consolas,monospace; white-space:nowrap; }

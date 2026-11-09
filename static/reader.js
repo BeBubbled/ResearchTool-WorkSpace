@@ -1357,6 +1357,18 @@ function readerSpeechAvailable(readerDocument = readerState.document) {
   return new Set(["pdf", "markdown", "html"]).has(String(readerDocument?.sourceType || "").toLowerCase());
 }
 
+function syncViewMenu() {
+  const active = $("#viewSwitch")?.querySelector("button[data-view].active .toolbar-full-label");
+  if ($("#viewMenuLabel") && active) $("#viewMenuLabel").textContent = active.textContent;
+}
+
+function closeToolbarPopovers() {
+  [["#viewMenuButton", "#viewMenuList"], ["#speechMenuButton", "#speechPopover"]].forEach(([buttonSelector, popoverSelector]) => {
+    if ($(popoverSelector)) $(popoverSelector).hidden = true;
+    $(buttonSelector)?.setAttribute("aria-expanded", "false");
+  });
+}
+
 function updateSpeechControl() {
   const startButton = $("#startSpeech");
   const stopButton = $("#stopSpeech");
@@ -1366,6 +1378,9 @@ function updateSpeechControl() {
   const speechAvailable = readerSpeechAvailable();
   const speech = readerState.config?.speech;
   startButton.classList.toggle("hidden", !speechAvailable);
+  $("#speechMenuButton")?.classList.toggle("hidden", !speechAvailable);
+  const menuIcon = $("#speechMenuButton [data-speech-menu-icon]");
+  if (menuIcon) menuIcon.textContent = readerState.speechClickEnabled ? "🔊" : "🔇";
   startButton.classList.toggle("active", readerState.speechClickEnabled);
   startButton.setAttribute("aria-pressed", String(readerState.speechClickEnabled));
   const speechEnabled = readerState.speechClickEnabled;
@@ -3419,7 +3434,8 @@ async function loadContent() {
     $("#sideBySideViewButton").hidden = capabilities.sideBySideView === false
       || (!("sideBySideView" in capabilities) && (!hasTranslation || data.renderKind === "pdf"));
   }
-  $("#viewSwitch").querySelectorAll("button").forEach(button => button.classList.toggle("active", button.dataset.view === "original"));
+  $("#viewSwitch").querySelectorAll("button[data-view]").forEach(button => button.classList.toggle("active", button.dataset.view === "original"));
+  syncViewMenu();
   $("#readingStatus").textContent = "已就绪";
   await renderPaper();
   updateSpeechControl();
@@ -3610,6 +3626,10 @@ function renderThreePassBackend() {
     ? "API 分析将使用本地预设并产生独立费用。"
       : "Codex 分析使用当前 ChatGPT/Codex 套餐额度。";
   if (api) loadThreePassApiModels().catch(() => {});
+  // 设置 › 费用确认: API billing acknowledged once → pre-tick (still visible, can be unticked for this run).
+  const acknowledged = api && window.EnginePicker?.billingAck?.covers(["api"]);
+  if (acknowledged && !$("#threePassBillingConfirmed").checked) $("#threePassBillingConfirmed").checked = true;
+  $("#threePassBillingAck")?.toggleAttribute("hidden", !acknowledged);
   updateThreePassStartAvailability();
 }
 
@@ -4609,6 +4629,7 @@ async function initReader() {
   });
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") {
+      closeToolbarPopovers();
       hideSelectionMenu();
       toggleSelectionSettings(false);
       closeResponsivePanels();
@@ -4625,11 +4646,25 @@ async function initReader() {
       keepalive: true,
     }).catch(() => {});
   });
-  $("#viewSwitch").querySelectorAll("button").forEach(button => button.addEventListener("click", async () => {
+  $("#viewSwitch").querySelectorAll("button[data-view]").forEach(button => button.addEventListener("click", async () => {
     readerState.view = button.dataset.view;
-    $("#viewSwitch").querySelectorAll("button").forEach(item => item.classList.toggle("active", item === button));
+    $("#viewSwitch").querySelectorAll("button[data-view]").forEach(item => item.classList.toggle("active", item === button));
+    syncViewMenu();
+    closeToolbarPopovers();
     await renderPaper();
   }));
+  // 视图 ▾ and 朗读 ▾: small toolbar popovers; one open at a time, closed by a click outside or Esc.
+  [["#viewMenuButton", "#viewMenuList"], ["#speechMenuButton", "#speechPopover"]].forEach(([buttonSelector, popoverSelector]) => {
+    $(buttonSelector)?.addEventListener("click", () => {
+      const open = $(popoverSelector).hidden;
+      closeToolbarPopovers();
+      $(popoverSelector).hidden = !open;
+      $(buttonSelector).setAttribute("aria-expanded", String(open));
+    });
+  });
+  document.addEventListener("pointerdown", event => {
+    if (!event.target.closest(".view-menu, .speech-menu")) closeToolbarPopovers();
+  });
   $("#zoomOut").addEventListener("click", () => {
     readerState.pdfScale = Math.max(0.75, readerState.pdfScale - 0.15);
     renderPaper();

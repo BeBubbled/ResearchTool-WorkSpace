@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#182a5b">
   <title>Apple 睡眠整理 · 科研工具箱</title>
   <meta name="description" content="在浏览器本地解析 Apple 健康导出，合并重复记录并整理睡眠趋势与分期。">
-  <link rel="stylesheet" href="/static/health.css?v=20260902-quiet-editorial">
+  <link rel="stylesheet" href="/static/health.css?v=20261108-scale">
 </head>
 <body>
   <header class="topbar">
@@ -105,14 +105,19 @@
       <section class="analysis-grid">
         <article class="panel trend-panel">
           <header class="panel-heading">
-            <div><p class="eyebrow">DURATION TREND</p><h2>近 14 晚睡眠</h2></div>
+            <div><p class="eyebrow">DURATION TREND</p><h2 id="trendTitle">最近 7 晚睡眠</h2></div>
+            <div class="trend-scale" role="radiogroup" aria-label="趋势时间范围">
+              <button type="button" role="radio" data-trend-scale="week" aria-checked="true">周</button>
+              <button type="button" role="radio" data-trend-scale="month" aria-checked="false">月</button>
+              <button type="button" role="radio" data-trend-scale="year" aria-checked="false">年</button>
+            </div>
             <div class="chart-legend" aria-label="图例">
               <span><i class="deep"></i>深睡</span><span><i class="rem"></i>REM</span><span><i class="core"></i>核心</span><span><i class="other"></i>未细分</span>
             </div>
           </header>
           <div class="trend-chart-wrap">
             <div class="y-axis"><span>12h</span><span>8h</span><span>4h</span><span>0h</span></div>
-            <div id="trendChart" class="trend-chart" role="img" aria-label="最近十四晚睡眠时长柱状图"></div>
+            <div id="trendChart" class="trend-chart" role="img" aria-label="睡眠时长柱状图"></div>
           </div>
         </article>
 
@@ -153,6 +158,6 @@
     </section>
   </main>
 
-  <script src="/static/health.js?v=20260730"></script>
+  <script src="/static/health.js?v=20261108-scale"></script>
 </body>
 </html>

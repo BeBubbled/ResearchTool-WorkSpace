@@ -758,8 +758,20 @@
       ? `将为 ${plan.missing === plan.units ? '全部' : '缺失中文的'} ${plan.missing} 句生成中文对照。`
       : `将根据本轮 ${plan.comments} 条批注修订英文${plan.translateOn ? '，并更新受影响段落的中文对照' : '（不翻译）'}。`;
     $('confirmSubmit').textContent = plan.kind === 'translate' ? '开始翻译' : '提交并修订';
+    applyUsageAck();
     $('submitDialog').showModal();
   });
+  // 设置 › 费用确认: when every engine this workflow uses is acknowledged, pre-tick the usage box. Switching
+  // to an unacknowledged engine in the sheet clears a box that was ticked automatically.
+  let usageAutoTicked = false;
+  function applyUsageAck() {
+    const acknowledged = !!window.EnginePicker?.billingAck?.covers(Workflow.usedEngines(Workflow.read($('workflowEditor'))));
+    if (acknowledged && !$('usage').checked) { $('usage').checked = true; usageAutoTicked = true; }
+    if (!acknowledged && usageAutoTicked) { $('usage').checked = false; usageAutoTicked = false; }
+    $('usageAck').hidden = !acknowledged;
+  }
+  $('workflowEditor').addEventListener('change', () => { if ($('submitDialog').open) applyUsageAck(); });
+  $('usage').addEventListener('change', () => { usageAutoTicked = false; });
   document.querySelectorAll('[data-close-submit]').forEach(button => button.addEventListener('click', () => $('submitDialog').close()));
   $('submitForm').addEventListener('submit', async event => {
     event.preventDefault();
