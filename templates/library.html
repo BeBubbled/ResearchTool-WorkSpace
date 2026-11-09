@@ -6,7 +6,7 @@
   <title>文献库 · 科研工具箱</title>
   <meta name="theme-color" content="#182a5b">
   <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
-  <link rel="stylesheet" href="/static/library.css?v=6">
+  <link rel="stylesheet" href="/static/library.css?v=7">
 </head>
 <body class="library-page">
   {% set client_active = "library" %}{% include "_client_nav.html" %}
@@ -18,7 +18,17 @@
       <div id="librarySourceList" class="library-source-list" role="listbox" aria-label="来源"></div>
     </nav>
     <section class="library-table-wrap" aria-label="论文列表">
-      <div class="library-toolbar"><strong id="librarySourceTitle">全部论文</strong><span id="libraryCount" class="hint" role="status" aria-live="polite"></span><span class="hint library-tip">双击打开精读 · 右键更多操作</span></div>
+      <div class="library-toolbar"><strong id="librarySourceTitle">全部论文</strong><span id="libraryCount" class="hint" role="status" aria-live="polite"></span><span class="hint library-tip">双击打开精读 · 空格勾选 · 右键更多操作</span></div>
+      <div id="libraryBatchBar" class="library-batch-bar" role="toolbar" aria-label="批量操作" hidden>
+        <strong id="libraryBatchCount">已选 0 篇</strong>
+        <label class="library-batch-project"><span class="sr-only">研究项目</span><select id="libraryBatchProject"><option value="">读取研究项目…</option></select></label>
+        <button id="libraryBatchAdd" type="button" class="button secondary" data-command="批量：加入研究项目">加入研究项目</button>
+        <button id="libraryBatchThreePass" type="button" class="button secondary" data-command="批量：排队 Three-Pass（Codex）">Three-Pass（Codex）</button>
+        <button id="libraryBatchCopyBib" type="button" class="button secondary" data-command="批量：复制 BibTeX">复制 BibTeX</button>
+        <button id="libraryBatchExportBib" type="button" class="button secondary" data-command="批量：导出 .bib">导出 .bib</button>
+        <button id="libraryBatchClear" type="button" class="button quiet" data-command="取消选择">取消选择</button>
+        <span id="libraryBatchStatus" class="hint library-batch-status" role="status" aria-live="polite"></span>
+      </div>
       <div id="libraryList" class="library-list" aria-live="polite"><p class="hint">正在读取文献库…</p></div>
     </section>
     <aside id="libraryInspector" class="library-inspector" aria-label="论文详情" aria-live="polite">
@@ -26,6 +36,6 @@
     </aside>
   </main>
   <script src="/static/inspector.js?v=1"></script>
-  <script src="/static/library.js?v=3" defer></script>
+  <script src="/static/library.js?v=4" defer></script>
 </body>
 </html>

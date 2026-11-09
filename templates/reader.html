@@ -9,7 +9,7 @@
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
-  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <script defer src="/static/vendor/mathjax/es5/tex-mml-chtml.js"></script>
 </head>
 <body{% if embed %} class="reader-embedded"{% endif %}>
   {% if embed %}<link rel="stylesheet" href="/static/client_shell.css?v=8"><script src="/static/engine_picker.js?v=2"></script>
@@ -269,6 +269,9 @@
             <div class="notes-actions">
               <button id="copyNotes" data-command="复制笔记 Markdown" type="button">复制 Markdown</button>
               <button id="exportNotes" data-command="导出笔记 .md" type="button">导出 .md</button>
+              <button id="exportNotesAnki" data-command="导出笔记为 Anki 卡片" type="button" title="生词与配对笔记导出为 Anki 可直接导入的文本">导出 Anki</button>
+              <button id="previousNoteJump" class="note-jump-button" data-command="上一处笔记" data-shortcut="p" type="button" title="跳到上一处有笔记的正文（P）">↑ 上一处</button>
+              <button id="nextNoteJump" class="note-jump-button" data-command="下一处笔记" data-shortcut="n" type="button" title="跳到下一处有笔记的正文（N）">↓ 下一处</button>
               <button id="clearNotes" class="danger-note-action" type="button">清空</button>
             </div>
             <div id="notesList" class="notes-list"><p class="notes-empty">还没有笔记。划词并执行一个 Prompt 后，选区与回答会自动配对保存在这里。</p></div>
@@ -350,6 +353,6 @@
   </main>
   <script src="/static/prompt_handoff.js?v=1"></script>
   <script src="/static/inspector.js?v=1"></script>
-  <script src="/static/reader.js?v=20261108-billing"></script>
+  <script src="/static/reader.js?v=20261108-notes3"></script>
 </body>
 </html>

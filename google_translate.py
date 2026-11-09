@@ -22,6 +22,8 @@ from typing import Callable
 
 import requests
 
+import usage_ledger
+
 # Cloud Translation – Basic edition (v2) only. Advanced (v3) features such as glossaries,
 # custom models or batch jobs are deliberately not used.
 ENDPOINT = "https://translation.googleapis.com/language/translate/v2"
@@ -86,8 +88,9 @@ def parse_segment(translated: str, ids: list[str]) -> dict[str, str] | None:
 
 class GoogleTranslator:
     def __init__(self, key_getter: Callable[[], str], *, post: Callable[..., requests.Response] = requests.post,
-                 timeout: float = 30):
+                 timeout: float = 30, usage_feature: str = "revision"):
         self.key_getter, self.post, self.timeout = key_getter, post, timeout
+        self.usage_feature = usage_feature
 
     def configured(self) -> bool:
         return bool((self.key_getter() or "").strip())
@@ -128,6 +131,7 @@ class GoogleTranslator:
             raise GoogleTranslateError("Google 翻译返回了无法解析的结果。") from None
         if len(texts) != len(segments) or not all(isinstance(t, str) for t in texts):
             raise GoogleTranslateError("Google 翻译返回的段落数量与请求不一致。")
+        usage_ledger.record("google", self.usage_feature, characters=sum(len(segment) for segment in segments))
         return texts
 
     def check(self, key: str) -> None:

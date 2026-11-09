@@ -17,8 +17,10 @@
   </a>
 {%- endmacro %}
 {#- Stylesheet and body class come before the rail so it never paints unstyled (black SVG flash) between pages. -#}
-<link rel="stylesheet" href="/static/client_shell.css?v=8">
-<script>document.body.classList.add("has-client-rail");</script>
+<link rel="stylesheet" href="/static/client_shell.css?v=9">
+<script>document.body.classList.add("has-client-rail");
+/* /paper-revision?project=<id>: the revision page opens the project it remembers, so remember the linked one first. */
+(() => { if (location.pathname !== "/paper-revision") return; const id = new URLSearchParams(location.search).get("project"); if (id && /^[\w-]{1,80}$/.test(id)) { try { localStorage.setItem("paperRevisionProject", id); } catch {} } })();</script>
 <nav class="client-rail" aria-label="Research Toolkit 客户端导航">
   <a class="client-rail-brand" href="/reader" title="Research Toolkit"><span class="client-brand-mark" aria-hidden="true"><i></i><i></i><i></i></span></a>
   <div class="client-rail-group">{% for item in client_items %}{{ client_link(item) }}{% endfor %}</div>
@@ -27,5 +29,6 @@
 </nav>
 <script src="/static/engine_picker.js?v=2"></script>
 <script src="/static/client_shell.js?v=2" defer></script>
-<script src="/static/command_palette.js?v=2" defer></script>
+<script src="/static/command_palette.js?v=3" defer></script>
 <script src="/static/context_menu.js?v=1" defer></script>
+<script src="/static/client_extras.js?v=1" defer></script>

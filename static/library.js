@@ -14,7 +14,13 @@
     {id: 'translated', label: '有整篇译文', test: item => item.hasTranslation},
     {id: 'ocr', label: 'OCR 导入', test: item => item.useOcr},
     {id: 'unused', label: '未用于研究项目', test: item => !(item.usedBy?.gaps || []).length},
+    {id: 'reading', label: '最近阅读', test: item => Boolean(readingPosition(item.id))},
   ];
+  // The reader remembers where each paper was left (static/reader.js, same key); 最近阅读 lists those.
+  const POSITION_PREFIX = 'research-toolkit.reader-position.';
+  function readingPosition(key) {
+    try { const value = JSON.parse(localStorage.getItem(POSITION_PREFIX + key) || 'null'); return value && value.at ? value : null; } catch { return null; }
+  }
   const COLUMNS = [
     {id: 'title', label: '标题', value: item => item.title.toLowerCase()},
     {id: 'kind', label: '格式', value: item => item.sourceType || ''},
@@ -26,6 +32,7 @@
   const recall = key => { try { return localStorage.getItem(STORE + key); } catch { return null; } };
 
   let documents = [], visible = [], selected = null, inspectorRequest = 0;
+  const checked = new Set();
   let source = recall('source') || 'all';
   let sort = {column: recall('sort') || 'updated', descending: recall('descending') !== '0'};
 
@@ -53,12 +60,13 @@
   function filterAndSort() {
     const query = $('librarySearch').value.trim().toLowerCase();
     const test = allSources().find(item => item.id === source)?.test || (() => true);
-    const column = COLUMNS.find(item => item.id === sort.column) || COLUMNS[3];
+    const column = source === 'reading' ? {value: item => readingPosition(item.id)?.at || 0} : COLUMNS.find(item => item.id === sort.column) || COLUMNS[3];
+    const descending = source === 'reading' ? true : sort.descending;
     visible = documents.filter(item => test(item) && (!query || `${item.title} ${item.sourceName}`.toLowerCase().includes(query)));
     visible.sort((a, b) => {
       const left = column.value(a), right = column.value(b);
       const order = left < right ? -1 : left > right ? 1 : 0;
-      return sort.descending ? -order : order;
+      return descending ? -order : order;
     });
   }
 
@@ -70,7 +78,8 @@
       $('libraryList').innerHTML = `<div class="library-empty"><strong>${filtered ? '没有匹配的论文' : '文献库还是空的'}</strong><p>${filtered ? '换个关键词，或在左侧选择“全部论文”。' : '在精读中导入 PDF、Markdown 或 HTML 后，会自动出现在这里。'}</p>${filtered ? '' : '<a class="button primary" href="/reader">去精读导入</a>'}</div>`;
       return;
     }
-    const head = COLUMNS.map(column => {
+    const allChecked = visible.every(item => checked.has(item.id));
+    const head = `<th scope="col" class="lib-check"><input type="checkbox" data-check-all aria-label="全选当前列表" ${allChecked ? 'checked' : ''}></th>` + COLUMNS.map(column => {
       const active = sort.column === column.id;
       const arrow = active ? (sort.descending ? ' ↓' : ' ↑') : '';
       return `<th scope="col" aria-sort="${active ? (sort.descending ? 'descending' : 'ascending') : 'none'}"><button type="button" data-sort="${column.id}">${column.label}${arrow}</button></th>`;
@@ -78,8 +87,10 @@
     const rows = visible.map(item => {
       const projects = (item.usedBy?.gaps || []).length;
       const flags = [item.hasPdf ? '<span class="lib-flag" title="有原始 PDF">PDF</span>' : '', item.hasTranslation ? '<span class="lib-flag" title="有整篇译文">译</span>' : '', item.useOcr ? '<span class="lib-flag" title="Mathpix OCR">OCR</span>' : ''].join('');
+      const position = readingPosition(item.id);
       return `<tr tabindex="-1" data-key="${escapeHtml(item.id)}" aria-selected="${item.id === selected}" class="${item.id === selected ? 'selected' : ''}">
-        <td class="lib-title"><span title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>${item.sourceName ? `<small title="${escapeHtml(item.sourceName)}">${escapeHtml(item.sourceName)}</small>` : ''}</td>
+        <td class="lib-check"><input type="checkbox" data-check="${escapeHtml(item.id)}" aria-label="选择这篇论文" ${checked.has(item.id) ? 'checked' : ''}></td>
+        <td class="lib-title">${position && source === 'reading' ? `<em class="lib-progress" title="上次读到的位置">${Math.round((position.ratio || 0) * 100)}%</em>` : ''}<span title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>${item.sourceName ? `<small title="${escapeHtml(item.sourceName)}">${escapeHtml(item.sourceName)}</small>` : ''}</td>
         <td>${escapeHtml(KIND[item.sourceType] || item.sourceType || '文档')}${flags}</td>
         <td>${projects || '—'}</td>
         <td>${escapeHtml(date(item.updatedAt))}</td>
@@ -88,7 +99,116 @@
     $('libraryList').innerHTML = `<table class="library-table" role="grid" aria-label="论文"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
   }
 
-  function render() { renderSources(); renderTable(); }
+  function render() { renderSources(); renderTable(); renderBatchBar(); }
+
+  // ---- 批量操作: tick papers, then add them to a research project, queue Three-Pass, or export BibTeX.
+  let projectsCache = null;
+  async function researchProjects() {
+    if (!projectsCache) {
+      try {
+        const response = await fetch('/api/research-gaps/projects');
+        const data = await response.json();
+        projectsCache = response.ok ? data.projects || [] : [];
+      } catch { projectsCache = []; }
+    }
+    return projectsCache;
+  }
+
+  function batchStatus(text, kind = '') {
+    const node = $('libraryBatchStatus');
+    if (!node) return;
+    node.textContent = text;
+    node.className = `hint library-batch-status ${kind}`;
+  }
+
+  async function renderBatchBar() {
+    const bar = $('libraryBatchBar');
+    if (!bar) return;
+    [...checked].forEach(key => { if (!find(key)) checked.delete(key); });
+    bar.hidden = !checked.size;
+    $('libraryBatchCount').textContent = `已选 ${checked.size} 篇`;
+    const select = $('libraryBatchProject');
+    if (!checked.size || select.dataset.loaded) return;
+    select.dataset.loaded = '1';
+    const projects = await researchProjects();
+    select.innerHTML = projects.length
+      ? projects.map(project => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.name)}</option>`).join('')
+      : '<option value="">还没有研究项目</option>';
+    $('libraryBatchAdd').disabled = !projects.length;
+  }
+
+  async function batchAddToProject() {
+    const projectId = $('libraryBatchProject').value;
+    if (!projectId) return;
+    const keys = [...checked];
+    let added = 0, existing = 0, failed = 0;
+    for (const [index, key] of keys.entries()) {
+      batchStatus(`正在加入研究项目 ${index + 1}/${keys.length}…`);
+      try {
+        const response = await fetch(`/api/research-gaps/projects/${encodeURIComponent(projectId)}/papers`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({readerCacheKey: key}),
+        });
+        if (!response.ok) throw new Error();
+        if (response.status === 201) added++; else existing++;
+      } catch { failed++; }
+    }
+    batchStatus(`加入完成：新增 ${added} 篇${existing ? `，${existing} 篇已在项目中` : ''}${failed ? `，${failed} 篇失败` : ''}。`, failed ? 'bad' : 'ok');
+    projectsCache = null;
+    await load();
+  }
+
+  async function batchThreePass() {
+    const keys = [...checked];
+    const message = `将为 ${keys.length} 篇论文排队 Codex Three-Pass 分析。\n\n使用 ChatGPT / Codex 套餐额度，按全局默认模型和推理强度依次运行。确认继续？`;
+    if (!window.confirm(message)) return;
+    let queued = 0;
+    const failures = [];
+    for (const [index, key] of keys.entries()) {
+      batchStatus(`正在排队 Three-Pass ${index + 1}/${keys.length}…`);
+      try {
+        const opened = await fetch(`/api/reader/library/${key}/open`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+        const readerDocument = await opened.json();
+        if (!opened.ok) throw new Error(readerDocument.error || '无法打开');
+        const response = await fetch(`/api/reader/documents/${encodeURIComponent(readerDocument.id)}/analyses`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({backend: 'codex'}),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '无法开始');
+        queued++;
+      } catch (error) {
+        failures.push(`${find(key)?.title || key}：${error.message}`);
+      }
+    }
+    window.ClientActivity?.refresh();
+    batchStatus(`已排队 ${queued} 篇，完成时会通知。${failures.length ? ` ${failures.length} 篇失败：${failures.join('；')}` : ''}`, failures.length ? 'bad' : 'ok');
+  }
+
+  async function fetchBibtex(keys) {
+    batchStatus(`正在检索 ${keys.length} 篇论文的 BibTeX（Crossref → Semantic Scholar）…`);
+    const response = await fetch('/api/library/bibtex', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({keys})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '无法生成 BibTeX。');
+    const note = data.unverified ? `，其中 ${data.unverified} 篇未在线找到，生成了待补全的 @misc 条目` : '';
+    return {bibtex: data.bibtex, note};
+  }
+
+  async function copyBibtex(keys) {
+    try {
+      const {bibtex, note} = await fetchBibtex(keys);
+      await navigator.clipboard.writeText(bibtex);
+      batchStatus(`已复制 ${keys.length} 条 BibTeX${note}。`, note ? 'bad' : 'ok');
+    } catch (error) { batchStatus(error.message, 'bad'); }
+  }
+
+  async function exportBibtex(keys) {
+    try {
+      const {bibtex, note} = await fetchBibtex(keys);
+      const link = Object.assign(document.createElement('a'), {href: URL.createObjectURL(new Blob([bibtex], {type: 'application/x-bibtex'})), download: 'references.bib'});
+      document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      batchStatus(`已导出 references.bib（${keys.length} 条${note}）。`, note ? 'bad' : 'ok');
+    } catch (error) { batchStatus(error.message, 'bad'); }
+  }
 
   const find = key => documents.find(item => item.id === key);
   const readerLink = (key, tab = '') => `/reader?library=${encodeURIComponent(key)}${tab ? `&inspector=${tab}` : ''}`;
@@ -104,6 +224,7 @@
       'separator',
       {label: '下载原始 PDF', href: `/api/library/${item.id}/pdf`, download: true, disabled: !item.hasPdf},
       {label: '复制标题', run: () => navigator.clipboard?.writeText(item.title)},
+      {label: '复制 BibTeX', run: () => copyBibtex([item.id])},
     ];
   }
 
@@ -192,9 +313,21 @@
       renderTable(); select(selected);
       return;
     }
+    const box = event.target.closest('[data-check], [data-check-all]');
+    if (box) {
+      if (box.dataset.checkAll !== undefined) visible.forEach(item => (box.checked ? checked.add(item.id) : checked.delete(item.id)));
+      else if (box.checked) checked.add(box.dataset.check); else checked.delete(box.dataset.check);
+      renderTable(); select(selected); renderBatchBar();
+      return;
+    }
     const row = event.target.closest('tr[data-key]');
     if (row) select(row.dataset.key);
   });
+  $('libraryBatchAdd')?.addEventListener('click', batchAddToProject);
+  $('libraryBatchThreePass')?.addEventListener('click', batchThreePass);
+  $('libraryBatchCopyBib')?.addEventListener('click', () => copyBibtex([...checked]));
+  $('libraryBatchExportBib')?.addEventListener('click', () => exportBibtex([...checked]));
+  $('libraryBatchClear')?.addEventListener('click', () => { checked.clear(); render(); select(selected); });
   $('libraryList').addEventListener('dblclick', event => {
     const row = event.target.closest('tr[data-key]');
     if (row) location.href = readerLink(row.dataset.key);
@@ -219,6 +352,10 @@
       else if (event.key === 'ArrowUp') $('librarySearch').focus();
     } else if (event.key === 'Enter') {
       location.href = readerLink(row.dataset.key);
+    } else if (event.key === ' ' && !event.target.matches('input')) {
+      event.preventDefault();
+      if (checked.has(row.dataset.key)) checked.delete(row.dataset.key); else checked.add(row.dataset.key);
+      renderTable(); select(row.dataset.key, {focus: true}); renderBatchBar();
     }
   });
   window.Inspector?.toggle($('libraryInspectorToggle'), {key: 'library.inspector', apply: open => $('libraryLayout').classList.toggle('inspector-hidden', !open)});

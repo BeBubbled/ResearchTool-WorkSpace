@@ -17,6 +17,8 @@
   const CODE_KEYS = { Backslash: "\\", Comma: ",", Period: ".", Slash: "/", Enter: "enter", Escape: "escape", BracketLeft: "[", BracketRight: "]", Space: "space" };
   const GLOBAL_SHORTCUTS = [["mod+k", "打开命令面板"], ["?", "显示快捷键"], ["/", "聚焦当前页面的搜索框（工具箱）"], ["escape", "关闭弹层"]];
   let overlay = null, help = null, items = [], filtered = [], cursor = 0, libraryCache = null;
+  // Full-text results from GET /api/search (notes, Three-Pass, revision comments, gaps, templates).
+  let searchResults = [], searchQuery = "", searchTimer = null, searchSeq = 0, searching = false;
 
   function comboFromEvent(event) {
     const code = event.code || "";
@@ -78,6 +80,7 @@
   }
 
   function score(item, needle) {
+    if (item.fromSearch) return item.query === needle ? 0.4 : 0;
     if (!needle) return 1;
     const text = `${item.title} ${item.group} ${item.hint || ""}`.toLowerCase();
     if (item.title.toLowerCase().startsWith(needle)) return 3;
@@ -91,15 +94,18 @@
 
   function render() {
     const needle = overlay.querySelector("input").value.trim().toLowerCase();
-    filtered = items.map(item => ({ item, rank: score(item, needle) })).filter(entry => entry.rank > 0)
-      .sort((a, b) => b.rank - a.rank).map(entry => entry.item).slice(0, 60);
+    filtered = [...items, ...searchResults].map(item => ({ item, rank: score(item, needle) })).filter(entry => entry.rank > 0)
+      .sort((a, b) => b.rank - a.rank).map(entry => entry.item).slice(0, 80);
     cursor = Math.min(cursor, Math.max(filtered.length - 1, 0));
     let lastGroup = "";
     overlay.querySelector(".palette-list").innerHTML = filtered.length ? filtered.map((item, index) => {
       const heading = item.group !== lastGroup ? `<li class="palette-group" role="presentation">${escapeHtml(item.group)}</li>` : "";
       lastGroup = item.group;
-      return `${heading}<li role="option" id="palette-option-${index}" class="palette-item ${index === cursor ? "active" : ""}" data-index="${index}" aria-selected="${index === cursor}"><span>${escapeHtml(item.title)}</span>${item.shortcut ? `<kbd>${escapeHtml(prettyCombo(item.shortcut))}</kbd>` : ""}</li>`;
-    }).join("") : `<li class="palette-empty">没有匹配的命令。</li>`;
+      const kind = item.kindLabel ? `<em class="palette-kind">${escapeHtml(item.kindLabel)}</em>` : "";
+      const detail = item.detail ? `<small class="palette-detail">${escapeHtml(item.detail)}</small>` : "";
+      return `${heading}<li role="option" id="palette-option-${index}" class="palette-item ${index === cursor ? "active" : ""} ${detail ? "has-detail" : ""}" data-index="${index}" aria-selected="${index === cursor}"><span>${escapeHtml(item.title)}</span>${kind}${item.shortcut ? `<kbd>${escapeHtml(prettyCombo(item.shortcut))}</kbd>` : ""}${detail}</li>`;
+    }).join("") + (searching ? `<li class="palette-searching" role="presentation">正在搜索笔记、Three-Pass、批注与研究空白…</li>` : "")
+      : searching ? `<li class="palette-searching" role="presentation">正在搜索笔记、Three-Pass、批注与研究空白…</li>` : `<li class="palette-empty">没有匹配的命令或内容。</li>`;
     overlay.querySelector("input").setAttribute("aria-activedescendant", filtered.length ? `palette-option-${cursor}` : "");
     overlay.querySelector(".palette-item.active")?.scrollIntoView({ block: "nearest" });
   }
@@ -115,7 +121,7 @@
       <footer class="palette-foot"><span>↑↓ 选择 · ↩ 执行 · Esc 关闭</span><button type="button" data-palette-help>快捷键 ?</button></footer>
     </div>`;
     const input = overlay.querySelector("input");
-    input.addEventListener("input", () => { cursor = 0; render(); });
+    input.addEventListener("input", () => { cursor = 0; render(); scheduleSearch(input.value); });
     input.addEventListener("keydown", event => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -144,14 +150,41 @@
     return overlay;
   }
 
+  function scheduleSearch(value) {
+    clearTimeout(searchTimer);
+    const needle = value.trim().toLowerCase();
+    if (needle.length < 2) { searchResults = []; searching = false; searchQuery = ""; return; }
+    if (needle === searchQuery) return;
+    searching = true;
+    searchTimer = setTimeout(async () => {
+      const seq = ++searchSeq;
+      let results = [];
+      try {
+        const response = await fetch(`/api/search?q=${encodeURIComponent(value.trim())}`);
+        const data = await response.json();
+        results = response.ok ? data.results || [] : [];
+      } catch {}
+      if (seq !== searchSeq || overlay.hidden) return;
+      searchQuery = needle;
+      searching = false;
+      searchResults = results.map(result => ({
+        title: result.title, detail: result.snippet, kindLabel: result.kindLabel, group: "全文搜索",
+        fromSearch: true, query: needle, run: () => { location.href = result.url; },
+      }));
+      render();
+    }, 260);
+  }
+
   let lastFocus = null;
   async function open() {
+    searchResults = []; searchQuery = ""; searching = false;
     ensureOverlay();
     lastFocus = document.activeElement;
     items = [...pageCommands(), ...navigationCommands(), { title: "显示快捷键", group: "帮助", shortcut: "?", run: showHelp }];
     overlay.hidden = false;
     const input = overlay.querySelector("input");
     input.value = "";
+    input.placeholder = "输入命令、模块、设置，或搜索论文、笔记、Three-Pass、批注…";
     cursor = 0;
     render();
     input.focus();

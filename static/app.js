@@ -94,12 +94,114 @@ function renderTool() {
     form.querySelector(".upload-section > .hint").textContent = "请选择包含文档与图片的共同目录，或分别添加文档和与引用一致的图片目录；原文件不会被修改。";
   }
   if (!tool.available) form.insertAdjacentHTML("afterbegin", `<p class="message">${escapeHtml(tool.unavailableReason)}</p>`);
-  if (tool.id === "bibtex") form.insertAdjacentHTML("beforeend", `<div class="info-box">此工具会通过 scholarly 查询 Google Scholar。查询可能受网络或来源限流影响。</div><div class="field wide"><label>或直接粘贴论文标题（每行一个；没有选择 TXT 时将自动生成任务文件）</label><textarea id="bibtexText" placeholder="Paper title one\nPaper title two"></textarea></div>`);
+  if (tool.id === "bibtex") form.insertAdjacentHTML("beforeend", `<div class="info-box">依次查询 Crossref、Semantic Scholar（标题需高度一致才采用），都未命中时再用 scholarly 查询 Google Scholar（若已安装）；仍未找到的标题会生成标注“未在线核实”的 @misc 条目。</div><div class="field wide"><label>或直接粘贴论文标题（每行一个；没有选择 TXT 时将自动生成任务文件）</label><textarea id="bibtexText" placeholder="Paper title one\nPaper title two"></textarea></div>`);
   form.insertAdjacentHTML("beforeend", optionsHtml(tool.id));
   form.insertAdjacentHTML("beforeend", `<div class="submit-row"><button type="button" class="primary" id="submitJob" ${tool.available ? "" : "disabled"}>加入处理队列</button></div>`);
   if (tool.id === "pdf_ocr_translate") form.insertAdjacentHTML("beforeend", `<section id="ocrArtifacts" class="ocr-artifacts hidden"></section>`);
   bindUpload(); bindDynamicOptions(); renderFileList();
   document.querySelector("#submitJob").addEventListener("click", submitJob);
+  mountPresetBar();
+  applySnapshot(readStored(paramsKey(tool.id), null));
+}
+
+// ---- 参数记忆与预设: each tool reopens with the parameters of its last submitted job; named presets on top.
+// Stored in this browser (exported by 设置 → 高级). File-specific values (source path, per-cell titles) are not kept.
+const paramsKey = id => `research-toolkit.toolbox.params.${id}`;
+const presetsKey = id => `research-toolkit.toolbox.presets.${id}`;
+const SKIP_REMEMBERED = new Set(["localSourcePath"]);
+const readStored = (key, fallback) => { try { const value = localStorage.getItem(key); return value === null ? fallback : JSON.parse(value); } catch { return fallback; } };
+const writeStored = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} };
+
+function formSnapshot() {
+  const values = {};
+  form.querySelectorAll("[data-option]").forEach(element => { if (!SKIP_REMEMBERED.has(element.dataset.option)) values[element.dataset.option] = element.value; });
+  const checks = {};
+  form.querySelectorAll('input[type="checkbox"][id]').forEach(element => { checks[element.id] = element.checked; });
+  form.querySelectorAll("input[data-ocr-format]").forEach(element => { checks[`ocr:${element.dataset.ocrFormat}`] = element.checked; });
+  const llm = form.querySelector("#llmPreset")?.value;
+  const snapshot = { values, checks };
+  if (llm && llm !== "custom") snapshot.llmPreset = llm;
+  if (state.active.id === "stack_videos") snapshot.captions = { captions: [...state.captions.captions] };
+  if (isGridPptTool()) snapshot.gridLabels = { rowTitles: [...state.gridLabels.rowTitles], colTitles: [...state.gridLabels.colTitles] };
+  return snapshot;
+}
+
+function applySnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return false;
+  Object.entries(snapshot.values || {}).forEach(([key, value]) => {
+    const element = form.querySelector(`[data-option="${CSS.escape(key)}"]`);
+    if (element && value !== null && value !== undefined && !SKIP_REMEMBERED.has(key)) element.value = value;
+  });
+  Object.entries(snapshot.checks || {}).forEach(([key, checked]) => {
+    const element = key.startsWith("ocr:") ? form.querySelector(`[data-ocr-format="${CSS.escape(key.slice(4))}"]`) : form.querySelector(`#${CSS.escape(key)}`);
+    if (element && element.type === "checkbox") { element.checked = Boolean(checked); element.dispatchEvent(new Event("change")); }
+  });
+  const select = form.querySelector("#llmPreset");
+  if (snapshot.llmPreset && select && [...select.options].some(option => option.value === snapshot.llmPreset)) { select.value = snapshot.llmPreset; select.dispatchEvent(new Event("change")); }
+  if (snapshot.captions && state.active.id === "stack_videos") state.captions.captions = [...(snapshot.captions.captions || [])];
+  if (snapshot.gridLabels && isGridPptTool()) Object.assign(state.gridLabels, { rowTitles: [...(snapshot.gridLabels.rowTitles || [])], colTitles: [...(snapshot.gridLabels.colTitles || [])] });
+  if (state.active.id === "stack_videos") renderCaptions();
+  if (isGridPptTool()) renderGridLabels();
+  return true;
+}
+
+// Options a finished job ran with (GET /api/jobs) → the same shape as formSnapshot().
+function snapshotFromJobOptions(options) {
+  const values = {}, checks = {};
+  const booleans = { repairMarkdown: "repairMarkdown", deepRepair: "deepRepair", mathRepair: "mathRepair", footnoteRepair: "footnoteRepair", normalizeChinesePunctuation: "normalizeChinesePunctuation" };
+  Object.entries(options || {}).forEach(([key, value]) => {
+    if (booleans[key]) checks[booleans[key]] = Boolean(value);
+    else if (key === "ocrFormats" && Array.isArray(value)) ["docx", "md", "html", "tex.zip"].forEach(format => { checks[`ocr:${format}`] = value.includes(format); });
+    else if (typeof value === "string" || typeof value === "number") values[key] = value;
+  });
+  const snapshot = { values, checks };
+  if (Array.isArray(options?.captions)) snapshot.captions = { captions: options.captions };
+  if (Array.isArray(options?.rowTitles) || Array.isArray(options?.colTitles)) snapshot.gridLabels = { rowTitles: options.rowTitles || [], colTitles: options.colTitles || [] };
+  return snapshot;
+}
+
+function mountPresetBar() {
+  const tool = state.active;
+  if (["anki"].includes(tool.id)) return;
+  const presets = readStored(presetsKey(tool.id), {});
+  const names = Object.keys(presets).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const bar = document.createElement("div");
+  bar.className = "preset-bar";
+  bar.innerHTML = `<label class="preset-select"><span>参数预设</span><select data-preset-select><option value="">${names.length ? "选择预设…" : "还没有预设"}</option>${names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}</select></label>
+    <button type="button" data-preset-save data-command="存为参数预设">存为预设…</button>
+    <button type="button" data-preset-delete ${names.length ? "" : "disabled"}>删除预设</button>
+    <button type="button" class="inline-link" data-preset-defaults data-command="恢复工具默认参数">恢复默认参数</button>
+    <span class="hint preset-hint">上次提交的参数会自动带出</span>`;
+  const anchor = form.querySelector(".submit-row");
+  anchor?.parentNode.insertBefore(bar, anchor);
+  const select = bar.querySelector("[data-preset-select]");
+  select.addEventListener("change", () => { if (select.value && applySnapshot(presets[select.value])) setTask(`已套用预设“${select.value}”。`, "ok"); });
+  bar.querySelector("[data-preset-save]").addEventListener("click", () => {
+    const name = (window.prompt("预设名称（同名会覆盖）：", select.value || "") || "").trim().slice(0, 60);
+    if (!name) return;
+    presets[name] = formSnapshot();
+    writeStored(presetsKey(tool.id), presets);
+    bar.remove(); mountPresetBar();
+    form.querySelector("[data-preset-select]").value = name;
+    setTask(`已保存预设“${name}”。`, "ok");
+  });
+  bar.querySelector("[data-preset-delete]").addEventListener("click", () => {
+    const name = select.value;
+    if (!name) { setTask("先在下拉框里选择要删除的预设。", "bad"); return; }
+    const removed = presets[name];
+    delete presets[name];
+    writeStored(presetsKey(tool.id), presets);
+    bar.remove(); mountPresetBar();
+    const restore = () => { const current = readStored(presetsKey(tool.id), {}); current[name] = removed; writeStored(presetsKey(tool.id), current); if (state.active?.id === tool.id) { form.querySelector(".preset-bar")?.remove(); mountPresetBar(); } };
+    if (window.ClientToast) window.ClientToast.undo(`已删除预设“${name}”。`, restore, { restoredMessage: "预设已恢复。" });
+  });
+  bar.querySelector("[data-preset-defaults]").addEventListener("click", () => {
+    try { localStorage.removeItem(paramsKey(tool.id)); } catch {}
+    const files = state.files;
+    renderTool(); state.files = files; renderFileList();
+    try { localStorage.removeItem(paramsKey(tool.id)); } catch {}
+    setTask("已恢复默认参数。", "ok");
+  });
 }
 
 // 全局设置 now lives at /settings (static/settings.js); old "#settings/<tab>" links are forwarded there.
@@ -214,7 +316,29 @@ function renderFileList() {
   list.innerHTML = state.files.map((item, index) => `<li class="file-row ${preserveNames ? "preserved-file-row" : ""}" draggable="true" data-index="${index}"><span class="handle">⠿</span><span class="file-path" title="${escapeHtml(item.relativePath)}">${escapeHtml(item.relativePath)}</span>${preserveNames ? `<span class="file-kind">${/\.(?:md|mmd)$/i.test(item.file.name) ? "Markdown" : "图片"}</span>` : `<input class="file-name" data-name-index="${index}" value="${escapeHtml(item.workName)}" aria-label="任务工作名">`}<button type="button" class="remove-file" data-remove="${index}">移除</button></li>`).join("") || `<li class="hint">尚未添加符合此工具要求的文件。</li>`;
   list.querySelectorAll("[data-remove]").forEach(button => button.addEventListener("click", () => { state.files.splice(Number(button.dataset.remove), 1); renderFileList(); if (state.active.id === "stack_videos") renderCaptions(); }));
   list.querySelectorAll("[data-name-index]").forEach(input => input.addEventListener("input", () => { state.files[Number(input.dataset.nameIndex)].workName = input.value; if (state.active.id === "stack_videos") renderCaptions(); }));
+  renderCostEstimate();
   let dragged = null; list.querySelectorAll(".file-row").forEach(row => { row.addEventListener("dragstart", () => { dragged = Number(row.dataset.index); row.classList.add("dragging"); }); row.addEventListener("dragend", () => row.classList.remove("dragging")); row.addEventListener("dragover", event => event.preventDefault()); row.addEventListener("drop", event => { event.preventDefault(); const target = Number(row.dataset.index); if (dragged !== null && dragged !== target) { const [item] = state.files.splice(dragged, 1); state.files.splice(target, 0, item); renderFileList(); if (state.active.id === "stack_videos") renderCaptions(); } }); });
+}
+
+// 费用预估: translation splits text into ~7,200-character chunks, one LLM call each (plus retries).
+async function renderCostEstimate() {
+  const tool = state.active?.id;
+  let node = form.querySelector("[data-cost-estimate]");
+  if (!["document_translate", "markdown_repair"].includes(tool) || !state.files.length) { node?.remove(); return; }
+  if (!node) {
+    node = document.createElement("p");
+    node.className = "hint cost-estimate";
+    node.dataset.costEstimate = "";
+    form.querySelector(".submit-row")?.before(node);
+  }
+  const texts = await Promise.all(state.files.filter(item => /\.(?:md|mmd|html?|htm)$/i.test(item.file.name)).map(item => item.file.size > 30 * 1024 * 1024 ? "" : item.file.text().catch(() => "")));
+  const characters = texts.reduce((sum, text) => sum + text.length, 0);
+  const chunks = texts.reduce((sum, text) => sum + Math.max(text ? 1 : 0, Math.ceil(text.length / 7200)), 0);
+  if (tool === "markdown_repair") {
+    node.textContent = form.querySelector("#deepRepair")?.checked ? `预估：${characters.toLocaleString("zh-CN")} 字符；深度修复会按段调用所选 LLM。` : `预估：${characters.toLocaleString("zh-CN")} 字符；本地修复，不调用 LLM。`;
+    return;
+  }
+  node.textContent = `预估：${characters.toLocaleString("zh-CN")} 字符，约 ${chunks} 个分块 → 约 ${chunks} 次 LLM 调用（失败重试另计），按所选预设计费。`;
 }
 
 function bindDynamicOptions() {
@@ -340,7 +464,7 @@ async function submitJob() {
   }
   const body = new FormData(); body.append("tool", state.active.id); body.append("options", JSON.stringify(collectOptions())); body.append("manifest", JSON.stringify(files.map(item => ({ relativePath:item.relativePath, workName:item.workName })))); files.forEach(item => body.append("files", item.file, item.file.name));
   document.querySelector("#submitJob").disabled = true; setTask("正在提交任务…", ""); downloadLink.classList.add("hidden"); githubCommitLink.classList.add("hidden"); readerImportPanel.classList.add("hidden");
-  try { const response = await fetch("/api/jobs", { method:"POST", body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "提交失败"); state.currentJob = data.id; state.translationSource = ""; setTask("任务已排队", ""); taskLog.textContent = "任务已提交，等待本地科研工作线程。"; translationDebugLink.classList.add("hidden"); startPolling(data.id); refreshActivity(); }
+  try { const response = await fetch("/api/jobs", { method:"POST", body }); const data = await response.json(); if (!response.ok) throw new Error(data.error || "提交失败"); writeStored(paramsKey(state.active.id), formSnapshot()); window.ClientActivity?.refresh(); state.currentJob = data.id; state.translationSource = ""; setTask("任务已排队", ""); taskLog.textContent = "任务已提交，等待本地科研工作线程。"; translationDebugLink.classList.add("hidden"); startPolling(data.id); refreshActivity(); }
   catch (error) { setTask(error.message, "bad"); } finally { document.querySelector("#submitJob").disabled = false; }
 }
 
@@ -504,6 +628,7 @@ const activityButton = document.querySelector("#activityButton");
 const activityPanel = document.querySelector("#activityPanel");
 let activityTimer = null;
 
+let activityJobs = [];
 async function refreshActivity() {
   clearTimeout(activityTimer);
   let jobs = [];
@@ -511,6 +636,7 @@ async function refreshActivity() {
     const response = await fetch("/api/jobs");
     if (response.ok) jobs = (await response.json()).jobs || [];
   } catch {}
+  activityJobs = jobs;
   const running = jobs.filter(job => job.status === "queued" || job.status === "running").length;
   const count = document.querySelector("#activityCount");
   count.textContent = String(running);
@@ -519,7 +645,7 @@ async function refreshActivity() {
     <li class="activity-item">
       <strong title="${escapeHtml(job.toolTitle)}">${escapeHtml(job.toolTitle)}</strong>
       <small><span class="activity-status-${escapeHtml(job.status)}">${escapeHtml(ACTIVITY_LABELS[job.status] || job.status)}</span> · ${escapeHtml(new Date(job.createdAt * 1000).toLocaleTimeString())}</small>
-      <span class="activity-actions"><button type="button" data-show-job="${escapeHtml(job.id)}" data-job-tool="${escapeHtml(job.tool)}">查看</button>${job.downloadReady ? `<a href="/api/jobs/${encodeURIComponent(job.id)}/download">下载</a>` : ""}</span>
+      <span class="activity-actions"><button type="button" data-show-job="${escapeHtml(job.id)}" data-job-tool="${escapeHtml(job.tool)}">查看</button>${job.downloadReady ? `<a href="/api/jobs/${encodeURIComponent(job.id)}/download">下载</a>` : ""}<button type="button" data-reuse-job="${escapeHtml(job.id)}" title="把这个任务的参数填回表单">复用参数</button>${job.rerunnable ? `<button type="button" data-rerun-job="${escapeHtml(job.id)}" title="用同样的 ${job.fileCount || ""} 个文件和参数再跑一次">重跑</button>` : ""}</span>
     </li>`).join("") : `<li class="hint">还没有任务。</li>`;
   if (running || !activityPanel.hidden) activityTimer = setTimeout(refreshActivity, running ? 2500 : 6000);
 }
@@ -535,7 +661,25 @@ document.addEventListener("pointerdown", event => {
   if (!activityPanel.hidden && !event.target.closest("#activityPanel, #activityButton")) toggleActivity(false);
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !activityPanel.hidden) toggleActivity(false); });
-document.querySelector("#activityList").addEventListener("click", event => {
+document.querySelector("#activityList").addEventListener("click", async event => {
+  const reuse = event.target.closest("[data-reuse-job]");
+  const rerun = event.target.closest("[data-rerun-job]");
+  if (reuse || rerun) {
+    const job = activityJobs.find(item => item.id === (reuse || rerun).dataset.reuseJob || item.id === (reuse || rerun).dataset.rerunJob);
+    if (!job) return;
+    const tool = state.tools.find(item => item.id === job.tool);
+    if (tool && tool.id !== state.active?.id) { state.active = tool; state.files = []; renderNav(); renderTool(); }
+    if (reuse) { applySnapshot(snapshotFromJobOptions(job.options)); setTask(`已填入 ${job.toolTitle} 任务的参数，添加文件后即可提交。`, "ok"); toggleActivity(false); return; }
+    rerun.disabled = true;
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(job.id)}/rerun`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "无法重跑");
+      state.currentJob = data.id; setTask("已用同样的文件和参数重新排队", ""); startPolling(data.id); window.ClientActivity?.refresh(); refreshActivity();
+    } catch (error) { setTask(error.message, "bad"); } finally { rerun.disabled = false; }
+    toggleActivity(false);
+    return;
+  }
   const button = event.target.closest("[data-show-job]");
   if (!button) return;
   const tool = state.tools.find(item => item.id === button.dataset.jobTool);
@@ -546,4 +690,16 @@ document.querySelector("#activityList").addEventListener("click", event => {
   toggleActivity(false);
 });
 
-init().then(refreshActivity).catch(error => { title.textContent = "无法加载工具"; description.textContent = error.message; });
+function openLinkedJob() {
+  const id = new URLSearchParams(location.search).get("job");
+  if (!id || !/^[0-9a-f]{32}$/.test(id)) return;
+  history.replaceState(null, "", "/");
+  fetch(`/api/jobs/${id}`).then(response => response.ok ? response.json() : null).then(job => {
+    if (!job) { setTask("这个任务已过期（任务保留 24 小时）。", "bad"); return; }
+    const tool = state.tools.find(item => item.id === job.tool);
+    if (tool && tool.id !== state.active?.id) { state.active = tool; state.files = []; renderNav(); renderTool(); }
+    state.currentJob = id; setTask("读取任务…", ""); startPolling(id);
+  }).catch(() => {});
+}
+
+init().then(() => { openLinkedJob(); refreshActivity(); }).catch(error => { title.textContent = "无法加载工具"; description.textContent = error.message; });

@@ -240,3 +240,13 @@ body {
 .activity-status-running, .activity-status-queued { color:#2f6f9a; }
 .activity-status-failed { color:#a33930; }
 .activity-status-completed, .activity-status-completed_with_warnings { color:#2f7a55; }
+
+/* 工具箱参数预设栏 (static/app.js) */
+.preset-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:20px; padding:10px 12px; border:1px dashed var(--t-line-strong, #c4cede); border-radius:8px; background:var(--t-surface, #f5f7fb); }
+.preset-bar .preset-select { display:flex; align-items:center; gap:8px; color:var(--t-muted, #6b7890); font-size:13px; }
+.preset-bar select { min-width:150px; padding:6px 8px; border:1px solid var(--t-line, #dde3ea); border-radius:6px; background:var(--t-panel, #ffffff); color:var(--t-ink, #1d2943); font:inherit; }
+.preset-bar button:not(.inline-link) { padding:6px 10px; border:1px solid var(--t-line, #dde3ea); border-radius:6px; background:var(--t-panel, #ffffff); color:var(--t-ink, #1d2943); font:inherit; font-size:13px; cursor:pointer; }
+.preset-bar button:not(.inline-link):hover:not(:disabled) { border-color:var(--t-accent, #2f5bd3); color:var(--t-accent, #2f5bd3); }
+.preset-bar button:disabled { opacity:.5; cursor:default; }
+.preset-bar .preset-hint { margin-left:auto; font-size:12px; }
+.activity-actions button[data-rerun-job], .activity-actions button[data-reuse-job] { font-size:12px; }

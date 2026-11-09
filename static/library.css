@@ -24,7 +24,8 @@
 .library-table th { position:sticky; top:0; z-index:1; padding:0; border-bottom:1px solid #dde4f0; background:#f8f9fc; text-align:left; }
 .library-table th button { width:100%; padding:8px 12px; border:0; background:transparent; color:#5a6782; font:inherit; font-size:12px; font-weight:650; text-align:left; cursor:pointer; }
 .library-table th button:hover { color:#1d2943; }
-.library-table th:first-child { width:55%; }
+.library-table th:first-child { width:34px; }
+.library-table th:nth-child(2) { width:55%; }
 .library-table td { padding:8px 12px; border-bottom:1px solid #eef1f6; color:#3b4763; vertical-align:top; }
 .library-table tbody tr:last-child td { border-bottom:0; }
 .library-table tbody tr { cursor:default; outline:none; }
@@ -74,5 +75,19 @@
   .library-source-list { flex-direction:row; flex-wrap:wrap; }
   .library-source { width:auto; }
   .library-source-group { display:none; }
-  .library-table th:nth-child(3), .library-table td:nth-child(3) { display:none; }
+  .library-table th:nth-child(4), .library-table td:nth-child(4) { display:none; }
 }
+
+/* 批量勾选与批量操作栏 */
+.library-table .lib-check { width:34px; padding:0 0 0 12px; text-align:center; vertical-align:middle; }
+.library-table th.lib-check input, .library-table td.lib-check input { width:15px; height:15px; margin:0; cursor:pointer; accent-color:var(--t-accent, #2f5bd3); }
+.library-batch-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 18px 10px; padding:8px 10px; border:1px solid var(--t-line, #dde3ea); border-radius:9px; background:var(--t-surface, #f5f7fb); }
+.library-batch-bar[hidden] { display:none; }
+.library-batch-bar strong { color:var(--t-ink, #1d2943); font-size:13px; }
+.library-batch-bar .button { padding:5px 10px; font-size:12px; }
+.library-batch-project select { max-width:190px; padding:5px 8px; border:1px solid var(--t-line, #dde3ea); border-radius:6px; background:var(--t-panel, #ffffff); font:inherit; font-size:12px; }
+.library-batch-status { flex-basis:100%; margin:0; font-size:12px; }
+.library-batch-status:empty { display:none; }
+.library-batch-status.ok { color:var(--t-ok, #1d7a55); }
+.library-batch-status.bad { color:var(--t-accent, #2f5bd3); }
+.lib-progress { display:inline-block; min-width:34px; margin-right:6px; padding:1px 5px; border-radius:999px; color:var(--t-accent, #2f5bd3); background:var(--t-bg, #f5f7fb); font-size:11px; font-style:normal; font-weight:700; text-align:center; }

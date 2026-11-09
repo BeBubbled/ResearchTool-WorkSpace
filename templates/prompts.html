@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#182a5b">
   <title>Prompt 工作台 · 科研工具箱</title>
   <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
-  <link rel="stylesheet" href="/static/prompts.css?v=20261108-slash">
+  <link rel="stylesheet" href="/static/prompts.css?v=20261108-claude">
 </head>
 <body class="prompt-page">
   {% set client_active = "prompts" %}{% include "_client_nav.html" %}
@@ -32,7 +32,7 @@
         </div>
         <input id="attachmentInput" type="file" multiple hidden>
         <ul id="attachmentList" class="attachment-list" aria-label="本次附件"></ul>
-        <div class="prompt-submit-row"><button id="copyPrompt" data-command="复制 Prompt 文字" type="button">复制文字</button><button id="submitPrompt" data-command="提交到 ChatGPT" data-shortcut="mod+enter" class="primary" type="button" disabled>提交到 ChatGPT ↗</button></div>
+        <div class="prompt-submit-row"><button id="copyPrompt" data-command="复制 Prompt 文字" type="button">复制文字</button><button id="openInClaude" data-command="复制并在 Claude 中打开" type="button" title="复制文字并打开 claude.ai；附件需要在 Claude 中手动添加">在 Claude 中打开 ↗</button><button id="submitPrompt" data-command="提交到 ChatGPT" data-shortcut="mod+enter" class="primary" type="button" disabled>提交到 ChatGPT ↗</button></div>
         <p class="handoff-note">提交会打开 ChatGPT，填入文字并添加附件。请在 ChatGPT 中检查后发送。</p>
         <div id="transferStatus" class="transfer-status" role="status" aria-live="polite" hidden></div>
       </section>
@@ -58,6 +58,6 @@
     </form>
   </dialog>
   <script src="/static/prompt_handoff.js?v=1"></script>
-  <script src="/static/prompts.js?v=20261108-slash" defer></script>
+  <script src="/static/prompts.js?v=20261108-claude" defer></script>
 </body>
 </html>

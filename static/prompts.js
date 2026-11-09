@@ -308,7 +308,16 @@ if (typeof document !== "undefined") (() => {
   $("deleteTemplate").addEventListener("click", async () => {
     const editing = templates.find(row => row.id === editingId);
     if (!editingId || !confirm(editing?.builtin ? "恢复为默认名称和内容？精读页的划选按钮会随之更新。" : "删除此模板？已加入草稿的文字会保留。")) return;
-    try { await api(`/api/prompts/templates/${editingId}`, {method:"DELETE"}); await loadTemplates(); $("templateDialog").close(); }
+    try {
+      await api(`/api/prompts/templates/${editingId}`, {method:"DELETE"}); await loadTemplates(); $("templateDialog").close();
+      if (editing && !editing.builtin && window.ClientToast) {
+        const copy = { title: editing.title, category: editing.category, content: editing.content };
+        window.ClientToast.undo(`已删除模板“${editing.title}”。`, async () => {
+          await api("/api/prompts/templates", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(copy) });
+          await loadTemplates();
+        }, { restoredMessage: "模板已恢复。" });
+      }
+    }
     catch (error) { $("templateError").textContent = error.message; }
   });
   $("clearDraft").addEventListener("click", () => {
@@ -324,6 +333,14 @@ if (typeof document !== "undefined") (() => {
   // A missed drop must not navigate away from an unsent draft.
   window.addEventListener("dragover", event => event.preventDefault()); window.addEventListener("drop", event => event.preventDefault());
   $("attachmentList").addEventListener("click", event => { const button = event.target.closest("[data-remove-file]"); if (button) { draft.files.splice(Number(button.dataset.removeFile),1); renderFiles(); } });
+  $("openInClaude")?.addEventListener("click", async () => {
+    if (!draft.text.trim()) { notify("先编排要发送的文字。"); return; }
+    let copied = true;
+    try { await navigator.clipboard.writeText(draft.text); } catch { copied = false; }
+    window.open("https://claude.ai/new", "_blank", "noopener");
+    const files = draft.files.length ? `；${draft.files.length} 个附件需要在 Claude 中手动添加` : "";
+    notify(copied ? `文字已复制，在新开的 Claude 页面中粘贴（Ctrl+V）${files}。` : "无法访问剪贴板：请先点“复制文字”或手动复制，再粘贴到 Claude。");
+  });
   $("copyPrompt").addEventListener("click", async () => { try { await navigator.clipboard.writeText(draft.text); notify("Prompt 已复制。"); } catch { $("promptText").focus(); $("promptText").select(); notify("无法访问剪贴板，请按 Ctrl+C 复制选中文字。"); } });
   $("checkBridge").addEventListener("click", checkBridge); $("submitPrompt").addEventListener("click", submit);
   // ChatGPT connection lives in a top-bar popover: status pill + diagnostics and setup steps.
@@ -388,9 +405,17 @@ if (typeof document !== "undefined") (() => {
   loadTemplates().then(() => {
     const wanted = params.get("category");
     if (wanted && [...$("categoryFilter").options].some(option => option.value === wanted)) { $("categoryFilter").value = wanted; renderTemplates(); }
+    // ?template=<id> (全文搜索): show that template and highlight it.
+    const linked = templates.find(row => row.id === params.get("template"));
+    if (linked) {
+      $("templateSearch").value = linked.title; renderTemplates();
+      const card = document.querySelector(`[data-add="${CSS.escape(linked.id)}"]`)?.closest(".template-card");
+      card?.classList.add("is-linked"); card?.scrollIntoView({ block: "center" });
+      setTimeout(() => card?.classList.remove("is-linked"), 3200);
+    }
   }).catch(error => { $("templateList").textContent = error.message; notify("读取模板失败，刷新页面可重试。"); });
   if (params.get("handoff") && window.PromptHandoff) receiveHandoff(window.PromptHandoff.take());
-  if (params.has("handoff") || params.has("category")) history.replaceState(null, "", "/prompts");
+  if (params.has("handoff") || params.has("category") || params.has("template")) history.replaceState(null, "", "/prompts");
   checkBridge();
   try { transfer = JSON.parse(sessionStorage.getItem(transferKey) || "null"); } catch { transfer = null; }
   if (transfer?.id && transfer?.token) { busy = true; updateSubmit(); pollTransfer(); }

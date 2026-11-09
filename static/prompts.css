@@ -73,3 +73,5 @@
 .slash-option small { color:var(--muted); font-size:11.5px; }
 .slash-option.active, .slash-option:hover { background:#eef1f8; }
 .slash-hint { margin-right:auto; color:var(--muted); }
+
+.template-card.is-linked { border-color:var(--t-accent, #2f5bd3); box-shadow:0 0 0 3px var(--t-accent-soft, #e8eefc); transition:box-shadow .3s; }

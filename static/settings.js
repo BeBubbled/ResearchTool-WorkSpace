@@ -2,10 +2,10 @@
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["general", "llm", "mathpix", "codex", "claude", "billing", "google", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
+const SETTINGS_TABS = ["general", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
 // Sidebar groups (macOS System Settings style): accounts & engines, services, then per-module defaults.
 const SETTINGS_GROUPS = [
-  { label: "通用", items: [["general", "通用"]] },
+  { label: "通用", items: [["general", "通用"], ["doctor", "环境检查"], ["usage", "用量"]] },
   { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["billing", "费用确认"]] },
   { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
   { label: "功能", items: [["reader", "精读"], ["workflow", "双语改稿"], ["three-pass", "Three-Pass"], ["studio", "ResearchStudio"]] },
@@ -60,7 +60,7 @@ const BILLING_ENGINES = [
 // Remembered layout state (pane widths, open tabs, sort orders…) — cleared by 重置界面布局.
 const LAYOUT_PREFIXES = ["research-toolkit.inspector.", "research-toolkit.library.", "research-toolkit.settings.", "research-toolkit.prompts.", "paper-lens.selection-more-open", "health.trend-scale", "paperRevision.commentDialogPos"];
 // Exportable browser preferences: layout state plus reader defaults and cost acknowledgements.
-const EXPORT_PREFIXES = [...LAYOUT_PREFIXES, "research-toolkit.billing-ack", "paper-lens.selection-settings.v1"];
+const EXPORT_PREFIXES = [...LAYOUT_PREFIXES, "research-toolkit.billing-ack", "paper-lens.selection-settings.v1", "research-toolkit.toolbox.", "research-toolkit.activity.desktop"];
 const storedKeys = prefixes => {
   const keys = [];
   try { for (let i = 0; i < localStorage.length; i += 1) { const key = localStorage.key(i); if (prefixes.some(prefix => key.startsWith(prefix))) keys.push(key); } } catch {}
@@ -83,10 +83,124 @@ function renderGeneralSettingsPanel() {
           <p class="hint">字母和数字快捷键在输入框里不生效；带 ${mod} 的组合键随时可用。</p>
         </div>
         <div class="reader-settings-group">
+          <h4>任务完成提醒</h4>
+          <p class="hint">OCR、翻译、Three-Pass、改稿、研究空白和 ResearchStudio 的任务结束时，页面右下角会出现提示，左侧导航上显示进行中的任务数。开启桌面通知后，切到其他窗口时也会收到系统通知。</p>
+          <label class="reader-switch-row"><span><strong>桌面通知</strong><small data-desktop-notify-state>${desktopNotifyText()}</small></span><input type="checkbox" role="switch" data-desktop-notify ${activityApi()?.desktopEnabled?.() ? "checked" : ""} ${"Notification" in window ? "" : "disabled"}></label>
+        </div>
+        <div class="reader-settings-group">
           <div class="reader-group-heading"><h4>界面布局</h4><button type="button" data-reset-layout>重置界面布局</button></div>
           <p class="hint">检查器的宽度和打开的标签、面板开关、文献库的来源与排序、上次打开的设置面板等会记在浏览器里。当前记住了 <strong>${storedKeys(LAYOUT_PREFIXES).length}</strong> 项。重置不影响精读默认值、费用确认和任何账号配置。</p>
         </div>
       </section>`;
+}
+
+// The drawer embeds this page without the client shell; use the host page's activity API then.
+const activityApi = () => window.ClientActivity || (window.parent !== window ? window.parent.ClientActivity : null);
+
+function desktopNotifyText() {
+  if (!("Notification" in window)) return "这个浏览器不支持桌面通知。";
+  if (Notification.permission === "denied") return "浏览器已拒绝通知权限，请在地址栏的网站设置里允许后再开启。";
+  return activityApi()?.desktopEnabled?.() ? "已开启：页面在后台时，任务结束会弹出系统通知。" : "未开启。";
+}
+
+// ---- 环境检查 (GET /api/doctor) and 用量 (GET /api/usage): filled in after the pane renders.
+function renderDoctorSettingsPanel() {
+  return `
+      <section class="settings-tab-panel doctor-settings" data-settings-panel="doctor" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>环境检查</h3><span class="preset-id">本机</span></div>
+          <p class="hint">首次使用或换电脑后，从这里确认每个功能需要的账号、服务和本机程序。标“可选”的项目只影响对应功能。</p></div>
+          <button type="button" data-doctor-refresh>重新检查</button>
+        </div>
+        <div data-doctor-body class="doctor-body"><p class="hint">正在检查…</p></div>
+      </section>`;
+}
+
+function renderUsageSettingsPanel() {
+  return `
+      <section class="settings-tab-panel usage-settings" data-settings-panel="usage" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>用量</h3><span class="preset-id">本机记录</span></div>
+          <p class="hint">按引擎和功能统计这台电脑发出的请求：API 预设记录提供方返回的 Token 数，Mathpix 记录页数（重复 OCR 复用的不计费），Google 翻译记录字符数；Codex 与 Claude Code 按套餐额度计费，这里只记任务次数，剩余额度见 Codex 面板。不记录任何 Prompt 内容或密钥。</p></div>
+          <label class="usage-range"><span class="sr-only">时间范围</span><select data-usage-days><option value="7">最近 7 天</option><option value="30" selected>最近 30 天</option><option value="90">最近 90 天</option><option value="365">最近一年</option></select></label>
+        </div>
+        <div data-usage-body class="usage-body"><p class="hint">正在读取…</p></div>
+      </section>`;
+}
+
+const formatCount = value => Number(value || 0).toLocaleString("zh-CN");
+
+async function loadDoctor(refresh = false) {
+  const body = form.querySelector("[data-doctor-body]");
+  if (!body) return;
+  body.innerHTML = `<p class="hint">正在检查…</p>`;
+  try {
+    const response = await fetch(`/api/doctor${refresh ? "?refresh=1" : ""}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法完成环境检查。");
+    const groups = new Map();
+    data.checks.forEach(check => { if (!groups.has(check.group)) groups.set(check.group, []); groups.get(check.group).push(check); });
+    const summary = data.requiredMissing
+      ? `<p class="manager-message bad">有 ${data.requiredMissing} 项必需条件未满足。</p>`
+      : `<p class="manager-message ok">必需条件都已满足${data.optionalMissing ? `；${data.optionalMissing} 项可选功能尚未配置` : ""}。</p>`;
+    body.innerHTML = summary + [...groups].map(([group, checks]) => `
+      <div class="reader-settings-group doctor-group"><h4>${escapeHtml(group)}</h4><ul class="doctor-list">${checks.map(check => `
+        <li class="doctor-item ${check.ok ? "ok" : check.optional ? "optional" : "bad"}">
+          <i aria-hidden="true">${check.ok ? "✓" : check.optional ? "○" : "✕"}</i>
+          <span><strong>${escapeHtml(check.label)}</strong>${check.optional && !check.ok ? `<em>可选</em>` : ""}<small>${escapeHtml(check.detail || "")}</small>${check.fix ? `<small class="doctor-fix">${escapeHtml(check.fix)}</small>` : ""}</span>
+          ${!check.ok && check.settingsTab ? `<button type="button" data-doctor-open="${escapeHtml(check.settingsTab)}">去设置</button>` : ""}
+        </li>`).join("")}</ul></div>`).join("");
+  } catch (error) {
+    body.innerHTML = `<p class="manager-message bad">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function loadUsage() {
+  const body = form.querySelector("[data-usage-body]");
+  if (!body) return;
+  const days = form.querySelector("[data-usage-days]")?.value || "30";
+  try {
+    const response = await fetch(`/api/usage?days=${encodeURIComponent(days)}`);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "无法读取用量。");
+    if (!data.engines.length) { body.innerHTML = `<p class="hint">这段时间还没有记录。用量从这个版本开始记录，之前的任务不在其中。</p>`; return; }
+    const metric = (bucket) => [
+      bucket.calls ? `${formatCount(bucket.calls)} 次` : "",
+      bucket.inputTokens || bucket.outputTokens ? `输入 ${formatCount(bucket.inputTokens)} / 输出 ${formatCount(bucket.outputTokens)} Token` : "",
+      bucket.pages ? `${formatCount(bucket.pages)} 页` : "",
+      bucket.characters ? `${formatCount(bucket.characters)} 字符` : "",
+      bucket.reused ? `复用 ${formatCount(bucket.reused)} 次（未计费）` : "",
+    ].filter(Boolean).join(" · ") || "—";
+    const maxDay = Math.max(1, ...data.daily.map(day => day.api + day.codex + day.claude + day.mathpix + day.google));
+    const bars = data.daily.slice(-60).map(day => {
+      const total = day.api + day.codex + day.claude + day.mathpix + day.google;
+      return `<span class="usage-bar" style="height:${Math.max(4, Math.round(total / maxDay * 100))}%" title="${escapeHtml(day.day)}：${total} 次"></span>`;
+    }).join("");
+    body.innerHTML = `<div class="usage-chart" role="img" aria-label="每日请求次数">${bars}</div>` + data.engines.map(engine => `
+      <div class="reader-settings-group usage-engine"><div class="reader-group-heading"><h4>${escapeHtml(engine.label)}</h4><span class="hint">${escapeHtml(metric(engine))}</span></div>
+        <table class="usage-table"><tbody>${engine.features.map(feature => `<tr><td>${escapeHtml(feature.label)}</td><td>${escapeHtml(metric(feature))}</td></tr>`).join("")}</tbody></table>
+      </div>`).join("");
+  } catch (error) {
+    body.innerHTML = `<p class="manager-message bad">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function wireDoctorAndUsage() {
+  form.querySelector("[data-doctor-refresh]")?.addEventListener("click", () => loadDoctor(true));
+  form.querySelector("[data-doctor-body]")?.addEventListener("click", event => {
+    const button = event.target.closest("[data-doctor-open]");
+    if (button) form.querySelector(`[data-settings-tab="${CSS.escape(button.dataset.doctorOpen)}"]`)?.click();
+  });
+  form.querySelector("[data-usage-days]")?.addEventListener("change", loadUsage);
+  form.querySelector("[data-desktop-notify]")?.addEventListener("change", async event => {
+    const input = event.target;
+    if (input.checked) {
+      const result = await (activityApi()?.requestDesktop?.() || Promise.resolve("unsupported"));
+      if (result !== "granted") input.checked = false;
+    } else activityApi()?.setDesktop?.(false);
+    const text = form.querySelector("[data-desktop-notify-state]");
+    if (text) text.textContent = desktopNotifyText();
+  });
 }
 
 function renderBillingSettingsPanel() {
@@ -596,6 +710,8 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
 ${renderReaderSettingsPanel()}
 ${renderStudioSettingsPanel()}
 ${renderGeneralSettingsPanel()}
+${renderDoctorSettingsPanel()}
+${renderUsageSettingsPanel()}
 ${renderBillingSettingsPanel()}
 ${renderAdvancedSettingsPanel()}
       <section class="settings-tab-panel workflow-manager" data-settings-panel="workflow" role="tabpanel">
@@ -747,6 +863,7 @@ ${renderAdvancedSettingsPanel()}
   form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
   wireReaderSettings();
   wireBrowserSettings();
+  wireDoctorAndUsage();
   form.querySelector("[data-refresh-studio]")?.addEventListener("click", async event => {
     event.currentTarget.disabled = true;
     await loadStudioConfig(true);
@@ -808,6 +925,8 @@ function activateSettingsTab(tab, updateHash = true) {
     button.tabIndex = active ? 0 : -1;
   });
   form.querySelectorAll("[data-settings-panel]").forEach(panel => panel.classList.toggle("hidden", panel.dataset.settingsPanel !== tab));
+  if (tab === "doctor") loadDoctor();
+  if (tab === "usage") loadUsage();
   if (updateHash) hooks.onTabChange(tab);
 }
 

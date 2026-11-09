@@ -649,6 +649,27 @@ class ResearchGapService:
             ).fetchall()
         return [self._project_json(row) for row in rows]
 
+    def recent_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Newest analysis and folder-import jobs across projects, for the client activity feed."""
+        with self.store.connect() as db:
+            analyses = db.execute(
+                """SELECT j.id, j.project_id, j.status, j.stage, j.completed, j.total, j.created_at, j.finished_at,
+                p.name project_name FROM analysis_jobs j JOIN projects p ON p.id=j.project_id
+                ORDER BY j.created_at DESC LIMIT ?""", (limit,)).fetchall()
+            imports = db.execute(
+                """SELECT j.id, j.project_id, j.status, j.stage, j.completed, j.total, j.created_at, j.finished_at,
+                p.name project_name FROM paper_import_jobs j JOIN projects p ON p.id=j.project_id
+                ORDER BY j.created_at DESC LIMIT ?""", (limit,)).fetchall()
+        result = []
+        for kind, rows in (("analysis", analyses), ("import", imports)):
+            for row in rows:
+                result.append({
+                    "id": row["id"], "kind": kind, "projectId": row["project_id"], "projectName": row["project_name"],
+                    "status": row["status"], "stage": row["stage"], "completed": row["completed"], "total": row["total"],
+                    "createdAt": row["created_at"], "finishedAt": row["finished_at"],
+                })
+        return result
+
     def reader_usage(self) -> dict[str, list[dict[str, str]]]:
         """Which research projects include each reader-library paper (by reader cache key)."""
         with self.store.connect() as db:

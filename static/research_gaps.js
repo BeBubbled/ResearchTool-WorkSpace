@@ -95,6 +95,10 @@
       if (initial) await selectProject(initial.id);
       else renderNoProjects();
       focusLibraryPaper(new URLSearchParams(location.search).get("libraryPaper"));
+      // ?gap=<id> (全文搜索 and other modules link here): open that gap's detail.
+      const linkedGap = new URLSearchParams(location.search).get("gap");
+      const gap = linkedGap && state.gaps.find(item => item.id === linkedGap);
+      if (gap) openGapDrawer(gap);
     } catch (error) {
       toast(error.message, true);
       renderNoProjects();
@@ -632,7 +636,14 @@
   async function reviewAction(item, action) {
     if (action === "edit") { openReviewDialog(item); return; }
     const path = item.itemType === "relation" ? `/relations/${encodeURIComponent(item.id)}` : `/facts/${encodeURIComponent(item.id)}`;
-    try { await api(path, { method: "PATCH", body: { reviewStatus: action } }); await refreshProject(); toast(action === "accepted" ? "证据已接受。" : "证据已驳回。 "); }
+    try {
+      await api(path, { method: "PATCH", body: { reviewStatus: action } });
+      await refreshProject();
+      const message = action === "accepted" ? "证据已接受。" : "证据已驳回。";
+      if (window.ClientToast) {
+        window.ClientToast.undo(message, async () => { await api(path, { method: "PATCH", body: { reviewStatus: "pending" } }); await refreshProject(); }, { restoredMessage: "已撤销，证据回到待审核。" });
+      } else toast(message);
+    }
     catch (error) { toast(error.message, true); }
   }
 

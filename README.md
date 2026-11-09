@@ -62,6 +62,20 @@ This project is developed entirely through ViveCoding. The code is provided as-i
 - **工具箱**：左侧是可搜索的工具列表；顶部“活动”列出最近 24 小时所有工具的任务（`GET /api/jobs`），可切回查看日志或直接下载结果。
 - **Prompt 工作台**：顶部胶囊显示 ChatGPT 扩展的连接状态，点开查看诊断和安装步骤；在编排区行首输入 `/` 可以搜索并插入模板。
 
+### 任务提醒、全文搜索、批量操作与参数预设
+
+- **任务完成提醒**（`static/client_extras.js`，`GET /api/activity`）：工具箱、精读导入与 Three-Pass、研究空白、ResearchStudio、改稿的任务汇总在一个列表里。进行中的任务数显示在左侧导航和标签页标题上；任务结束时右下角弹出提示，点“查看”直接跳到结果。在 设置 → 通用 开启桌面通知后，页面在后台时也会收到系统通知。
+- **撤销**：删除精读笔记、删除 Prompt 模板、删除工具箱参数预设，以及研究空白里接受 / 驳回证据之后，提示条里有“撤销”，8 秒内有效。
+- **全文搜索**（`GET /api/search`）：⌘K / Ctrl+K 输入两个字以上，除了命令和论文标题，还会搜索精读笔记、Three-Pass 报告、改稿批注、研究空白和 Prompt 模板，结果直接定位到对应位置（`/reader?…&note=`、`&analysis=`，`/research-gaps?gap=`，`/prompts?template=`，`/paper-revision?project=&comment=`）。
+- **文献库批量操作**：勾选论文（或按空格）后，可以批量加入研究项目、排队 Codex Three-Pass、复制或导出 BibTeX。BibTeX 依次查 Crossref、Semantic Scholar，标题高度一致才采用；都没找到时生成标注“未在线核实”的 `@misc` 条目（`POST /api/library/bibtex`，实现在 `citations.py`）。工具箱的“论文标题转 BibTeX”也改为同样的顺序，最后才用 Google Scholar，因此不装 scholarly 也能用。
+- **继续阅读**：精读记住每篇论文读到的位置，再次打开时自动回到原处（提示条里可以“回到开头”）；文献库新增“最近阅读”来源，显示读到的百分比。
+- **笔记跳转与 Anki**：精读里按 `N` / `P` 在有笔记的段落之间跳转；笔记栏的“导出 Anki”把生词和配对笔记导出成 Anki 可直接导入的文本（带标签）。
+- **工具箱参数记忆与预设**：每个工具自动带出上次提交的参数，可以存成命名预设；“活动”列表里可以“复用参数”，或用同样的文件和参数“重跑”（`POST /api/jobs/<id>/rerun`，不含翻译、OCR 等需要临时提供方配置的任务）。翻译和 Markdown 修复在提交前显示字符数和预计调用次数。
+- **环境检查与用量**：设置 → 环境检查（`GET /api/doctor`）列出 AI 引擎、服务、本机程序（Go 翻译后端、FFmpeg、LaTeX、Git）和各工具依赖，缺什么、怎么补一目了然。设置 → 用量（`GET /api/usage`）按引擎和功能统计 API Token、Mathpix 页数（复用的不计费）、Google 字符数，以及 Codex / Claude Code 的任务次数；记录在 `.runtime/usage/usage.jsonl`，不含 Prompt 内容或密钥。
+- **改稿：编译检查与写回 git**（`revision_tools.py`，页面按钮由 `static/paper_revision_extras.js` 添加）：“编译检查”把论文目录复制到临时目录，叠加当前版本，用本机 latexmk / pdflatex（不启用 shell-escape）编译，列出带行号的错误和未定义引用，并可打开生成的 PDF。“写回 git”只在论文目录是 git 工作副本、且目标文件在 git 中没有未提交改动时才写入，不提交；先预览要写的文件，结果里给出 `git checkout` 撤销命令。
+- **Prompt 工作台**：新增“在 Claude 中打开”，复制文字并打开 claude.ai（附件需手动添加）。
+- **MathJax 本地化**：MathJax 3.2.2 放在 `static/vendor/mathjax/`，精读离线也能排版公式。
+
 ### 统一客户端导航与全局设置
 
 各模块页面左侧共用一条导航栏（窄屏时改为底部导航）：**精读**（`/reader`）、**改稿**（`/paper-revision`）、**Prompt**（`/prompts`），以及“更多”中的工具箱（`/`）、研究空白地图（`/research-gaps`）和 ResearchStudio（`/researchstudio`），底部是**设置**（`/settings`）。
@@ -210,7 +224,7 @@ job. Results are downloaded from the panel; original files are never renamed.
 - 真实 API 烟雾测试同样需要显式确认：`python tests/smoke_api_three_pass.py path/to/paper.md --preset-id <预设ID> --confirm-usage`；长文还必须增加 `--confirm-chunked`，该测试会产生 API 费用。
 - “Markdown 图片发布”接收恰好一份 `.md/.mmd` 和对应图片目录，只上传文档实际引用的本地图片。它支持 Markdown 行内/引用式图片、Wiki 图片、MMD `includegraphics` 和内嵌 HTML 图片，跳过代码、远程链接与 `data:` URL。图片以 `<根目录>/YYYY/MM/DD/<SHA-256>.<扩展名>` 写入公开 GitHub 仓库的单次原子提交，输出固定到 commit SHA 的 Raw URL，并下载不覆盖原文件的 `*_github.md/.mmd`。
 
-PDF.js 6.1.200 固定并保存在 `static/vendor/pdfjs/`，原生 PDF 阅读不依赖 CDN。OCR HTML 在禁止脚本和外部资源的 sandbox iframe 中显示。MathJax 仍通过浏览器加载以显示 Markdown 中的 LaTeX；若本机离线，原始公式文本仍会保留，但不会排版为数学公式。
+PDF.js 6.1.200 固定并保存在 `static/vendor/pdfjs/`，原生 PDF 阅读不依赖 CDN。OCR HTML 在禁止脚本和外部资源的 sandbox iframe 中显示。MathJax 3.2.2 同样保存在 `static/vendor/mathjax/`（不含约 4 MB 的语音规则引擎），离线时也能排版 Markdown 中的 LaTeX。
 
 启用 PDF 段落朗读时，在 `.env` 中配置：
 

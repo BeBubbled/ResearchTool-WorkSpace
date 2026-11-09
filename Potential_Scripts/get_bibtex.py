@@ -1,41 +1,50 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+"""Titles (one per line) -> BibTeX.
 
-import time
+Sources, in order: Crossref and Semantic Scholar (fast, rarely rate limited, title-checked),
+then Google Scholar through scholarly when it is installed, and finally a minimal local
+@misc entry marked for manual completion, so every title produces an entry.
+"""
+
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
-from scholarly import scholarly
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from citations import CitationResolver, local_bibtex  # noqa: E402
+
+try:
+    from scholarly import scholarly
+except ImportError:  # Google Scholar is only the third source.
+    scholarly = None
 
 
-def fetch_bibtex_for_title(title: str, sleep_sec: float = 5.0) -> Optional[str]:
-    """
-    给定论文标题，使用 scholarly 搜索并返回 BibTeX。
-    如果失败或没有结果，返回 None。
-    """
-    title = title.strip()
-    if not title:
+def fetch_from_scholar(title: str, sleep_sec: float = 5.0) -> Optional[str]:
+    if scholarly is None:
         return None
-
-    print(f"\n[INFO] Searching: {title}", file=sys.stderr)
     try:
-        search_iter = scholarly.search_pubs(title)
-        pub = next(search_iter, None)
+        pub = next(scholarly.search_pubs(title), None)
         if pub is None:
-            print(f"[WARN] No result for: {title}", file=sys.stderr)
             return None
-
         bibtex_str = scholarly.bibtex(pub)
-        print(f"[OK] Got BibTeX for: {title}", file=sys.stderr)
-
-        # 简单限速，避免被 Google Scholar 封
-        time.sleep(sleep_sec)
+        time.sleep(sleep_sec)  # Google Scholar rate limits aggressively.
         return bibtex_str
-
-    except Exception as e:
-        print(f"[ERROR] Failed for title: {title} | {e}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[WARN] Google Scholar failed for: {title} | {exc}", file=sys.stderr)
         return None
+
+
+def fetch_bibtex_for_title(title: str, resolver: CitationResolver) -> tuple[str, str]:
+    """(bibtex, source) — source is crossref, semantic_scholar, google_scholar or local."""
+    found = resolver.resolve(title)
+    if found["verified"]:
+        return found["bibtex"], found["source"]
+    scholar = fetch_from_scholar(title)
+    if scholar:
+        return scholar, "google_scholar"
+    return local_bibtex(title), "local"
 
 
 def main() -> None:
@@ -51,37 +60,32 @@ def main() -> None:
 
     titles_path = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
-
     if not titles_path.is_file():
         print(f"[FATAL] Not found: {titles_path}", file=sys.stderr)
         sys.exit(1)
 
-    titles = [
-        line.strip()
-        for line in titles_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-
+    titles = [line.strip() for line in titles_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not titles:
         print("[FATAL] No titles found in input file.", file=sys.stderr)
         sys.exit(1)
 
     print(f"[INFO] Total titles: {len(titles)}", file=sys.stderr)
-
-    bibtex_list = []
+    import os
+    resolver = CitationResolver(semantic_scholar_key=lambda: os.getenv("SEMANTIC_SCHOLAR_API_KEY", ""))
+    entries, sources = [], {}
     for idx, title in enumerate(titles, start=1):
-        print(f"[INFO] ({idx}/{len(titles)}) Processing", file=sys.stderr)
-        bib = fetch_bibtex_for_title(title)
-        if bib:
-            bibtex_list.append(bib)
+        print(f"[INFO] ({idx}/{len(titles)}) {title}", file=sys.stderr)
+        bib, source = fetch_bibtex_for_title(title, resolver)
+        sources[source] = sources.get(source, 0) + 1
+        level = "WARN" if source == "local" else "OK"
+        print(f"[{level}] {source}: {title}", file=sys.stderr)
+        entries.append(bib.strip())
 
-    if not bibtex_list:
-        print("[WARN] No BibTeX entries collected.", file=sys.stderr)
-        sys.exit(0)
-
-    output_text = "\n\n".join(bibtex_list)
-    output_path.write_text(output_text, encoding="utf-8")
-    print(f"[DONE] Saved {len(bibtex_list)} entries to: {output_path}", file=sys.stderr)
+    output_path.write_text("\n\n".join(entries) + "\n", encoding="utf-8")
+    summary = ", ".join(f"{name} {count}" for name, count in sources.items())
+    print(f"[DONE] Saved {len(entries)} entries to: {output_path} ({summary})", file=sys.stderr)
+    if sources.get("local"):
+        print("[WARN] Entries from 'local' were not found online; complete them by hand.", file=sys.stderr)
 
 
 if __name__ == "__main__":

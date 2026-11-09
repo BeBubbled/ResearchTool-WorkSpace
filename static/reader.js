@@ -2292,7 +2292,16 @@ function renderNotes() {
 function deleteReaderNote(noteId) {
   const deleted = readerState.notes.find(note => note.id === noteId);
   if (!deleted) return false;
+  const deletedIndex = readerState.notes.indexOf(deleted);
+  const deletedDocument = readerState.document?.id;
   readerState.notes = readerState.notes.filter(note => note.id !== noteId);
+  window.ClientToast?.undo(`已删除“${deleted.action || "阅读笔记"}”。`, () => {
+    if (readerState.document?.id !== deletedDocument) throw new Error("已切换到其他文档");
+    if (!readerState.notes.some(note => note.id === noteId)) readerState.notes.splice(Math.min(deletedIndex, readerState.notes.length), 0, deleted);
+    persistDocumentNotes();
+    renderNotes();
+    renderReaderDecorations($("#readerDocumentFrame")?.contentDocument || document);
+  }, { restoredMessage: "笔记已恢复。" });
   if (readerState.lastAnswer?.id === noteId) {
     readerState.lastAnswer = null;
     renderAnswer("这条缓存笔记已删除。");
@@ -4031,6 +4040,144 @@ async function showReadyDocument(data, restoredFromCache = false) {
   await loadContent();
   await loadThreePassAnalyses();
   if (restoredFromCache) $("#readingStatus").textContent = "本地内容 · 最新功能";
+  startReadingPositionTracking();
+}
+
+// ---- Reading position: remembered per paper (cache key) so the paper reopens where it was left;
+// 文献库 shows these under 最近阅读. Stored in this browser only.
+const READING_POSITION_PREFIX = "research-toolkit.reader-position.";
+function readingPositionKey() {
+  const key = readerState.document?.cacheKey;
+  return /^[0-9a-f]{64}$/.test(key || "") ? READING_POSITION_PREFIX + key : "";
+}
+
+function readingScrollTargets() {
+  const targets = [document.scrollingElement];
+  try {
+    const frameDocument = $("#readerDocumentFrame")?.contentDocument;
+    if (frameDocument?.scrollingElement) targets.push(frameDocument.scrollingElement);
+  } catch {}
+  const content = $("#paperContent");
+  if (content) targets.push(content, ...content.querySelectorAll(".pdf-viewer-container, .pdf-scroll, [data-scroll-root]"));
+  return targets.filter(element => element && element.scrollHeight > element.clientHeight + 40);
+}
+
+function currentReadingRatio() {
+  const target = readingScrollTargets().sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
+  if (!target) return null;
+  return { target, ratio: Math.min(1, Math.max(0, target.scrollTop / Math.max(1, target.scrollHeight - target.clientHeight))) };
+}
+
+function saveReadingPosition() {
+  const key = readingPositionKey();
+  const position = currentReadingRatio();
+  if (!key || !position) return;
+  try {
+    localStorage.setItem(key, JSON.stringify({ ratio: Math.round(position.ratio * 10000) / 10000, view: readerState.view, at: Math.round(Date.now() / 1000), title: readerState.document?.title || "" }));
+  } catch {}
+}
+
+function startReadingPositionTracking() {
+  const key = readingPositionKey();
+  if (!key) return;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(key) || "null"); } catch {}
+  const listen = () => {
+    const onScroll = () => { clearTimeout(onScroll.timer); onScroll.timer = setTimeout(saveReadingPosition, 600); };
+    readingScrollTargets().forEach(target => {
+      const node = target === document.scrollingElement ? window : target === $("#readerDocumentFrame")?.contentDocument?.scrollingElement ? $("#readerDocumentFrame").contentWindow : target;
+      if (node && !node.__readingPositionBound) { node.addEventListener("scroll", onScroll, { passive: true }); node.__readingPositionBound = true; }
+    });
+  };
+  // Content (iframes, PDF pages) settles after loadContent; restore once it has height.
+  let attempts = 0;
+  const restore = () => {
+    attempts += 1;
+    const position = currentReadingRatio();
+    if (!position && attempts < 12) { setTimeout(restore, 400); return; }
+    listen();
+    if (!position || !saved || !(saved.ratio > 0.02)) return;
+    // Formulas and images keep growing the page for a few seconds: re-apply the ratio until the
+    // reader scrolls on their own.
+    let userScrolled = false;
+    const markUser = () => { userScrolled = true; };
+    const scope = position.target.ownerDocument;
+    ["wheel", "keydown", "touchstart", "mousedown"].forEach(type => scope.addEventListener(type, markUser, { once: true, passive: true }));
+    const apply = () => {
+      if (userScrolled) return;
+      position.target.scrollTo({ top: saved.ratio * (position.target.scrollHeight - position.target.clientHeight), behavior: "auto" });
+    };
+    apply();
+    [700, 1600, 3000, 5000].forEach(delay => setTimeout(apply, delay));
+    window.ClientToast?.show(`已回到上次读到的位置（约 ${Math.round(saved.ratio * 100)}%）。`, {
+      actionLabel: "回到开头", onAction: () => { userScrolled = true; position.target.scrollTo({ top: 0, behavior: "smooth" }); }, timeout: 6000,
+    });
+  };
+  setTimeout(restore, 500);
+  window.addEventListener("pagehide", saveReadingPosition);
+}
+
+// ---- N / P: jump between the passages that have notes, in reading order.
+function noteJump(delta) {
+  const frameDocument = $("#readerDocumentFrame")?.contentDocument;
+  const scope = frameDocument || document;
+  const marks = [...scope.querySelectorAll("[data-prompt-note-id], [data-vocabulary-note-id]")];
+  if (!marks.length) {
+    if (!readerState.notes.length) { setNotesStatus("这篇文档还没有笔记。"); return; }
+    noteJump.index = ((noteJump.index ?? -1) + delta + readerState.notes.length) % readerState.notes.length;
+    locateReaderNotes(readerState.notes[noteJump.index], `笔记 ${noteJump.index + 1}/${readerState.notes.length}`);
+    return;
+  }
+  // Start from the mark nearest the current viewport, then step.
+  const viewTop = 80;
+  let index = marks.findIndex(mark => mark.getBoundingClientRect().top > viewTop + 4);
+  if (delta > 0) index = index < 0 ? 0 : index;
+  else index = (index < 0 ? marks.length : index) - 2;
+  if (noteJump.lastMark && marks.includes(noteJump.lastMark) && Math.abs(noteJump.lastMark.getBoundingClientRect().top - viewTop) < 40) {
+    index = marks.indexOf(noteJump.lastMark) + delta;
+  }
+  index = (index + marks.length) % marks.length;
+  const mark = marks[index];
+  noteJump.lastMark = mark;
+  mark.scrollIntoView({ behavior: "smooth", block: "center" });
+  // Inline style: the mark may live inside the document iframe, outside this page's stylesheets.
+  const previous = mark.style.boxShadow;
+  mark.style.boxShadow = "0 0 0 3px rgba(240, 179, 90, .75)";
+  setTimeout(() => { mark.style.boxShadow = previous; }, 1600);
+  const id = mark.dataset.promptNoteId || mark.dataset.vocabularyNoteId;
+  const note = readerState.notes.find(item => item.id === id);
+  if (note) locateReaderNotes(note, `笔记位置 ${index + 1}/${marks.length}`);
+}
+
+// ---- 导出 Anki: vocabulary first, then every answer note; front = selection, back = answer.
+function notesToAnki(notes) {
+  const cell = value => String(value || "").replace(/\t/g, " ").replace(/\r?\n/g, "<br>");
+  const html = text => cell(escapeHtml(text));
+  const answers = notes.filter(note => note.kind === "answer" && note.selection && note.text);
+  const vocabulary = answers.filter(isVocabularyAnswerNote);
+  const others = answers.filter(note => !isVocabularyAnswerNote(note));
+  const title = readerState.document?.title || "论文";
+  const deckTag = String(title).replace(/[^\p{L}\p{N}]+/gu, "_").slice(0, 40) || "paper";
+  const rows = [...vocabulary.map(note => [note, "精读 生词"]), ...others.map(note => [note, "精读 笔记"])].map(([note, tags]) => {
+    const front = html(note.selection) + (note.question ? `<br><small>${html(note.question)}</small>` : "");
+    const back = html(note.text) + `<br><small>${html(note.action || "")} · ${html(note.section || title)}</small>`;
+    return `${front}\t${back}\t${tags} ${deckTag}`;
+  });
+  return { text: ["#separator:tab", "#html:true", "#tags column:3", ...rows].join("\n") + "\n", vocabulary: vocabulary.length, total: rows.length };
+}
+
+function exportNotesAnki() {
+  const { text, vocabulary, total } = notesToAnki(readerState.notes);
+  if (!total) return setNotesStatus("没有可导出的配对笔记：划词执行一个 Prompt 后再导出。");
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${String(readerState.document?.title || "reading-notes").replace(/[\\/:*?"<>|]/g, "_")}_anki.txt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setNotesStatus(`已导出 ${total} 张 Anki 卡片（生词 ${vocabulary} 张）。在 Anki 中“导入文件”即可，标签已写好。`);
 }
 
 async function openReaderDocumentFromQuery() {
@@ -4049,6 +4196,15 @@ async function openReaderDocumentFromQuery() {
     }
     const tab = query.get("inspector");
     if (tab) showInspectorTab(tab);
+    const noteId = query.get("note");
+    const note = noteId && readerState.notes.find(item => item.id === noteId);
+    if (note) setTimeout(() => locateReaderNotes(note, "已定位到搜索到的笔记。"), 300);
+    const analysisId = query.get("analysis");
+    const analysisHistory = $("#threePassHistory");
+    if (analysisId && analysisHistory && [...analysisHistory.options].some(option => option.value === analysisId)) {
+      analysisHistory.value = analysisId;
+      analysisHistory.dispatchEvent(new Event("change"));
+    }
     return true;
   }
   const documentId = new URLSearchParams(window.location.search).get("document");
@@ -4549,6 +4705,18 @@ async function initReader() {
   $("#saveSelectionNote").addEventListener("click", saveCurrentSelectionNote);
   $("#copyNotes").addEventListener("click", copyNotesMarkdown);
   $("#exportNotes").addEventListener("click", exportNotesMarkdown);
+  $("#exportNotesAnki")?.addEventListener("click", exportNotesAnki);
+  $("#nextNoteJump")?.addEventListener("click", () => noteJump(1));
+  $("#previousNoteJump")?.addEventListener("click", () => noteJump(-1));
+  // N / P work from any inspector tab: the buttons only take the shortcut while the notes tab is showing.
+  document.addEventListener("keydown", event => {
+    if (event.defaultPrevented || event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (!["n", "p"].includes(event.key.toLowerCase()) || !document.body.classList.contains("reader-active")) return;
+    if (event.target.closest?.("input, textarea, select, [contenteditable=''], [contenteditable='true']") || document.querySelector("dialog[open]")) return;
+    if ($("#nextNoteJump")?.getClientRects().length) return;
+    event.preventDefault();
+    noteJump(event.key.toLowerCase() === "n" ? 1 : -1);
+  });
   $("#clearNotes").addEventListener("click", () => {
     if (!readerState.notes.length || !window.confirm("确定清空这篇文档的全部阅读笔记吗？")) return;
     readerState.notes = [];

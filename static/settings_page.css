@@ -62,3 +62,24 @@
 .shortcut-table { border-collapse:collapse; font-size:13px; }
 .shortcut-table td { padding:5px 12px 5px 0; vertical-align:top; }
 .shortcut-table kbd { padding:1px 7px; border:1px solid var(--line); border-bottom-width:2px; border-radius:5px; background:#fff; font:12px/1.6 ui-monospace,Consolas,monospace; white-space:nowrap; }
+
+/* 环境检查与用量 (settings.js) */
+.doctor-list { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.doctor-item { display:grid; grid-template-columns:22px minmax(0,1fr) auto; align-items:start; gap:10px; padding:9px 10px; border:1px solid var(--t-line-soft, #e8edf3); border-radius:8px; background:var(--t-panel, #ffffff); }
+.doctor-item > i { width:20px; height:20px; border-radius:50%; font-style:normal; font-size:12px; font-weight:800; line-height:20px; text-align:center; }
+.doctor-item.ok > i { color:var(--t-ok, #1d7a55); background:var(--t-ok-soft, #e3f4ec); }
+.doctor-item.optional > i { color:var(--t-muted, #6b7890); background:var(--t-surface, #f5f7fb); }
+.doctor-item.bad > i { color:var(--t-danger, #b3261e); background:var(--t-danger-soft, #fbe9e7); }
+.doctor-item.bad { border-color:var(--t-danger-line, #f0c2bd); }
+.doctor-item span { display:grid; gap:2px; min-width:0; }
+.doctor-item strong { color:var(--t-ink, #1d2943); font-size:13px; }
+.doctor-item em { justify-self:start; padding:0 6px; border-radius:999px; color:var(--t-muted, #6b7890); background:var(--t-surface, #f5f7fb); font-size:10.5px; font-style:normal; }
+.doctor-item small { color:var(--t-muted, #6b7890); font-size:12px; overflow-wrap:anywhere; }
+.doctor-item .doctor-fix { color:var(--t-warn, #9a5b00); }
+.doctor-item button { padding:4px 10px; font-size:12px; }
+.usage-range select { padding:6px 8px; border:1px solid var(--t-line, #dde3ea); border-radius:6px; background:var(--t-panel, #ffffff); color:var(--t-ink, #1d2943); font:inherit; }
+.usage-chart { display:flex; align-items:flex-end; gap:3px; height:72px; margin:4px 0 14px; padding:8px; border:1px solid var(--t-line-soft, #e8edf3); border-radius:8px; background:var(--t-panel, #ffffff); }
+.usage-bar { flex:1; min-width:3px; max-width:18px; border-radius:3px 3px 0 0; background:var(--t-accent, #2f5bd3); opacity:.8; }
+.usage-table { width:100%; border-collapse:collapse; font-size:12.5px; }
+.usage-table td { padding:6px 4px; border-top:1px solid var(--t-line-soft, #e8edf3); color:var(--t-ink, #1d2943); }
+.usage-table td:last-child { color:var(--t-muted, #6b7890); text-align:right; }

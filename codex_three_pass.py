@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
+import usage_ledger
+
 from managed_codex import (
     CodexRuntimeResolution,
     ManagedCodexError,
@@ -1714,6 +1716,7 @@ class DirectApiExecutor:
                 except Exception as retry_error:
                     safe = str(retry_error).replace(str(config.get("apiKey") or ""), "[redacted]")[:1000]
                     raise RuntimeError(safe) from retry_error
+        usage_ledger.record_response("three_pass", response, label=str(config.get("name") or model or ""))
         text = _response_output_text(response) if protocol == "responses" else _chat_output_text(response)
         markdown = _structured_markdown(text)
         response_id = response.get("id") if isinstance(response, dict) else getattr(response, "id", None)

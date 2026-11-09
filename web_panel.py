@@ -47,20 +47,26 @@ from werkzeug.utils import secure_filename
 from research_gaps import ResearchGapService, create_research_gap_blueprint
 from prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_request_error
 from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
-from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint
+from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint, snapshot_files as paper_revision_snapshot_files
 from claude_code_cli import ClaudeCodeRunner
 from google_translate import GoogleTranslator
 from local_paths import LocalPathService, create_local_paths_blueprint
 import pdf_core
 from pdf_core import PdfError
 from engines import EngineCatalog
-from paper_library import PaperLibrary
+from paper_library import PaperLibrary, valid_key as paper_library_key
+import activity
+import usage_ledger
+from global_search import GlobalSearch
+from citations import CitationResolver
+from revision_tools import RevisionTools, create_revision_tools_blueprint
 from codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
     DirectApiExecutor,
     THREE_PASS_LENGTH_MAX,
     THREE_PASS_LENGTH_MIN,
+    PHASE_LABELS,
     THREE_PASS_LENGTH_PRESETS,
     ThreePassAnalysisManager,
     build_chunk_plan,
@@ -166,6 +172,45 @@ def local_only():
     return None
 
 
+USAGE_LEDGER_PATH = RUNTIME_DIR / "usage" / "usage.jsonl"  # configured in main(), so tests never write to it
+# Plan-billed engines (Codex, Claude Code) report quota rather than tokens, so their runs are
+# counted when a job is accepted. API calls are counted with tokens where they are made.
+USAGE_SUBMISSIONS = (
+    (re.compile(r"^/api/reader/documents/[^/]+/analyses$"), "three_pass"),
+    (re.compile(r"^/api/researchstudio/jobs$"), "studio"),
+    (re.compile(r"^/api/research-gaps/projects/[^/]+/analysis$"), "gaps"),
+    (re.compile(r"^/api/paper-revision/projects/[^/]+/(?:submit|retranslate)$"), "revision"),
+)
+
+
+@app.after_request
+def record_plan_usage(response: Response) -> Response:
+    if request.method != "POST" or response.status_code >= 300:
+        return response
+    for pattern, feature in USAGE_SUBMISSIONS:
+        if not pattern.match(request.path):
+            continue
+        data = request.get_json(silent=True) if request.is_json else None
+        data = data if isinstance(data, dict) else {}
+        engine = str(data.get("backend") or data.get("engine") or "codex").lower()
+        if feature == "studio":
+            engine = "codex"
+        if engine in {"codex", "claude"}:
+            usage_ledger.record(engine, feature)
+        break
+    return response
+
+
+@app.get("/api/usage")
+def usage_summary():
+    """Local usage ledger: calls, tokens, Mathpix pages and Google characters by engine and feature."""
+    try:
+        days = int(request.args.get("days", "30"))
+    except ValueError:
+        days = 30
+    return jsonify(usage_ledger.LEDGER.summary(days))
+
+
 class LlmConcurrencyRegistry:
     """Coordinate a mutable global request limit for each configured provider."""
 
@@ -220,7 +265,7 @@ TOOLS = (
     ToolSpec("document_translate", "科研文档翻译", "文献处理", "使用 AI-Markdown-Translator 后端批量翻译 Markdown、MMD 或 HTML。", TRANSLATABLE_SUFFIXES),
     ToolSpec("markdown_repair", "Markdown 修复", "文献处理", "独立修复 Markdown/MMD 的结构、图片路径与行间公式边界，不翻译正文。", {".md", ".mmd"}),
     ToolSpec("markdown_github", "Markdown 图片发布", "文献处理", "将 Markdown 引用的本地图片发布到 GitHub，并下载替换链接后的副本。", GITHUB_PUBLISH_SUFFIXES),
-    ToolSpec("bibtex", "论文标题转 BibTeX", "文献处理", "根据论文标题检索并整理可直接引用的 BibTeX。", {".txt"}, ("scholarly",), max_files=1),
+    ToolSpec("bibtex", "论文标题转 BibTeX", "文献处理", "依次通过 Crossref、Semantic Scholar 和 Google Scholar 检索论文标题，整理可直接引用的 BibTeX。", {".txt"}, max_files=1),
     ToolSpec("anki", "研究笔记转 Anki", "知识整理", "从表格选择问答字段，导出可直接导入 Anki 的复习卡片。", ALLOWED_TABLE_SUFFIXES, max_files=1),
     ToolSpec("image_crop", "实验图片裁剪缩放", "图像与演示", "批量裁剪实验图片的中心区域并统一输出尺寸。", IMAGE_SUFFIXES, ("PIL",)),
     ToolSpec("image_ppt", "图片网格 PPT", "图像与演示", "将实验图片自动排成规整的 PowerPoint 网格。", IMAGE_SUFFIXES, ("PIL", "pptx")),
@@ -259,6 +304,8 @@ class Job:
     translation_progress: dict[str, int] | None = None
     translation_debug_count: int = 0
     publication: dict[str, Any] | None = None
+    # Uploaded inputs (paths relative to root) — what 重跑 copies into a new job.
+    uploads: list[str] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def log(self, message: str) -> None:
@@ -3744,6 +3791,7 @@ def mathpix_ocr(job: Job, source: Path, formats: list[str]) -> tuple[str, set[st
         try:
             completed = wait_for_conversion_status(job, reusable, formats)
             if set(formats) <= completed:
+                usage_ledger.record("mathpix", mathpix_usage_feature(job), calls=0, reused=1)
                 return reusable, completed
             job.log("[OCR] The earlier result is incomplete; uploading again.")
         except Exception as exc:  # expired, deleted, network: a fresh upload is always correct
@@ -3752,7 +3800,21 @@ def mathpix_ocr(job: Job, source: Path, formats: list[str]) -> tuple[str, set[st
     completed = wait_for_conversion_status(job, pdf_id, formats)
     if completed:
         record_mathpix_result(fingerprint, pdf_id, completed)
+    usage_ledger.record("mathpix", mathpix_usage_feature(job), pages=mathpix_page_count(pdf_id))
     return pdf_id, completed
+
+
+def mathpix_usage_feature(job: Job) -> str:
+    return "pdf_ocr_translate" if getattr(getattr(job, "tool", None), "id", "") == "pdf_ocr_translate" else "reader_ocr"
+
+
+def mathpix_page_count(pdf_id: str) -> int:
+    """Pages Mathpix billed for one upload (0 when the status call fails)."""
+    try:
+        response = requests.get(f"{MATHPIX_BASE_URL}/pdf/{pdf_id}", headers=mathpix_headers(), timeout=20)
+        return int(response.json().get("num_pages") or 0) if response.ok else 0
+    except Exception:  # usage counting must never fail an OCR job (missing key, network, odd payload)
+        return 0
 
 
 def run_pdf_ocr(job: Job, files: list[Path]) -> None:
@@ -4062,9 +4124,12 @@ def create_compatible_chat_completion(
                 adjust_translation_active(job, -1)
 
     transient_retries = max(0, min(3, int(transient_retries)))
+    feature = job.tool.id if job is not None else str(config.get("_usageFeature") or "llm")
     for retry_index in range(transient_retries + 1):
         try:
-            return one_attempt()
+            response = one_attempt()
+            usage_ledger.record_response(feature, response, label=str(config.get("name") or config.get("model") or ""))
+            return response
         except Exception as exc:
             if retry_index >= transient_retries or not retryable_llm_error(exc):
                 raise
@@ -7810,11 +7875,13 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
             target = input_dir / preserved
             target.parent.mkdir(parents=True, exist_ok=True)
             upload.save(target)
+            job.uploads.append(target.relative_to(job.root).as_posix())
             continue
         if job.tool.id == "pdf_ocr_translate":
             job.source_stem = safe_output_stem(upload.filename or relative.name)
             target = input_dir / f"{job.source_stem}.pdf"
             pdf_core.save_pdf_upload(upload.stream, target)
+            job.uploads.append(target.relative_to(job.root).as_posix())
             continue
         work_name = safe_work_name(str(item.get("workName") or relative.stem), suffix)
         target = input_dir / relative.parent / f"{index:04d}_{work_name}"
@@ -7823,8 +7890,10 @@ def store_job_uploads(job: Job, uploaded_files: list[Any], manifest: list[dict[s
             pdf_core.save_pdf_upload(upload.stream, target)
         else:
             upload.save(target)
+        job.uploads.append(target.relative_to(job.root).as_posix())
         if needs_ordered_copies:
             shutil.copyfile(target, ordered_dir / target.name)
+            job.uploads.append((ordered_dir / target.name).relative_to(job.root).as_posix())
 
 
 def research_gap_llm_request(preset_id: str, messages: list[dict[str, str]]) -> str:
@@ -8001,6 +8070,12 @@ def test_claude_code_config():
         return json_error(str(exc))
     return jsonify({"claude": paper_revision_claude_runner.status(), "test": result})
 app.register_blueprint(create_paper_revision_blueprint(paper_revision_service))
+revision_tools = RevisionTools(
+    RUNTIME_DIR / "revision-compile",
+    read=paper_revision_service.read,
+    files=lambda pid, revision: paper_revision_snapshot_files(paper_revision_service.snapshot(pid, revision)),
+)
+app.register_blueprint(create_revision_tools_blueprint(revision_tools))
 
 engine_catalog = EngineCatalog(
     claude_status=paper_revision_claude_runner.status,
@@ -8008,6 +8083,73 @@ engine_catalog = EngineCatalog(
     google_status=paper_revision_google.status,
     llm_presets=public_llm_presets,
 )
+
+
+def doctor_checks(refresh: bool = False) -> list[dict[str, Any]]:
+    """Every first-run prerequisite in one list: {id, group, label, ok, optional, detail, fix, settingsTab}."""
+    checks: list[dict[str, Any]] = []
+
+    def add(check_id: str, group: str, label: str, ok: bool, detail: str = "", *, fix: str = "", optional: bool = False, tab: str = "") -> None:
+        checks.append({"id": check_id, "group": group, "label": label, "ok": bool(ok), "optional": optional,
+                       "detail": detail, "fix": "" if ok else fix, "settingsTab": tab})
+
+    engines = engine_catalog.snapshot(refresh=refresh)
+    codex, claude, google = engines["codex"], engines["claude"], engines["google"]
+    add("codex", "AI 引擎", "Codex（ChatGPT 登录）", codex["ready"], codex.get("error") or "已登录",
+        fix="在 设置 → Codex 中登录，或在终端运行 codex login。", optional=True, tab="codex")
+    add("claude", "AI 引擎", "Claude Code（Claude 登录）", claude["ready"], claude.get("error") or "已登录",
+        fix="安装 Claude Code 并运行 claude 登录。", optional=True, tab="claude")
+    add("api", "AI 引擎", "API 预设", bool(engines["api"]), f"{len(engines['api'])} 个预设" if engines["api"] else "还没有预设",
+        fix="在 设置 → API 预设 中添加一个 OpenAI-compatible 预设（翻译与 Markdown 修复需要）。", tab="llm")
+    add("ai-any", "AI 引擎", "至少一个可用引擎", bool(engines.get("ready")), "、".join(engines.get("ready") or []) or "都未就绪",
+        fix="Codex、Claude Code 与 API 预设至少配置一个。", tab="codex")
+    mathpix_error = mathpix_config_error()
+    add("mathpix", "服务", "Mathpix OCR", not mathpix_error, mathpix_error or "已配置",
+        fix="在 设置 → Mathpix OCR 中填写 App ID 与 App Key。", optional=True, tab="mathpix")
+    add("google", "服务", "Google 翻译", google["ready"], google.get("error") or "已配置",
+        fix="在 设置 → Google 翻译 中填写 API Key。", optional=True, tab="google")
+    speech = bool(os.getenv("AZURE_SPEECH_KEY", "").strip())
+    add("speech", "服务", "Azure 语音朗读", speech, "已配置" if speech else "未配置",
+        fix="在 设置 → Azure 语音 中填写密钥与区域。", optional=True, tab="speech")
+    github_error = github_config_error()
+    add("github", "服务", "GitHub 图片发布", not github_error, github_error or "已配置",
+        fix="在 设置 → GitHub 图片 中填写仓库与 Token。", optional=True, tab="github")
+    backend = translation_backend_executable()
+    add("go-backend", "本机程序", "翻译后端（Go）", backend.is_file(), str(backend) if backend.is_file() else "尚未构建",
+        fix="重新运行 run_web_panel 启动脚本，它会自动构建；需要 Go 1.23+。")
+    for name in ("ffmpeg", "ffprobe"):
+        found = shutil.which(name)
+        add(name, "本机程序", name, bool(found), found or "未找到", fix="安装 FFmpeg 并加入 PATH（视频工具需要）。", optional=True)
+    latex = shutil.which("latexmk") or shutil.which("pdflatex") or shutil.which("xelatex")
+    add("latex", "本机程序", "LaTeX（改稿编译检查）", bool(latex), latex or "未找到 latexmk / pdflatex / xelatex",
+        fix="安装 TeX Live 或 MiKTeX，并确保 latexmk 在 PATH 中。", optional=True)
+    git = shutil.which("git")
+    add("git", "本机程序", "Git（改稿写回工作副本）", bool(git), git or "未找到", fix="安装 Git 并加入 PATH。", optional=True)
+    for tool in TOOLS:
+        error = dependency_error(tool)
+        add(f"tool-{tool.id}", "工具箱依赖", tool.title, not error, error or "依赖齐全",
+            fix="重新运行启动脚本以安装 requirements.txt 中的依赖。", optional=True)
+    try:
+        studio = research_studio_service.doctor(refresh=False)
+        modules = studio.get("modules") or []
+        ready = [module for module in modules if module.get("ready")]
+        add("studio", "ResearchStudio", "ResearchStudio 工作流", bool(ready), f"{len(ready)}/{len(modules)} 个工作流就绪",
+            fix="运行 python scripts/setup_researchstudio.py --install-deps。", optional=True, tab="studio")
+    except Exception as exc:  # the Studio check must not hide the others
+        add("studio", "ResearchStudio", "ResearchStudio 工作流", False, str(exc)[:200], optional=True, tab="studio")
+    return checks
+
+
+@app.get("/api/doctor")
+def environment_doctor():
+    """First-run checklist: engines, services, local programs and per-tool dependencies."""
+    checks = doctor_checks(refresh=request.args.get("refresh") == "1")
+    required = [check for check in checks if not check["optional"]]
+    return jsonify({
+        "checks": checks,
+        "requiredMissing": sum(1 for check in required if not check["ok"]),
+        "optionalMissing": sum(1 for check in checks if check["optional"] and not check["ok"]),
+    })
 
 
 @app.get("/api/engines")
@@ -8030,6 +8172,76 @@ def list_library():
     """Every paper in the local library, with where it is used and links into each module."""
     return jsonify({"documents": paper_library.documents(
         query=request.args.get("q", "")[:200], pdf_only=request.args.get("pdf") == "1")})
+
+
+def _search_analysis_files(cache_key: str) -> list[tuple[str, Path]]:
+    root = reader_cache_root(cache_key) / "analyses"
+    if not root.is_dir():
+        return []
+    files = []
+    for folder in sorted(root.iterdir(), reverse=True):
+        if folder.is_dir():
+            files += [(folder.name, folder / name) for name in ("report.md", "pass1.md", "pass2.md", "pass3.md") if (folder / name).is_file()]
+    return files
+
+
+def _search_revision_projects() -> list[dict[str, Any]]:
+    projects = []
+    for item in paper_revision_service.list_projects()[:50]:
+        try:
+            project = paper_revision_service.read(item["id"])
+        except (KeyError, OSError, ValueError):
+            continue
+        projects.append({"id": item["id"], "title": item.get("title"), "comments": project.get("comments") or []})
+    return projects
+
+
+def _search_gaps(needle: str) -> list[dict[str, Any]]:
+    gaps = []
+    for project in research_gap_service.list_projects()[:30]:
+        gaps += research_gap_service.list_gaps(project["id"], search=needle)[:10]
+    return gaps
+
+
+global_search = GlobalSearch(
+    papers=lambda: paper_library.documents(),
+    notes=lambda key: read_reader_persistent_state(key).get("notes", []),
+    analysis_files=_search_analysis_files,
+    revision_projects=_search_revision_projects,
+    gaps=_search_gaps,
+    prompts=lambda: prompt_workbench.templates(),
+)
+
+
+@app.get("/api/search")
+def client_search():
+    """Search papers, notes, Three-Pass reports, revision comments, research gaps and Prompt templates."""
+    query = request.args.get("q", "")[:200]
+    return jsonify({"query": query, "results": global_search.search(query)})
+
+
+citation_resolver = CitationResolver(semantic_scholar_key=lambda: os.getenv("SEMANTIC_SCHOLAR_API_KEY", ""))
+
+
+@app.post("/api/library/bibtex")
+def library_bibtex():
+    """BibTeX for selected library papers: Crossref → Semantic Scholar → a local @misc entry."""
+    data = request.get_json(silent=True) or {}
+    keys = [key for key in data.get("keys") or [] if paper_library_key(key)][:100]
+    if not keys:
+        return json_error("请选择至少一篇论文。")
+    online = data.get("online", True) is not False
+    entries = []
+    for key in keys:
+        document = paper_library.document(key)
+        if not document:
+            continue
+        title = re.sub(r"\.(pdf|md|mmd|html?)$", "", str(document["title"]), flags=re.IGNORECASE).strip()
+        found = citation_resolver.resolve(title, online=online)
+        entries.append({"id": key, "title": document["title"], "bibtex": found["bibtex"], "source": found["source"],
+                        "verified": found["verified"], "doi": found.get("doi")})
+    return jsonify({"entries": entries, "bibtex": "\n\n".join(entry["bibtex"] for entry in entries) + "\n",
+                    "unverified": sum(1 for entry in entries if not entry["verified"])})
 
 
 @app.get("/api/library/<cache_key>")
@@ -8124,7 +8336,9 @@ def reader_action_list() -> list[dict[str, str]]:
 
 
 def reader_llm_config(data: dict[str, Any]) -> dict[str, Any]:
-    return translation_config_from_request(data)
+    config = translation_config_from_request(data)
+    config["_usageFeature"] = "reader_question"
+    return config
 
 
 def reader_context(document: ReaderDocument, block_id: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -9660,6 +9874,23 @@ def create_job():
     return jsonify({"id": job.id, "status": job.status}), 202
 
 
+# Tools whose whole input is the uploaded files plus job.options: 重跑 can repeat them exactly.
+# Translation, OCR and deep repair hold provider configuration only while they run, so they are excluded.
+RERUNNABLE_TOOLS = {"anki", "image_crop", "image_ppt", "video_ppt", "stack_images", "stack_videos", "video_crop",
+                    "frames", "fix_frame", "bibtex", "markdown_github", "markdown_repair"}
+
+
+def job_rerunnable(job: Job) -> bool:
+    if job.tool.id not in RERUNNABLE_TOOLS or not job.uploads or job.status in {"queued", "running"}:
+        return False
+    return not (job.tool.id == "markdown_repair" and job.options.get("deepRepair"))
+
+
+def public_job_options(job: Job) -> dict[str, Any]:
+    """Form values a job ran with, for 复用参数 (provider configuration is never stored in options)."""
+    return {key: value for key, value in job.options.items() if key not in {"llm", "repairLlm", "localSourcePath"}}
+
+
 @app.get("/api/jobs")
 def list_jobs():
     """Recent toolbox jobs across every tool, for the 活动 list (no logs; poll /api/jobs/<id> for those)."""
@@ -9670,8 +9901,130 @@ def list_jobs():
                 "id": job.id, "tool": job.tool.id, "toolTitle": job.tool.title, "status": job.status,
                 "createdAt": job.created_at, "finishedAt": job.finished_at,
                 "downloadReady": job.download_path is not None, "downloadName": job.download_name,
+                "rerunnable": job_rerunnable(job), "options": public_job_options(job), "fileCount": len([
+                    path for path in job.uploads if path.startswith("input/")]),
             })
     return jsonify({"jobs": jobs})
+
+
+@app.post("/api/jobs/<job_id>/rerun")
+def rerun_job(job_id: str):
+    """Run a finished job again with the same files and options (重跑)."""
+    source = job_manager.get(job_id)
+    if not source:
+        return json_error("任务不存在或已过期（任务保留 24 小时）。", 404)
+    with source.lock:
+        if not job_rerunnable(source):
+            return json_error("这个任务不能直接重跑；请重新选择文件提交。", 409)
+        options = copy.deepcopy(source.options)
+        uploads = list(source.uploads)
+    error = dependency_error(source.tool) or (github_config_error() if source.tool.id == "markdown_github" else None)
+    if error:
+        return json_error(error, 503)
+    data = request.get_json(silent=True) or {}
+    if isinstance(data.get("options"), dict):
+        options.update({key: value for key, value in data["options"].items() if key in options})
+    new_id = uuid.uuid4().hex
+    job = Job(new_id, source.tool, JOBS_DIR / new_id, options)
+    try:
+        for relative in uploads:
+            origin = source.root / relative
+            if not origin.is_file():
+                raise FileNotFoundError(f"原任务的输入文件已被清理：{relative}")
+            target = job.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(origin, target)
+            job.uploads.append(relative)
+        if source.tool.id in {"image_ppt", "video_ppt", "stack_images", "stack_videos"}:
+            (job.root / "ordered").mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        shutil.rmtree(job.root, ignore_errors=True)
+        return json_error(str(exc), 409)
+    job.log(f"[INFO] Re-run of {source.id[:8]} with the same files and options. Queued.")
+    job_manager.submit(job)
+    return jsonify({"id": job.id, "status": job.status}), 202
+
+
+def _activity_toolbox() -> list[dict[str, Any]]:
+    items = []
+    for job in job_manager.recent():
+        with job.lock:
+            if job.tool.id == READER_TOOL.id:
+                # Reopening a cached paper is an instant, already-finished record; only real
+                # reader work (OCR import, whole-document translation) belongs in the feed.
+                if job.finished_at and job.finished_at - job.created_at < 3:
+                    continue
+                document = reader_manager.get(job.reader_document_id) if job.reader_document_id else None
+                items.append(activity.activity_item(
+                    id=f"tool:{job.id}", module="reader", title=f"精读导入 · {document.title if document else '文档'}",
+                    status=job.status, url=f"/reader?document={job.reader_document_id}" if job.reader_document_id else "/reader",
+                    created_at=job.created_at, finished_at=job.finished_at))
+                continue
+            items.append(activity.activity_item(
+                id=f"tool:{job.id}", module="toolbox", title=job.tool.title, status=job.status,
+                url=f"/?job={job.id}", created_at=job.created_at, finished_at=job.finished_at))
+    return items
+
+
+def _activity_three_pass() -> list[dict[str, Any]]:
+    items = []
+    managers = [three_pass_manager]
+    if api_three_pass_manager is not None:
+        managers.append(api_three_pass_manager)
+    for manager in managers:
+        with manager.lock:
+            sessions = list(manager.sessions.values())
+        for session in sessions:
+            key = session.document_cache_key or ""
+            url = f"/reader?library={key}&inspector=three-pass" if paper_library_key(key) else "/reader"
+            items.append(activity.activity_item(
+                id=f"three-pass:{session.id}", module="reader", title=f"Three-Pass · {session.document_title}",
+                status=session.status, busy=bool(session.busy), url=url, detail=PHASE_LABELS.get(session.phase, session.phase),
+                created_at=session.created_at, finished_at=session.updated_at))
+    return items
+
+
+def _activity_studio() -> list[dict[str, Any]]:
+    return [activity.activity_item(
+        id=f"studio:{job['id']}", module="studio", title=f"ResearchStudio · {job.get('label') or job.get('module')}",
+        status=job.get("status"), url=f"/researchstudio?job={job['id']}", detail=str(job.get("error") or "")[:120],
+        created_at=job.get("createdAt"), finished_at=job.get("updatedAt"),
+    ) for job in research_studio_service.list_jobs()[:30] if isinstance(job, dict) and job.get("id")]
+
+
+def _activity_gaps() -> list[dict[str, Any]]:
+    labels = {"analysis": "证据抽取", "import": "PDF 文件夹导入"}
+    return [activity.activity_item(
+        id=f"gaps:{job['id']}", module="gaps", title=f"{labels[job['kind']]} · {job['projectName']}",
+        status=job["status"], url=f"/research-gaps?project={job['projectId']}",
+        detail=f"{job['completed']}/{job['total']}" if job.get("total") else str(job.get("stage") or ""),
+        created_at=job["createdAt"], finished_at=job["finishedAt"],
+    ) for job in research_gap_service.recent_jobs()]
+
+
+def _activity_revision() -> list[dict[str, Any]]:
+    items = []
+    for project in paper_revision_service.list_projects()[:30]:
+        try:
+            job = paper_revision_service.read(project["id"]).get("job") or {}
+        except (KeyError, OSError, ValueError):
+            continue
+        if not job.get("id"):
+            continue
+        items.append(activity.activity_item(
+            id=f"revision:{job['id']}", module="revision", title=f"改稿 · {project.get('title') or '论文'}",
+            status=job.get("status"), url=f"/paper-revision?project={project['id']}",
+            detail=str(job.get("error") or job.get("progress") or "")[:120],
+            created_at=project.get("updated"), finished_at=project.get("updated")))
+    return items
+
+
+@app.get("/api/activity")
+def client_activity():
+    """Every module's recent jobs in one list: drives the rail badges and finish notifications."""
+    return jsonify(activity.collect([
+        _activity_toolbox, _activity_three_pass, _activity_studio, _activity_gaps, _activity_revision,
+    ]))
 
 
 @app.get("/api/jobs/<job_id>")
@@ -9810,6 +10163,7 @@ def configure_console_output() -> None:
 
 def main() -> None:
     configure_console_output()
+    usage_ledger.LEDGER.configure(USAGE_LEDGER_PATH)
     host = "127.0.0.1"
     requested_port = int(os.environ.get("WEB_PANEL_PORT", "8765"))
     port = requested_port
