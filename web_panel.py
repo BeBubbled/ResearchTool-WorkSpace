@@ -49,6 +49,7 @@ from prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_req
 from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
 from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint, snapshot_files as paper_revision_snapshot_files
 from claude_code_cli import ClaudeCodeRunner
+from branchboard import BranchboardService, claude_summarizer, create_branchboard_blueprint
 from google_translate import GoogleTranslator
 from local_paths import LocalPathService, create_local_paths_blueprint
 import pdf_core
@@ -8009,6 +8010,13 @@ app.register_blueprint(create_research_gap_blueprint(research_gap_service))
 
 # A whole-paper translation is one long request; allow up to 40 minutes.
 paper_revision_claude_runner = ClaudeCodeRunner(timeout=2400)
+# 对话树：每轮驱动一个完整的 Claude Code 会话（含工具与权限），摘要走一次轻量无工具调用。
+branchboard_service = BranchboardService(
+    RUNTIME_DIR / "branchboard",
+    summarize=claude_summarizer(ClaudeCodeRunner(timeout=180)),
+    claude_status=paper_revision_claude_runner.status,
+)
+app.register_blueprint(create_branchboard_blueprint(branchboard_service))
 GOOGLE_TRANSLATE_ENV_KEY = "GOOGLE_TRANSLATE_API_KEY"
 
 
@@ -8355,6 +8363,11 @@ def settings_page():
 @app.get("/reader")
 def reader():
     return render_template("reader.html", embed=request.args.get("embed") == "1")
+
+
+@app.get("/branchboard")
+def branchboard_page():
+    return render_template("branchboard.html")
 
 
 @app.get("/research-gaps")

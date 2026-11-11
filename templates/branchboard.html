@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% include "_theme_head.html" %}
+  <title>对话树 · Research Toolkit</title>
+  <meta name="description" content="把 Claude Code 会话渲染成二维对话树：主线水平延伸，划词提问向上下长出独立上下文的分支。">
+  <link rel="stylesheet" href="/static/branchboard.css?v=1">
+</head>
+<body class="bb-body">
+  {% set client_active = "branchboard" %}{% include "_client_nav.html" %}
+  <header class="topbar module-bar bb-bar">
+    <h1 class="module-bar-title">对话树</h1>
+    <div class="bb-tree-picker">
+      <select id="bbTreeSelect" aria-label="选择对话树"></select>
+      <button id="bbNewTree" class="bb-btn" type="button" data-command="新建对话树…">新建</button>
+    </div>
+    <span id="bbCwd" class="bb-cwd" title="工作目录"></span>
+    <div class="bb-settings" id="bbSettings">
+      <select id="bbModel" aria-label="模型" title="模型"></select>
+      <select id="bbEffort" aria-label="推理强度" title="推理强度"></select>
+      <select id="bbPermission" aria-label="权限模式" title="权限模式"></select>
+    </div>
+    <div class="bb-bar-actions">
+      <span class="bb-legend"><i></i>继续提问 <i class="hl"></i>划词提问</span>
+      <button id="bbFit" class="bb-btn" type="button" data-command="对话树：适配全部" data-shortcut="f">适配全部</button>
+      <span class="bb-zoom"><button id="bbZoomOut" class="bb-btn" type="button" aria-label="缩小">−</button><button id="bbZoomReset" class="bb-btn" type="button" title="重置为 100%">100%</button><button id="bbZoomIn" class="bb-btn" type="button" aria-label="放大">＋</button></span>
+      <button id="bbExportMd" class="bb-btn" type="button" data-command="对话树：导出 Markdown">导出 MD</button>
+      <button id="bbExportHtml" class="bb-btn" type="button" data-command="对话树：导出静态 HTML">导出 HTML</button>
+      <button id="bbMore" class="bb-btn" type="button" aria-haspopup="menu" title="更多">⋯</button>
+      <div id="bbMoreMenu" class="bb-menu hidden" role="menu">
+        <button type="button" role="menuitem" data-act="export-md" class="bb-menu-narrow">导出 Markdown</button>
+        <button type="button" role="menuitem" data-act="export-html" class="bb-menu-narrow">导出静态 HTML</button>
+        <button type="button" role="menuitem" data-act="settings" class="bb-menu-narrow">模型与权限…</button>
+        <button type="button" role="menuitem" data-act="rename">重命名…</button>
+        <button type="button" role="menuitem" data-act="forget">从列表移除（保留文件）</button>
+        <button type="button" role="menuitem" data-act="delete" class="danger">删除这棵树…</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="bbMain" class="bb-main">
+    <div id="bbStatus" class="bb-status hidden" role="status"></div>
+    <div id="bbViewport" class="bb-viewport" tabindex="-1">
+      <div id="bbStage" class="bb-stage"><svg id="bbWires" class="bb-wires" aria-hidden="true"></svg></div>
+    </div>
+
+    <section id="bbEmpty" class="bb-empty hidden">
+      <p class="bb-eyebrow">BRANCHBOARD</p>
+      <h2 id="bbEmptyTitle">从一个问题开始</h2>
+      <p id="bbEmptyText">主线向右延伸；在任意回答里选中文字即可就此追问，分支有自己独立的上下文，不会冲散主线。</p>
+      <button id="bbEmptyCreate" class="bb-btn primary hidden" type="button">新建对话树</button>
+    </section>
+
+    <form id="bbComposer" class="bb-composer hidden" autocomplete="off">
+      <div class="bb-composer-target">
+        <span id="bbTargetLabel" class="bb-chip"></span>
+        <span id="bbTargetQuote" class="bb-target-quote hidden"></span>
+        <button id="bbTargetClear" class="bb-link hidden" type="button" title="改回从主线末端继续">改回主线</button>
+      </div>
+      <div class="bb-composer-row">
+        <textarea id="bbQuestion" rows="2" maxlength="20000" placeholder="输入问题，Ctrl+Enter 发送"></textarea>
+        <button id="bbSend" class="bb-btn primary" type="submit">发送</button>
+      </div>
+    </form>
+
+    <button id="bbAskSelection" class="bb-ask-selection hidden" type="button">就此提问</button>
+
+    <aside id="bbDrawer" class="bb-drawer" aria-hidden="true" aria-label="完整回答">
+      <header>
+        <div><p id="bbDrawerEyebrow" class="bb-eyebrow"></p><h2 id="bbDrawerTitle"></h2></div>
+        <div class="bb-drawer-actions">
+          <button id="bbDrawerFollow" class="bb-btn" type="button">继续提问</button>
+          <button id="bbDrawerInterrupt" class="bb-btn hidden" type="button">中断</button>
+          <button id="bbDrawerRetry" class="bb-btn hidden" type="button">重试</button>
+          <button id="bbDrawerClose" class="bb-icon" type="button" aria-label="关闭">×</button>
+        </div>
+      </header>
+      <div id="bbDrawerBody" class="bb-drawer-body"></div>
+    </aside>
+  </main>
+
+  <dialog id="bbTreeDialog" class="bb-dialog">
+    <form id="bbTreeForm" method="dialog">
+      <header><h2>新建对话树</h2><button class="bb-icon" value="cancel" aria-label="关闭">×</button></header>
+      <label>标题<input id="bbTreeTitle" maxlength="120" placeholder="可留空，默认取第一个问题"></label>
+      <label>工作目录<span class="bb-path"><input id="bbTreeCwd" required placeholder="Claude Code 在这个目录里读写文件、运行命令"><button id="bbBrowseCwd" class="bb-btn" type="button">浏览…</button></span></label>
+      <div class="bb-dialog-grid">
+        <label>模型<select id="bbTreeModel"></select></label>
+        <label>推理强度<select id="bbTreeEffort"></select></label>
+        <label>权限模式<select id="bbTreePermission"></select></label>
+      </div>
+      <p class="bb-hint">分支只隔离对话上下文，不隔离文件：分支里改动的文件，主线也能看到。整棵树保存在 <code>{工作目录}/.branchboard/</code>。</p>
+      <p id="bbTreeError" class="bb-error hidden"></p>
+      <footer><button class="bb-btn" value="cancel">取消</button><button class="bb-btn primary" id="bbTreeSubmit" value="default">创建</button></footer>
+    </form>
+  </dialog>
+
+  <div id="bbToast" class="bb-toast hidden" role="status"></div>
+  <script src="/static/local_paths.js?v=1"></script>
+  <script src="/static/branchboard_core.js?v=1"></script>
+  <script src="/static/branchboard.js?v=1"></script>
+</body>
+</html>
