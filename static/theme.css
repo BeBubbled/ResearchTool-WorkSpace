@@ -1,0 +1,117 @@
+/* Research Toolkit colour themes.
+   Every module stylesheet reads these --t-* tokens instead of hard-coded colours, so one
+   [data-theme] attribute on <html> recolours the whole client. All themes are light: one quiet
+   neutral family (surfaces, lines, text) plus a single accent; status colours stay fixed so
+   "失败 / 警告 / 完成" read the same in every theme.
+
+   A theme only sets five numbers:
+     --th / --ts   hue and saturation of the neutral tint (paper, lines, text)
+     --ah / --as / --al   hue, saturation and lightness of the accent */
+:root {
+  --th:48; --ts:20%;
+  --ah:152; --as:13%; --al:38%;
+
+  --t-panel:hsl(var(--th) var(--ts) 99.4%);
+  --t-surface:hsl(var(--th) var(--ts) 97.8%);
+  --t-bg:hsl(var(--th) var(--ts) 96.2%);
+  --t-surface-2:hsl(var(--th) calc(var(--ts) * .9) 92.6%);
+  --t-surface-3:hsl(var(--th) calc(var(--ts) * .8) 87.5%);
+  --t-line-soft:hsl(var(--th) calc(var(--ts) * .9) 91%);
+  --t-line:hsl(var(--th) calc(var(--ts) * .75) 85%);
+  --t-line-strong:hsl(var(--th) calc(var(--ts) * .55) 72%);
+  --t-ink:hsl(var(--th) 14% 16%);
+  --t-ink-2:hsl(var(--th) 9% 29%);
+  --t-muted:hsl(var(--th) 6% 43%);
+  --t-faint:hsl(var(--th) 5% 59%);
+
+  --t-accent:hsl(var(--ah) var(--as) var(--al));
+  --t-accent-strong:hsl(var(--ah) var(--as) calc(var(--al) - 9%));
+  --t-accent-line:hsl(var(--ah) calc(var(--as) * .6) 76%);
+  --t-accent-soft-2:hsl(var(--ah) calc(var(--as) * .6) 88.5%);
+  --t-accent-soft:hsl(var(--ah) calc(var(--as) * .65) 94.6%);
+  --t-on-accent:#fff;
+
+  --t-danger:#a8403c; --t-danger-soft:#fbefee; --t-danger-line:#e8c3c0;
+  --t-warn:#85621a;   --t-warn-soft:#fbf4e4;   --t-warn-line:#e6d4a8;
+  --t-ok:#2e7350;     --t-ok-soft:#edf6f0;     --t-ok-line:#bcd9c7;
+
+  color-scheme:light;
+}
+
+/* id · name — keep in sync with THEMES in static/theme.js */
+:root[data-theme="paper"]    { --th:48;  --ts:20%; --ah:152; --as:13%; --al:38%; }
+:root[data-theme="mist"]     { --th:214; --ts:28%; --ah:216; --as:42%; --al:42%; }
+:root[data-theme="graphite"] { --th:220; --ts:7%;  --ah:220; --as:16%; --al:36%; }
+:root[data-theme="snow"]     { --th:0;   --ts:0%;  --ah:214; --as:68%; --al:44%; }
+:root[data-theme="sky"]      { --th:200; --ts:42%; --ah:199; --as:72%; --al:35%; }
+:root[data-theme="lake"]     { --th:184; --ts:24%; --ah:184; --as:58%; --al:29%; }
+:root[data-theme="mint"]     { --th:150; --ts:26%; --ah:158; --as:48%; --al:30%; }
+:root[data-theme="olive"]    { --th:68;  --ts:22%; --ah:76;  --as:30%; --al:31%; }
+:root[data-theme="sand"]     { --th:34;  --ts:30%; --ah:24;  --as:34%; --al:38%; }
+:root[data-theme="apricot"]  { --th:32;  --ts:62%; --ah:26;  --as:64%; --al:38%; }
+:root[data-theme="coral"]    { --th:12;  --ts:46%; --ah:8;   --as:52%; --al:44%; }
+:root[data-theme="sakura"]   { --th:345; --ts:38%; --ah:342; --as:44%; --al:43%; }
+:root[data-theme="lavender"] { --th:262; --ts:28%; --ah:260; --as:34%; --al:47%; }
+
+/* Interface font (设置 › 通用 › 外观). Module stylesheets read var(--t-font-ui, <their own stack>), so
+   "默认" leaves every module's original font untouched; reading fonts (PDF, paper text) are set per module. */
+:root[data-font="system"]    { --t-font-ui:system-ui,-apple-system,"Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif; }
+:root[data-font="misans"]    { --t-font-ui:"MiSans VF","MiSans",system-ui,"Microsoft YaHei UI",sans-serif; }
+:root[data-font="anthropic"] { --t-font-ui:"Anthropic Sans","Anthropic Sans Text","Anthropic Sans Web",system-ui,"Microsoft YaHei UI",sans-serif; }
+:root[data-font] body, :root[data-font] button, :root[data-font] input, :root[data-font] select, :root[data-font] textarea { font-family:var(--t-font-ui); }
+
+/* Text colour (设置 › 通用 › 外观 › 文字颜色). A choice replaces the theme's tinted ink and every lighter text
+   tier is mixed from it toward the panel colour, so headings, labels, hints and placeholders all follow. */
+:root[data-ink="black"]    { --t-ink-base:#000; }
+:root[data-ink="graphite"] { --t-ink-base:#1f2328; }
+:root[data-ink="custom"]   { --t-ink-base:var(--t-ink-custom); }
+:root[data-ink] {
+  --t-ink:var(--t-ink-base);
+  --t-ink-2:color-mix(in srgb,var(--t-ink-base) 82%,var(--t-panel));
+  --t-muted:color-mix(in srgb,var(--t-ink-base) 64%,var(--t-panel));
+  --t-faint:color-mix(in srgb,var(--t-ink-base) 46%,var(--t-panel));
+  /* UI text that the theme would colour (links, active tabs, accent labels, button text) uses the text colour
+     instead: module stylesheets write color:var(--t-ui-ink,<theme colour>). Filled buttons switch to a light
+     theme-tinted fill so the text colour stays readable on them. Status colours (错误/警告/完成) are unchanged. */
+  --t-ui-ink:var(--t-ink);
+  --t-ui-fill:var(--t-accent-soft-2);
+  --t-ui-fill-hover:var(--t-accent-line);
+}
+
+/* Browser defaults paint <dialog>, buttons and form fields plain black; route them through the text colour.
+   :where() keeps this at zero specificity, so every module rule still wins. */
+:where(body, dialog, button, input, select, option, textarea, legend) { color:var(--t-ink); }
+:where(:root[data-ink] a) { color:var(--t-ink); }
+
+/* Content text colour (外观 › 正文文字颜色): paper body, translations, AI answers, notes and editors.
+   Unset, content keeps each module's own colours (which already follow the text colour above). */
+:root { --t-content:var(--t-ink); }
+:root[data-content-ink="black"]    { --t-content:#000; }
+:root[data-content-ink="graphite"] { --t-content:#1f2328; }
+:root[data-content-ink="custom"]   { --t-content:var(--t-content-custom); }
+:root[data-content-ink] :is(.paper-content, .paper-block blockquote, .paper-block pre, .paper-block td, .answer-panel, .answer-panel blockquote, .answer-panel pre, .answer-panel td, .note-item p, .note-item details summary, .note-answer, .prose, .evidence-quote, .appearance-preview-content),
+:root[data-content-ink] :is(#promptText, #templateContent, #source, #commentText, #customQuestion, #threePassQuestion) { color:var(--t-content); }
+
+/* English interface: hide the page until static/i18n.js has translated it (at most ~1.5 s). */
+:root[data-i18n-pending] body { visibility:hidden; }
+
+/* Theme picker (static/theme.js): popover beside the rail's 主题 item. */
+.theme-picker { position:fixed; z-index:1360; width:264px; max-height:min(560px,calc(100vh - 24px)); display:flex; flex-direction:column; border:1px solid var(--t-line); border-radius:10px; background:var(--t-panel); color:var(--t-ink); box-shadow:0 14px 40px rgba(30,34,40,.16); font:13px/1.4 var(--t-font-ui,"Segoe UI","Microsoft YaHei",Arial,sans-serif); }
+.theme-picker[hidden] { display:none; }
+.theme-picker-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; padding:11px 14px 8px; border-bottom:1px solid var(--t-line-soft); }
+.theme-picker-head strong { font-size:13.5px; }
+.theme-picker-head small { color:var(--t-muted); font-size:11.5px; }
+.theme-picker-list { margin:0; padding:5px; overflow-y:auto; list-style:none; overscroll-behavior:contain; }
+.theme-option { display:flex; align-items:center; gap:10px; width:100%; padding:6px 8px; border:0; border-radius:7px; background:transparent; color:var(--t-ink); font:inherit; text-align:left; cursor:pointer; box-shadow:none; }
+.theme-option:hover { color:var(--t-ink); background:var(--t-surface-2); border:0; }
+.theme-option.previewing { background:var(--t-accent-soft); }
+.theme-option:focus-visible { outline:2px solid var(--t-accent-line); outline-offset:-2px; }
+.theme-option-name { flex:1; min-width:0; }
+.theme-option-name small { margin-left:6px; color:var(--t-muted); font-size:11px; }
+.theme-option-check { width:14px; color:var(--t-ui-ink,var(--t-accent)); font-weight:700; text-align:center; }
+.theme-swatch { flex:none; width:34px; height:22px; display:grid; grid-template-columns:1fr 10px; overflow:hidden; border:1px solid rgba(0,0,0,.12); border-radius:5px; }
+.theme-swatch i:first-child { display:grid; align-content:center; gap:3px; padding:0 4px; }
+.theme-swatch i:first-child::before, .theme-swatch i:first-child::after { content:""; height:2px; border-radius:1px; background:var(--sw-ink); }
+.theme-swatch i:first-child::after { width:60%; background:var(--sw-line); }
+.theme-picker-foot { padding:7px 14px 10px; border-top:1px solid var(--t-line-soft); color:var(--t-muted); font-size:11.5px; }
+.theme-picker-foot kbd { padding:0 4px; border:1px solid var(--t-line); border-radius:4px; background:var(--t-surface); font:11px ui-monospace,Consolas,monospace; }

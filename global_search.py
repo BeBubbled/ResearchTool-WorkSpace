@@ -46,31 +46,36 @@ def matches(needle: str, *fields: Any) -> bool:
 
 
 class FileTextCache:
-    """Read Markdown reports once per modification time."""
+    """Read Markdown reports once per modification time, keeping a folded copy for matching."""
 
     def __init__(self) -> None:
-        self.cache: dict[str, tuple[float, str]] = {}
+        self.cache: dict[str, tuple[float, str, str]] = {}
         self.lock = threading.Lock()
 
     def read(self, path: Path) -> str:
+        return self.read_entry(path)[0]
+
+    def read_entry(self, path: Path) -> tuple[str, str]:
+        """(text, normalized casefolded text): every search scans the folded copy instead of re-folding."""
         try:
             stat = path.stat()
         except OSError:
-            return ""
+            return "", ""
         key = str(path)
         with self.lock:
             cached = self.cache.get(key)
             if cached and cached[0] == stat.st_mtime:
-                return cached[1]
+                return cached[1], cached[2]
         try:
             text = path.read_text(encoding="utf-8", errors="replace")[:MAX_FILE_CHARS]
         except OSError:
-            return ""
+            return "", ""
+        folded = normalize(text).casefold()
         with self.lock:
             if len(self.cache) > 2000:
                 self.cache.clear()
-            self.cache[key] = (stat.st_mtime, text)
-        return text
+            self.cache[key] = (stat.st_mtime, text, folded)
+        return text, folded
 
 
 class GlobalSearch:
@@ -112,6 +117,7 @@ class GlobalSearch:
         if len(needle) < 2:
             return []
         results: dict[str, list[dict[str, Any]]] = {kind: [] for kind in KIND_LABELS}
+        folded_needle = needle.casefold()
 
         def add(kind: str, **item: Any) -> None:
             bucket = results[kind]
@@ -133,8 +139,8 @@ class GlobalSearch:
                         url=f"/reader?library={key}&inspector=notes&note={note.get('id') or ''}")
             if len(results["analysis"]) < per_kind:
                 for analysis_id, path in self._safe(lambda: self.analysis_files(key)):
-                    text = self.files.read(Path(path))
-                    if text and matches(needle, text):
+                    text, folded = self.files.read_entry(Path(path))
+                    if text and folded_needle in folded:
                         add("analysis", title=f"{Path(path).stem} · {title}", snippet=snippet(text, needle),
                             url=f"/reader?library={key}&inspector=three-pass&analysis={analysis_id}")
                         break

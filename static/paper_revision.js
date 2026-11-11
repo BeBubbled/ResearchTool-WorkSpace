@@ -8,6 +8,18 @@
   const scopes = {auto: '自动 · 至多同节相邻段落', paragraph: '仅选中段落', section: '所在章节 / 小节', document: '全文'};
   const statusNames = {queued: '排队中', running: '执行中', completed: '已完成', failed: '失败', cancelled: '已停止', interrupted: '已中断'};
   const active = () => ['queued', 'running'].includes(project?.job?.status);
+  // Translation only fills in Chinese, so comments stay editable during a translation run.
+  const commentable = () => !active() || project?.job?.kind === 'translate';
+  const selecting = () => {
+    if ($('commentDialog').open || !$('selectionButton').hidden) return true;
+    const selection = window.getSelection();
+    return !!selection && !selection.isCollapsed && $('paper').contains(selection.anchorNode);
+  };
+  // A direct reply supersedes any poll already in flight (which may predate it); keep polling while a job runs.
+  function adopt(next) {
+    requestSerial++; project = next;
+    if (active()) { clearTimeout(pollTimer); pollTimer = setTimeout(() => load(project.id, true).catch(fail), 1800); }
+  }
   const elem = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text !== undefined) node.textContent = text; return node; };
   const fail = error => { $('error').textContent = error.message || String(error); $('error').hidden = false; };
   const clearError = () => { $('error').hidden = true; $('error').textContent = ''; };
@@ -92,8 +104,15 @@
       const redraw = !quiet || project?.id !== id || project?.revision !== result.project.revision;
       project = result.project; snapshot = result.snapshot;
       localStorage.setItem('paperRevisionProject', id);
-      if (redraw) { selected = []; $('selectionButton').hidden = true; if ($('commentDialog').open) $('commentDialog').close(); renderPaper(); renderHistory(); renderContext(); }
-      if (active()) applyPreview(project.job.preview);
+      if (redraw) {
+        // A comment being written when the translation run finishes stays open: the server checks
+        // its selection against the new version on save.
+        if (!(quiet && $('commentDialog').open)) { selected = []; if ($('commentDialog').open) $('commentDialog').close(); }
+        $('selectionButton').hidden = true; renderPaper(); renderHistory(); renderContext();
+      }
+      // Preview updates redraw sentence nodes, which would drop a selection in progress; the preview is
+      // cumulative, so a skipped tick is caught up by the next poll.
+      if (active()) applyPreview(project.job.preview, redraw || !selecting());
       renderControls(); renderComments(); renderBanners();
       if (active()) { clearTimeout(pollTimer); pollTimer = setTimeout(() => load(id, true).catch(fail), 1800); }
     } catch (error) { if (serial === requestSerial) throw error; }
@@ -123,7 +142,7 @@
     renderSession();
     const job = project.job;
     $('notice').classList.toggle('warning', !!job?.warning);
-    $('notice').textContent = job ? `${statusNames[job.status] || job.status} · ${job.progress}${job.warning ? ` · ⚠ ${job.warning}` : ''}${jobEngine(job)}`
+    $('notice').textContent = job ? `${statusNames[job.status] || job.status} · ${job.progress}${job.warning ? ` · ⚠ ${job.warning}` : ''}${jobEngine(job)}${running && job.kind === 'translate' ? ' · 已出现的中文可直接圈选批注' : ''}`
       : translateOn ? '原稿已保存。生成中文对照后在中文上圈选批注，也可直接在英文上圈选。' : '原稿已保存（未开启翻译）。直接在左侧英文上圈选文字添加批注。';
     if (job?.error) fail(new Error(job.error));
   }
@@ -134,17 +153,38 @@
   const kinds = {replace: '改写', split: '一句拆为多句', merge: '多句合并 / 重组', insert: '新增句子', delete: '删除句子'};
   const currentText = (unit, side) => side === 'en' ? (unit.display_en ?? unit.en) : unit.zh;
   const diffTokens = (text, side) => side === 'zh' ? Array.from(text) : (text.match(/\s+|[\p{L}\p{N}'’-]+|[^\s\p{L}\p{N}]/gu) || []);
-  function diffNode(before, after, side) {
-    const a = diffTokens(before, side), b = diffTokens(after, side), box = elem('div', 'tip-diff');
-    if (a.length * b.length > 200000) { box.append(elem('del', '', before), elem('ins', '', after)); return box; }
+  function diffOps(before, after, side) {
+    const a = diffTokens(before, side), b = diffTokens(after, side);
+    if (a.length * b.length > 200000) return [{type: 'del', text: before}, {type: 'ins', text: after}];
     const n = a.length, m = b.length, dp = Array.from({length: n + 1}, () => new Uint16Array(m + 1));
     for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
     const ops = [], push = (type, text) => { const last = ops.at(-1); if (last?.type === type) last.text += text; else ops.push({type, text}); };
     let i = 0, j = 0;
     while (i < n && j < m) { if (a[i] === b[j]) { push('same', a[i]); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) push('del', a[i++]); else push('ins', b[j++]); }
     while (i < n) push('del', a[i++]); while (j < m) push('ins', b[j++]);
-    ops.forEach(o => box.append(o.type === 'same' ? document.createTextNode(o.text) : elem(o.type, '', o.text)));
+    return ops;
+  }
+  // Only what the new text gained is shown (green); removed words are not drawn — the old text is above.
+  function diffNode(before, after, side) {
+    const box = elem('div', 'tip-diff');
+    diffOps(before, after, side).forEach(o => { if (o.type !== 'del') box.append(o.type === 'same' ? document.createTextNode(o.text) : elem('ins', '', o.text)); });
     return box;
+  }
+  // Per-character flags over the current text: true where the latest round added or rewrote it.
+  function addedFlags(unit, side, text) {
+    const latest = unit.lineage?.[0], flags = Array(text.length).fill(false);
+    if (!latest || latest.revision !== project.revision || latest.kind === 'delete') return flags;
+    const old = latest[side] || '';
+    if (latest.kind === 'insert') return flags.fill(true);
+    if (!old) return flags;  // no earlier translation to compare against
+    let k = 0;
+    diffOps(old, text.join(''), side).forEach(o => {
+      if (o.type === 'del') return;
+      const len = Array.from(o.text).length;
+      if (o.type === 'ins' && o.text.trim()) flags.fill(true, k, k + len);
+      k += len;
+    });
+    return flags;
   }
   function commentLines(entry) {
     const list = project.history.find(r => r.revision === entry.revision)?.comments || [];
@@ -247,7 +287,13 @@
   const layout = $('revisionLayout');
   const revisionInspector = window.Inspector?.tabs($('revisionInspector'), {key: 'revision', defaultTab: 'comments'});
   const inspectorPane = window.Inspector?.toggle($('inspectorToggle'), {key: 'revision.inspector', apply: open => layout.classList.toggle('inspector-hidden', !open)});
-  window.Inspector?.toggle($('chaptersToggle'), {key: 'revision.chapters', apply: open => layout.classList.toggle('chapters-hidden', !open)});
+  const chaptersPane = window.Inspector?.toggle($('chaptersToggle'), {key: 'revision.chapters', apply: open => layout.classList.toggle('chapters-hidden', !open)});
+  // In-pane ‹ / › buttons hide a side pane; the toolbar toggle above the columns brings it back (state is remembered).
+  const sidePanes = {chapters: chaptersPane, inspector: inspectorPane};
+  document.querySelectorAll('[data-hide-pane]').forEach(button => button.addEventListener('click', () => {
+    sidePanes[button.dataset.hidePane]?.set(false);
+    $(button.dataset.hidePane === 'chapters' ? 'chaptersToggle' : 'inspectorToggle').focus();
+  }));
   window.Inspector?.resizable($('inspectorResize'), {key: 'revision.inspector', min: 280, max: 560, initial: 340, apply: width => layout.style.setProperty('--revision-inspector-width', `${width}px`)});
   function showInspector(tab) { inspectorPane?.set(true); revisionInspector?.select(tab); }
   const sectionKey = block => `${block.file}|${block.section}`;
@@ -292,7 +338,7 @@
     if (!block.units.some(u => u.zh)) prose.append(elem('span', 'pending', project.translate !== false ? '〔待翻译〕' : '〔未开启翻译〕'));
     else block.units.forEach(u => prose.append(...unitNodes(u, 'zh', block.id)));
   }
-  function applyPreview(preview) {
+  function applyPreview(preview, paint = true) {
     if (!preview || !snapshot) return;
     const owners = new Map(snapshot.blocks.flatMap(b => b.units.map(u => [u.id, [b, u]])));
     const dirty = new Map(), fresh = new Set();
@@ -300,6 +346,7 @@
       const [block, unit] = owners.get(id) || [];
       if (!unit || unit.masked !== masked) return;  // only sentences whose English is unchanged
       if (!unit.zh) unit.zh = zh;
+      if (!paint) return;  // data only: the page is repainted on a later poll
       const node = document.querySelector(`.side.zh .unit[data-unit="${CSS.escape(id)}"]`);
       if (!node || node.classList.contains('untranslated')) { dirty.set(block.id, block); fresh.add(id); }
     });
@@ -373,13 +420,15 @@
       const newline = text.indexOf('\n');
       const breakAt = block && position === 0 && headingBlock(block) && newline > 0 && newline < 150 && newline < text.length - 1 ? newline + 1 : -1;
       if (position === 0) node.closest('.prose')?.classList.toggle('heading-block', breakAt > 0);
+      const added = addedFlags(unit, side, text);
       node.replaceChildren();
       let start = 0;
       while (start < text.length) {
         let end = start + 1;
-        while (end < text.length && marks[end] === marks[start] && end !== breakAt) end++;
+        while (end < text.length && marks[end] === marks[start] && added[end] === added[start] && end !== breakAt) end++;
         const value = text.slice(start, end).join('');
-        node.append(marks[start] ? elem('mark', '', value) : document.createTextNode(value));
+        node.append(marks[start] ? elem('mark', added[start] ? 'rev-added' : '', value)
+          : added[start] ? elem('span', 'rev-added', value) : document.createTextNode(value));
         if (end === breakAt) node.append(elem('br', 'heading-break'));
         start = end;
       }
@@ -396,8 +445,8 @@
       const locate = () => { document.getElementById(`block-${comment.anchors[0].block_id}`)?.scrollIntoView({behavior: 'smooth', block: 'center'}); linkUnit(comment.anchors[0].unit_id); };
       quote.addEventListener('click', locate); quote.addEventListener('keydown', e => { if (e.key === 'Enter') locate(); });
       card.append(quote, elem('p', '', comment.text), elem('small', 'hint', `v${comment.revision} · ${[...new Set(comment.anchors.map(a => a.block_id))].join(', ')}`));
-      const remove = elem('button', 'quiet', '删除批注'); remove.disabled = active();
-      remove.addEventListener('click', async () => { remove.disabled = true; try { project = await api(`${base}/${project.id}/comments/${comment.id}`, {method: 'DELETE', body: JSON.stringify({revision: project.revision})}); renderComments(); renderControls(); markComments(); } catch (error) { fail(error); remove.disabled = false; } });
+      const remove = elem('button', 'quiet', '删除批注'); remove.disabled = !commentable();
+      remove.addEventListener('click', async () => { remove.disabled = true; try { adopt(await api(`${base}/${project.id}/comments/${comment.id}`, {method: 'DELETE', body: JSON.stringify({revision: project.revision})})); renderComments(); renderControls(); markComments(); } catch (error) { fail(error); remove.disabled = false; } });
       card.append(remove); $('comments').append(card);
     });
   }
@@ -456,7 +505,7 @@
     }));
   }
   function captureSelection() {
-    if (!project || active() || $('commentDialog').open) return;
+    if (!project || !commentable() || $('commentDialog').open) return;
     const selection = window.getSelection();
     if (!selection?.rangeCount || selection.isCollapsed) { $('selectionButton').hidden = true; return; }
     const range = selection.getRangeAt(0);
@@ -488,8 +537,38 @@
     $('selectedQuote').textContent = selected.map(a => a.quote).join('');
     $('selectedLocation').textContent = `v${project.revision} · ${[...new Set(selected.map(a => a.block_id))].join(', ')} · ${selected.length} 个对齐单元`;
     $('commentText').value = ''; $('commentError').textContent = ''; $('scope').value = 'auto';
-    $('selectionButton').hidden = true; $('commentDialog').showModal(); $('commentText').focus();
+    $('selectionButton').hidden = true; $('commentDialog').showModal(); placeCommentDialog(); $('commentText').focus();
   });
+  // ---- The comment dialog can be dragged by its heading; the last position is remembered.
+  const dialogPosKey = 'paperRevision.commentDialogPos';
+  function placeCommentDialog(pos) {
+    const dialog = $('commentDialog');
+    if (!pos) { try { pos = JSON.parse(localStorage.getItem(dialogPosKey) || 'null'); } catch { pos = null; } }
+    if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) { dialog.classList.remove('placed'); return; }
+    const left = Math.min(Math.max(pos.left, 0), Math.max(window.innerWidth - dialog.offsetWidth, 0));
+    const top = Math.min(Math.max(pos.top, 0), Math.max(window.innerHeight - 48, 0));  // keep the heading reachable
+    dialog.classList.add('placed'); dialog.style.left = `${left}px`; dialog.style.top = `${top}px`;
+    return {left, top};
+  }
+  (() => {
+    const dialog = $('commentDialog'), handle = dialog.querySelector('.drawer-heading');
+    let drag = null;
+    handle.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      const rect = dialog.getBoundingClientRect();
+      drag = {dx: e.clientX - rect.left, dy: e.clientY - rect.top, pos: {left: rect.left, top: rect.top}};
+      handle.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    handle.addEventListener('pointermove', e => { if (drag) drag.pos = placeCommentDialog({left: e.clientX - drag.dx, top: e.clientY - drag.dy}); });
+    const drop = () => { if (!drag) return; try { localStorage.setItem(dialogPosKey, JSON.stringify(drag.pos)); } catch {} drag = null; };
+    handle.addEventListener('pointerup', drop); handle.addEventListener('pointercancel', drop);
+    handle.addEventListener('dblclick', e => {  // double-click the heading: back to the centre
+      if (e.target.closest('button')) return;
+      try { localStorage.removeItem(dialogPosKey); } catch {}
+      dialog.classList.remove('placed');
+    });
+    window.addEventListener('resize', () => { if (dialog.open && dialog.classList.contains('placed')) placeCommentDialog(); });
+  })();
   $('paper').addEventListener('pointerup', () => setTimeout(captureSelection, 0));
   $('paper').addEventListener('keyup', captureSelection);
   document.addEventListener('selectionchange', () => { if (window.getSelection()?.isCollapsed && !$('commentDialog').open) $('selectionButton').hidden = true; });
@@ -497,7 +576,12 @@
   $('closeDialog').addEventListener('click', () => $('commentDialog').close());
   $('commentForm').addEventListener('submit', async e => {
     e.preventDefault(); const button = e.submitter; button.disabled = true;
-    try { project = await post('comments', {revision: project.revision, text: $('commentText').value, scope: $('scope').value, anchors: selected}); $('commentDialog').close(); window.getSelection()?.removeAllRanges(); selected = []; renderComments(); renderControls(); markComments(); showInspector('comments'); }
+    try {
+      adopt(await post('comments', {revision: project.revision, text: $('commentText').value, scope: $('scope').value, anchors: selected}));
+      $('commentDialog').close(); window.getSelection()?.removeAllRanges(); selected = []; renderComments(); renderControls(); markComments();
+      // Don't open the comment list over the paper: just flag the count so the author can keep reading.
+      const toggle = $('commentsToggle'); toggle.classList.remove('comment-added'); void toggle.offsetWidth; toggle.classList.add('comment-added');
+    }
     catch (error) { $('commentError').textContent = error.message; }
     finally { button.disabled = false; }
   });

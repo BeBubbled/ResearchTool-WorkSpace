@@ -148,7 +148,7 @@
   window.ClientActivity = { refresh: () => setTimeout(poll, 400), requestDesktop, desktopEnabled, setDesktop: value => store.set(DESKTOP_KEY, Boolean(value)) };
 
   // ---- Per-page add-ons ---------------------------------------------------------------------
-  const PAGE_EXTRAS = { "/paper-revision": "/static/paper_revision_extras.js?v=1" };
+  const PAGE_EXTRAS = { "/paper-revision": "/static/paper_revision_extras.js?v=2" };
   function loadExtras() {
     const src = PAGE_EXTRAS[location.pathname];
     if (!src || document.querySelector(`script[data-page-extras]`)) return;

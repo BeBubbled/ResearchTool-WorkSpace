@@ -704,8 +704,10 @@ class PaperRevision:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if (data.get("job") or {}).get("status") in ACTIVE:
                     data["job"].update(status="interrupted", error="服务已重启；原版本与批注保留，可重新提交。")
+                    data["job"].pop("preview", None)
+                    self.settle_after_stop(data, "服务重启时、所选中文未保存的批注")
                     atomic_write_json(path, data)
-            except (ValueError, OSError):
+            except (ValueError, OSError, KeyError):
                 continue
 
     def folder(self, pid):
@@ -1072,9 +1074,56 @@ class PaperRevision:
             raise Conflict("本轮正在执行，请等待完成或停止后再编辑。")
         return project
 
+    def comment_editable(self, pid, revision):
+        """Like editable(), but comments may also be added or removed while a translation run is in
+        progress: translation only fills in Chinese, so it never moves what the author has selected."""
+        project = self.read(pid)
+        if project["revision"] != revision:
+            raise Conflict("版本已变化，请刷新后重新定位批注。")
+        job = project.get("job") or {}
+        if job.get("status") in ACTIVE and job.get("kind") != "translate":
+            raise Conflict("本轮正在执行，请等待完成或停止后再编辑。")
+        return project
+
+    @staticmethod
+    def shown_chinese(project, snap):
+        """Chinese as the reader currently shows it: the saved version plus, during a translation
+        run, sentences already previewed (only those whose English is unchanged)."""
+        shown = {u["id"]: u["zh"] for b in snap["blocks"] for u in b["units"]}
+        job = project.get("job") or {}
+        if job.get("status") in ACTIVE:
+            masked = {u["id"]: u["masked"] for b in snap["blocks"] for u in b["units"]}
+            for uid, (mask, zh) in (job.get("preview") or {}).items():
+                if not shown.get(uid) and masked.get(uid) == mask:
+                    shown[uid] = zh
+        return shown
+
+    @staticmethod
+    def anchors_fit(comment, snap):
+        units = {u["id"]: (b["id"], u) for b in snap["blocks"] for u in b["units"]}
+        for anchor in comment["anchors"]:
+            bid, unit = units.get(anchor["unit_id"], (None, None))
+            if unit is None or bid != anchor["block_id"]:
+                return False
+            shown = unit["zh"] if anchor.get("side", "zh") == "zh" else unit["display_en"]
+            if shown[anchor["start"]:anchor["end"]] != anchor["quote"]:
+                return False
+        return True
+
+    def settle_comments(self, project, comments, snap, reason):
+        """Keep comments made during a translation run whose selection is still shown in ``snap``;
+        back up the rest (e.g. on Chinese that was previewed but not saved) instead of dropping them."""
+        kept = [c for c in comments if self.anchors_fit(c, snap)]
+        lost = [c for c in comments if c not in kept]
+        if lost:
+            project["comment_backups"] = (project.get("comment_backups") or [])[-9:] + [{
+                "id": uuid.uuid4().hex, "time": time.time(), "revision": project["revision"], "reason": reason,
+                "comments": [portable_comment(c, snap) for c in lost], "dismissed": False}]
+        project["comments"] = kept
+
     def add_comment(self, pid, data):
         with self.lock:
-            project = self.editable(pid, data.get("revision"))
+            project = self.comment_editable(pid, data.get("revision"))
             text = data.get("text")
             anchors = data.get("anchors")
             if not isinstance(text, str) or not 1 <= len(text.strip()) <= 4000:
@@ -1085,6 +1134,7 @@ class PaperRevision:
                 raise ValueError("每轮最多保存 100 条批注。")
             snap = self.snapshot(pid)
             units = {u["id"]: (b["id"], u) for b in snap["blocks"] for u in b["units"]}
+            chinese = self.shown_chinese(project, snap)
             verified = []
             seen = set()
             for anchor in anchors:
@@ -1094,7 +1144,7 @@ class PaperRevision:
                 side = anchor.get("side", "zh")
                 if side not in {"zh", "en"}:
                     raise ValueError("选区定位无效。")
-                shown = unit["zh"] if side == "zh" else unit["display_en"]
+                shown = chinese[unit["id"]] if side == "zh" else unit["display_en"]
                 start, end = anchor.get("start"), anchor.get("end")
                 if (type(start) is not int or type(end) is not int or not 0 <= start < end <= len(shown) or
                         shown[start:end] != anchor.get("quote") or bid != anchor.get("block_id")):
@@ -1225,7 +1275,7 @@ class PaperRevision:
 
     def delete_comment(self, pid, cid, revision):
         with self.lock:
-            project = self.editable(pid, revision)
+            project = self.comment_editable(pid, revision)
             if cid not in {c["id"] for c in project["comments"]}:
                 raise KeyError("批注不存在。")
             project["comments"] = [c for c in project["comments"] if c["id"] != cid]
@@ -1919,9 +1969,13 @@ class PaperRevision:
                 project["job"].update(status="completed", error="", warning=warning, progress=(
                     "中文对照已生成" if job["kind"] == "translate" else
                     "英文修订与中文对齐已保存" if enabled else "英文修订已保存（未翻译）"))
+                added = project["comments"] if job["kind"] == "translate" else []  # made while it ran
                 self.commit(project, snapshot, {"kind": job["kind"], "changes": details,
                     "outcomes": outcomes, "comments": job["comments"], "config": job["config"],
                     "context_mode": snapshot.get("last_context_mode", "full_text"), "audit": audit})
+                if added:
+                    self.settle_comments(project, added, snapshot, "翻译期间添加、但所选中文未能保存的批注")
+                    self.save(project)
         except Exception as exc:
             with self.lock:
                 project = self.read(pid)
@@ -1933,13 +1987,22 @@ class PaperRevision:
                     session = job.get("session") or {}
                     if session.get("used") and project.get("claude_session", {}).get("id") == session["id"]:
                         project["claude_session"]["last_error"] = message[:1000]
+                    self.settle_after_stop(project, "翻译失败、所选中文未保存的批注")
                     self.save(project)
+
+    def settle_after_stop(self, project, reason):
+        """A translation run that stops saves nothing: comments made on its previewed Chinese can no
+        longer be located, so they go to a backup (comments on saved text stay)."""
+        if project["job"].get("kind") == "translate" and project["comments"]:
+            self.settle_comments(project, project["comments"], self.snapshot(project["id"]), reason)
 
     def cancel(self, pid):
         with self.lock:
             project = self.read(pid)
             if project.get("job") and project["job"]["status"] in ACTIVE:
                 project["job"].update(status="cancelled", progress="本轮已停止；正在进行的模型请求返回后会被丢弃。")
+                project["job"].pop("preview", None)
+                self.settle_after_stop(project, "停止翻译时、所选中文未保存的批注")
                 self.save(project)
             return project
 

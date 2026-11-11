@@ -103,6 +103,11 @@
     write.title = "把当前版本写入原论文目录（须为 git 工作副本，不提交）";
     compile.addEventListener("click", () => compileCheck(compile));
     write.addEventListener("click", () => writeBack(write));
+    // In the ribbon (项目 › 导出) they become ribbon commands like their neighbours.
+    if (anchor.closest(".ribbon")) {
+      compile.className = "rb-btn rb-large rbi-check-doc";
+      write.className = "rb-btn rb-large rbi-git";
+    }
     anchor.after(compile, write);
     const sync = () => { const hidden = !projectId(); compile.hidden = hidden; write.hidden = hidden; };
     $("projectSelect")?.addEventListener("change", sync);

@@ -54,6 +54,7 @@ from local_paths import LocalPathService, create_local_paths_blueprint
 import pdf_core
 from pdf_core import PdfError
 from engines import EngineCatalog
+from file_cache import FILES as file_cache, MISSING as FILE_MISSING
 from paper_library import PaperLibrary, valid_key as paper_library_key
 import activity
 import usage_ledger
@@ -352,18 +353,40 @@ class Job:
             }
 
 
+# Jobs run one at a time per lane, so a long video export no longer holds up a paper the reader
+# is opening, and an OCR wait no longer holds up image tools. Work inside a lane stays serial;
+# LLM request limits are shared across lanes by LlmConcurrencyRegistry.
+JOB_LANES = {
+    "paper_reader": "reader",
+    "pdf_ocr_translate": "remote",
+    "document_translate": "remote",
+    "markdown_repair": "remote",
+    "markdown_github": "remote",
+    "bibtex": "remote",
+}
+DEFAULT_JOB_LANE = "local"
+
+
+def job_lane(job: Job) -> str:
+    return JOB_LANES.get(job.tool.id, DEFAULT_JOB_LANE)
+
+
 class JobManager:
     def __init__(self) -> None:
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
-        self.queue: queue.Queue[Job] = queue.Queue()
-        self.worker = threading.Thread(target=self._work, daemon=True, name="tool-job-worker")
-        self.worker.start()
+        self.queues: dict[str, queue.Queue[Job]] = {}
+        self.workers: dict[str, threading.Thread] = {}
+        for lane in sorted({DEFAULT_JOB_LANE, *JOB_LANES.values()}):
+            self.queues[lane] = queue.Queue()
+            worker = threading.Thread(target=self._work, args=(lane,), daemon=True, name=f"tool-job-worker-{lane}")
+            self.workers[lane] = worker
+            worker.start()
 
     def submit(self, job: Job) -> None:
         with self.lock:
             self.jobs[job.id] = job
-        self.queue.put(job)
+        self.queues[job_lane(job)].put(job)
 
     def get(self, job_id: str) -> Job | None:
         with self.lock:
@@ -383,9 +406,10 @@ class JobManager:
                 job = self.jobs.pop(job_id)
                 shutil.rmtree(job.root, ignore_errors=True)
 
-    def _work(self) -> None:
+    def _work(self, lane: str) -> None:
+        jobs = self.queues[lane]
         while True:
-            job = self.queue.get()
+            job = jobs.get()
             try:
                 run_job(job)
             except Exception as exc:  # pragma: no cover - final background boundary
@@ -394,7 +418,7 @@ class JobManager:
                     job.status = "failed"
                     job.finished_at = time.time()
             finally:
-                self.queue.task_done()
+                jobs.task_done()
 
 
 job_manager = JobManager()
@@ -5978,6 +6002,7 @@ def write_durable_text(output: Path, text: str) -> None:
         os.replace(temporary, output)
     finally:
         temporary.unlink(missing_ok=True)
+        file_cache.invalidate(output)
 
 
 def merge_html_translation_parts(
@@ -6609,6 +6634,11 @@ def pdf_document_title(source: Path) -> str | None:
 
 
 def cached_ocr_html_title(source: Path) -> str | None:
+    # Parsing up to 512 KB of HTML costs ~20 ms; the library listing asks for every paper.
+    return file_cache.get(source, _parse_ocr_html_title, kind="html-title")
+
+
+def _parse_ocr_html_title(source: Path) -> str | None:
     try:
         with source.open("r", encoding="utf-8", errors="replace") as handle:
             soup = BeautifulSoup(handle.read(512 * 1024), "html.parser")
@@ -6716,11 +6746,8 @@ def reader_cache_root(cache_key: str) -> Path:
 
 
 def read_reader_cache_manifest(cache_key: str) -> dict[str, Any]:
-    manifest_path = reader_cache_root(cache_key) / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    # Read on every library listing, search and workspace call; parsed once per file version.
+    manifest = file_cache.read_json(reader_cache_root(cache_key) / "manifest.json")
     if (
         not isinstance(manifest, dict)
         or manifest.get("schemaVersion") != READER_CACHE_SCHEMA_VERSION
@@ -6744,11 +6771,8 @@ def write_reader_cache_manifest(cache_key: str, manifest: dict[str, Any]) -> Non
 def read_reader_persistent_state(cache_key: str) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{64}", cache_key) or not read_reader_cache_manifest(cache_key):
         return {"version": 2, "updatedAt": 0, "notes": [], "textFormats": [], "liveTranslations": []}
-    try:
-        state = json.loads((reader_cache_root(cache_key) / "reader-state.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"version": 2, "updatedAt": 0, "notes": [], "textFormats": [], "liveTranslations": []}
-    if not isinstance(state, dict):
+    state = file_cache.read_json(reader_cache_root(cache_key) / "reader-state.json")
+    if state is FILE_MISSING or not isinstance(state, dict):
         return {"version": 2, "updatedAt": 0, "notes": [], "textFormats": [], "liveTranslations": []}
     notes = state.get("notes") if isinstance(state.get("notes"), list) else []
     text_formats = state.get("textFormats") if isinstance(state.get("textFormats"), list) else []
@@ -6813,12 +6837,28 @@ def write_reader_persistent_state(cache_key: str, payload: dict[str, Any]) -> di
     return state
 
 
+_RESOLVED_PATHS: dict[str, Path] = {}
+
+
+def resolve_cached(path: Path) -> Path:
+    """Path.resolve() costs ~0.1 ms on Windows and the library resolves a few paths per paper on
+    every listing. Only the canonical form is remembered; existence is still checked by callers."""
+    key = str(path)
+    resolved = _RESOLVED_PATHS.get(key)
+    if resolved is None:
+        resolved = path.resolve()
+        if len(_RESOLVED_PATHS) > 16_384:
+            _RESOLVED_PATHS.clear()
+        _RESOLVED_PATHS[key] = resolved
+    return resolved
+
+
 def reader_cached_file(root: Path, relative: str) -> Path | None:
     try:
-        candidate = (root / safe_relative_path(relative)).resolve()
+        candidate = resolve_cached(root / safe_relative_path(relative))
     except ValueError:
         return None
-    resolved_root = root.resolve()
+    resolved_root = resolve_cached(root)
     if resolved_root not in candidate.parents or not candidate.is_file():
         return None
     return candidate
@@ -7008,13 +7048,15 @@ def reader_cache_library_entry(cache_key: str) -> dict[str, Any] | None:
                 valid_translations += 1
     source_name = str(document.get("sourceName") or "").strip()
     source_title = reader_source_display_title(source_name)
-    html_title = cached_ocr_html_title(cached_document) if render_kind == "html" else None
-    fallback_title = html_title or source_title or Path(primary_filename).stem or "阅读文档"
+    title = clean_reader_title(document.get("title"))
+    if not title:  # the HTML title is only a fallback, so skip the parse when a title is stored
+        html_title = cached_ocr_html_title(cached_document) if render_kind == "html" else None
+        title = html_title or source_title or Path(primary_filename).stem or "阅读文档"
     source_type = str(document.get("sourceType") or ("pdf" if render_kind == "pdf" else "markdown")).strip().lower()
     use_ocr = bool(document.get("useOcr", source_type == "pdf" and render_kind == "html"))
     return {
         "id": cache_key,
-        "title": clean_reader_title(document.get("title")) or fallback_title,
+        "title": title,
         "titleCustomized": document.get("titleCustomized") is True,
         "sourceName": source_name or primary_filename,
         "sourceType": source_type,

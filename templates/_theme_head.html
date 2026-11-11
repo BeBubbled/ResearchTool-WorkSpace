@@ -1,0 +1,20 @@
+{#- Colour theme, interface font, text colours and language: include first in <head> on every page.
+    Applies the saved choices before the page paints (static/theme.js keeps them in sync afterwards). -#}
+<link rel="stylesheet" href="/static/theme.css?v=6">
+<meta name="theme-color" content="#f6f5f1">
+<script>try { (function (d, L) {
+  var t = L.getItem("research-theme"); if (t) d.dataset.theme = t;
+  var f = L.getItem("research-font");
+  if (f && f !== "default") {
+    if (f !== "custom") d.dataset.font = f;
+    else { var c = (L.getItem("research-font-custom") || "").split(",").map(function (n) { n = n.trim().replace(/["\\;{}<>]/g, ""); return n ? '"' + n + '"' : ""; }).filter(Boolean).join(","); if (c) { d.dataset.font = f; d.style.setProperty("--t-font-ui", c + ",system-ui,sans-serif"); } }
+    if (f === "misans") ["Regular", "Semibold"].forEach(function (w) { var l = document.createElement("link"); l.rel = "stylesheet"; l.dataset.webfont = "misans"; l.href = "https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-" + w + ".min.css"; document.head.appendChild(l); });
+  }
+  var k = L.getItem("research-ink");
+  if (k && k !== "default") { d.dataset.ink = /^#[0-9a-f]{6}$/i.test(k) ? "custom" : k; if (d.dataset.ink === "custom") d.style.setProperty("--t-ink-custom", k); }
+  var c2 = L.getItem("research-content-ink");
+  if (c2 && c2 !== "default") { d.dataset.contentInk = /^#[0-9a-f]{6}$/i.test(c2) ? "custom" : c2; if (d.dataset.contentInk === "custom") d.style.setProperty("--t-content-custom", c2); }
+  if (L.getItem("research-lang") === "en") { d.lang = "en"; d.dataset.lang = "en"; d.dataset.i18nPending = "1"; setTimeout(function () { delete d.dataset.i18nPending; }, 1500); }
+})(document.documentElement, localStorage); } catch (e) {}</script>
+<script src="/static/theme.js?v=3" defer></script>
+<script src="/static/i18n.js?v=2" defer></script>

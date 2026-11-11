@@ -224,9 +224,10 @@ assert.equal(readerPaperColumnWidth(1576), 1000);
 assert.equal(readerPaperColumnWidth(1576, 560), 900);
 assert.equal(readerPaperColumnWidth(900), 470);
 assert.deepEqual(readerLayoutForWidth(1600), { compactTableOfContents: false, assistantOverlay: false });
-assert.deepEqual(readerLayoutForWidth(1200), { compactTableOfContents: true, assistantOverlay: false });
+assert.deepEqual(readerLayoutForWidth(1200), { compactTableOfContents: false, assistantOverlay: false });
 assert.deepEqual(readerLayoutForWidth(1120), { compactTableOfContents: true, assistantOverlay: false });
-for (const width of [1100, 900, 760, 600, 420]) {
+assert.deepEqual(readerLayoutForWidth(960), { compactTableOfContents: true, assistantOverlay: false });
+for (const width of [900, 760, 600, 420]) {
   assert.deepEqual(readerLayoutForWidth(width), { compactTableOfContents: true, assistantOverlay: true });
 }
 assert.equal(responsiveReaderWidth(1140, 1091), 1140);

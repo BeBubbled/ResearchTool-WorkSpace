@@ -1,18 +1,18 @@
 /* 双语改稿 add-ons (static/paper_revision_extras.js). Theme tokens come from static/theme.css. */
-.revision-extras-dialog { width:min(720px,92vw); max-height:84vh; padding:0; border:1px solid var(--t-line, #dde3ea); border-radius:12px; color:var(--t-ink, #1d2943); background:var(--t-panel, #ffffff); box-shadow:0 24px 60px rgba(0,0,0,.25); }
+.revision-extras-dialog { width:min(720px,92vw); max-height:84vh; padding:0; border:1px solid var(--t-line); border-radius:12px; color:var(--t-ink); background:var(--t-panel); box-shadow:0 24px 60px rgba(0,0,0,.25); }
 .revision-extras-dialog::backdrop { background:rgba(10,18,40,.35); }
-.revision-extras-dialog header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; border-bottom:1px solid var(--t-line-soft, #e8edf3); }
+.revision-extras-dialog header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 18px; border-bottom:1px solid var(--t-line-soft); }
 .revision-extras-dialog h2 { margin:0; font-size:17px; }
-.revision-extras-dialog h3 { margin:16px 0 6px; font-size:13px; color:var(--t-muted, #6b7890); }
-.revision-extras-dialog header button { width:28px; height:28px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--t-muted, #6b7890); font-size:18px; cursor:pointer; }
+.revision-extras-dialog h3 { margin:16px 0 6px; font-size:13px; color:var(--t-muted); }
+.revision-extras-dialog header button { width:28px; height:28px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--t-muted); font-size:18px; cursor:pointer; }
 .revision-extras-body { padding:6px 18px 18px; overflow:auto; max-height:calc(84vh - 60px); font-size:13.5px; line-height:1.6; }
 .revision-extras-body ul { margin:0; padding-left:20px; }
 .revision-extras-body li { margin:3px 0; overflow-wrap:anywhere; }
 .revision-extras-body code, .revision-extras-body pre { font:12px/1.5 ui-monospace,Consolas,monospace; }
-.revision-extras-body pre { padding:8px 10px; overflow:auto; border-radius:6px; background:var(--t-surface, #f5f7fb); white-space:pre-wrap; }
-.revision-extras-body em { padding:0 6px; border-radius:999px; background:var(--t-surface, #f5f7fb); color:var(--t-muted, #6b7890); font-size:11px; font-style:normal; }
+.revision-extras-body pre { padding:8px 10px; overflow:auto; border-radius:6px; background:var(--t-surface); white-space:pre-wrap; }
+.revision-extras-body em { padding:0 6px; border-radius:999px; background:var(--t-surface); color:var(--t-muted); font-size:11px; font-style:normal; }
 .revision-extras-status { margin:12px 0 4px; padding:8px 10px; border-radius:8px; font-weight:650; }
-.revision-extras-status.ok { color:var(--t-ok, #1d7a55); background:var(--t-ok-soft, #e3f4ec); }
-.revision-extras-status.bad { color:var(--t-danger, #b3261e); background:var(--t-danger-soft, #fbe9e7); }
+.revision-extras-status.ok { color:var(--t-ok); background:var(--t-ok-soft); }
+.revision-extras-status.bad { color:var(--t-danger); background:var(--t-danger-soft); }
 .revision-extras-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
-.comment-card.revision-extras-linked { outline:3px solid var(--t-accent, #2f5bd3); outline-offset:2px; transition:outline-color .3s; }
+.comment-card.revision-extras-linked { outline:3px solid var(--t-accent); outline-offset:2px; transition:outline-color .3s; }

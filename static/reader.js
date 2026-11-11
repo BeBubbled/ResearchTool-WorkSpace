@@ -55,6 +55,7 @@ const readerState = {
   paperBaseWidth: null,
   readerAxisOffset: 0,
   showTableOfContents: true,
+  showAssistant: true,
   compactTableOfContents: false,
   tableOfContentsOverlayOpen: false,
   assistantOverlay: false,
@@ -99,6 +100,7 @@ function loadSelectionSettings() {
     readerState.paperWidth = normalizePaperWidth(saved.paperWidth, null);
     readerState.readerAxisOffset = normalizeReaderAxisOffset(saved.readerAxisOffset);
     readerState.showTableOfContents = saved.showTableOfContents !== false;
+    readerState.showAssistant = saved.showAssistant !== false;
     readerState.speechClickEnabled = saved.speechClickEnabled !== false;
     readerState.speechPlaybackRate = normalizeSpeechPlaybackRate(saved.speechPlaybackRate);
     readerState.typography = {
@@ -123,6 +125,7 @@ function persistSelectionSettings(message = "设置已保存在此浏览器。")
       paperWidth: readerState.paperWidth,
       readerAxisOffset: readerState.readerAxisOffset,
       showTableOfContents: readerState.showTableOfContents,
+      showAssistant: readerState.showAssistant,
       speechClickEnabled: readerState.speechClickEnabled,
       speechPlaybackRate: readerState.speechPlaybackRate,
       typography: readerState.typography,
@@ -212,8 +215,8 @@ function readerPaperColumnWidth(shellWidth, assistantWidth = 320) {
 function readerLayoutForWidth(width) {
   const available = Number(width) || 0;
   return {
-    compactTableOfContents: available > 0 && available < 1320,
-    assistantOverlay: available > 0 && available < 1120,
+    compactTableOfContents: available > 0 && available < 1180,
+    assistantOverlay: available > 0 && available < 960,
   };
 }
 
@@ -263,20 +266,29 @@ function applyResponsiveReaderLayout() {
   shell.classList.toggle("toc-overlay-open", layout.compactTableOfContents && readerState.tableOfContentsOverlayOpen);
   shell.classList.toggle("assistant-overlay", layout.assistantOverlay);
   shell.classList.toggle("assistant-overlay-open", layout.assistantOverlay && readerState.assistantOverlayOpen);
+  shell.classList.toggle("toc-hidden", !readerState.showTableOfContents);
+  shell.classList.toggle("assistant-hidden", !readerState.showAssistant);
+  // Like 改稿: the side columns exist only while shown; the paper column takes whatever width is left.
+  const columns = [
+    !layout.compactTableOfContents && readerState.showTableOfContents ? "minmax(180px,220px)" : "",
+    "minmax(0,1fr)",
+    !layout.assistantOverlay && readerState.showAssistant ? "var(--assistant-panel-width,320px)" : "",
+  ].filter(Boolean).join(" ");
+  shell.style.setProperty("--reader-grid-columns", columns);
   const outlineExpanded = layout.compactTableOfContents
     ? readerState.tableOfContentsOverlayOpen
     : readerState.showTableOfContents;
   $("#outlinePanel")?.setAttribute("aria-hidden", String(!outlineExpanded));
-  const assistantVisible = !layout.assistantOverlay || readerState.assistantOverlayOpen;
+  const assistantVisible = layout.assistantOverlay ? readerState.assistantOverlayOpen : readerState.showAssistant;
   $("#assistantPanel")?.setAttribute("aria-hidden", String(!assistantVisible));
   const outlineButton = $("#outlineToggle");
-  const outlineLabel = outlineExpanded ? "关闭文档目录" : "打开文档目录";
+  const outlineLabel = outlineExpanded ? "隐藏章节栏" : "显示章节栏";
   outlineButton?.setAttribute("aria-expanded", String(outlineExpanded));
   outlineButton?.setAttribute("aria-label", outlineLabel);
   if (outlineButton) outlineButton.title = outlineLabel;
   const assistantButton = $("#assistantToggle");
-  const assistantExpanded = layout.assistantOverlay && readerState.assistantOverlayOpen;
-  const assistantLabel = assistantExpanded ? "关闭划词解读" : "打开划词解读";
+  const assistantExpanded = assistantVisible;
+  const assistantLabel = assistantExpanded ? "隐藏解读栏" : "显示解读栏";
   assistantButton?.setAttribute("aria-expanded", String(assistantExpanded));
   assistantButton?.setAttribute("aria-label", assistantLabel);
   if (assistantButton) assistantButton.title = assistantLabel;
@@ -321,24 +333,43 @@ function initResponsiveReaderLayout() {
     applyTableOfContentsVisibility();
     persistSelectionSettings(readerState.showTableOfContents ? "文档目录已显示。" : "文档目录已隐藏。 ");
   });
+  // In-pane ‹ / › buttons hide a side pane (or close its drawer on narrow windows);
+  // 开始 › 章节栏 / 解读栏 and 视图 › 窗格 bring it back. Both states are remembered.
   $("#closeOutline")?.addEventListener("click", () => {
-    if (readerState.compactTableOfContents) closeResponsivePanels();
+    if (readerState.compactTableOfContents) { closeResponsivePanels(); return; }
+    readerState.showTableOfContents = false;
+    applyTableOfContentsVisibility();
+    persistSelectionSettings("章节栏已隐藏。");
+    $("#outlineToggle")?.focus();
   });
   $("#assistantToggle")?.addEventListener("click", () => {
-    readerState.assistantOverlayOpen = !readerState.assistantOverlayOpen;
-    readerState.tableOfContentsOverlayOpen = false;
-    applyResponsiveReaderLayout();
+    if (readerState.assistantOverlay) {
+      readerState.assistantOverlayOpen = !readerState.assistantOverlayOpen;
+      readerState.tableOfContentsOverlayOpen = false;
+      applyResponsiveReaderLayout();
+      return;
+    }
+    setAssistantVisible(!readerState.showAssistant);
   });
-  $("#closeAssistant")?.addEventListener("click", closeResponsivePanels);
+  $("#closeAssistant")?.addEventListener("click", () => {
+    if (readerState.assistantOverlay) { closeResponsivePanels(); return; }
+    setAssistantVisible(false);
+    $("#assistantToggle")?.focus();
+  });
   $("#readerPanelBackdrop")?.addEventListener("click", closeResponsivePanels);
   applyResponsiveReaderLayout();
+}
+
+function setAssistantVisible(visible) {
+  readerState.showAssistant = Boolean(visible);
+  applyResponsiveReaderLayout();
+  persistSelectionSettings(readerState.showAssistant ? "解读栏已显示。" : "解读栏已隐藏。");
 }
 
 function applyTableOfContentsVisibility() {
   const shell = $("#readerShell");
   const outline = $("#outlinePanel");
   const toggle = $("#showTableOfContents");
-  shell?.classList.toggle("toc-hidden", !readerState.showTableOfContents);
   const visible = readerState.compactTableOfContents
     ? readerState.tableOfContentsOverlayOpen
     : readerState.showTableOfContents;
@@ -761,6 +792,7 @@ function initReaderInspector() {
 }
 
 function showInspectorTab(tab) {
+  if (!readerState.assistantOverlay && !readerState.showAssistant) setAssistantVisible(true);
   if (readerState.assistantOverlay && !readerState.assistantOverlayOpen) {
     readerState.assistantOverlayOpen = true;
     readerState.tableOfContentsOverlayOpen = false;
@@ -3309,6 +3341,7 @@ function sendSelectionToPrompts() {
 
 async function ask(action, { keepMenu = false } = {}) {
   if (!readerState.selection) return;
+  if (!readerState.assistantOverlay && !readerState.showAssistant) setAssistantVisible(true);
   if (readerState.assistantOverlay) {
     readerState.assistantOverlayOpen = true;
     readerState.tableOfContentsOverlayOpen = false;

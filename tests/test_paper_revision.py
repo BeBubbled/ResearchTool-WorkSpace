@@ -1043,6 +1043,50 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(p["revision"], 0)
         self.assertEqual(p["job"]["status"], "cancelled")
 
+    def test_comments_during_translation_carry_into_the_translated_version(self):
+        self.model.release.clear()
+        job = self.service.submit(self.pid, {"revision": 0, "confirm_usage": True})["job"]
+        self.assertTrue(self.model.entered.wait(2))
+        snap = self.service.snapshot(self.pid)
+        units = [(b, u) for b in snap["blocks"] for u in b["units"]]
+        (b1, u1), (b2, u2) = units[0], units[1]
+        # Two sentences already previewed: the first matches the final translation, the second won't.
+        self.service.preview(self.pid, job["id"], {u1["id"]: [u1["masked"], "中文预览"], u2["id"]: [u2["masked"], "完全不同的预览"]})
+        add = lambda side, b, u, start, end, quote: self.service.add_comment(self.pid, {
+            "revision": 0, "text": "意见", "scope": "auto",
+            "anchors": [{"side": side, "unit_id": u["id"], "block_id": b["id"], "start": start, "end": end, "quote": quote}]})
+        add("zh", b1, u1, 0, 2, "中文")
+        add("zh", b2, u2, 2, 4, "不同")
+        add("en", b1, u1, 0, 3, u1["display_en"][:3])
+        with self.assertRaises(Conflict):  # not yet shown in Chinese
+            add("zh", *units[2], 0, 1, "中")
+        removable = self.service.read(self.pid)["comments"][-1]["id"]
+        self.service.delete_comment(self.pid, removable, 0)
+        add("en", b1, u1, 0, 3, u1["display_en"][:3])
+        self.model.release.set()
+        p = self.wait()
+        self.assertEqual((p["job"]["status"], p["revision"]), ("completed", 1), p["job"])
+        self.assertEqual([(c["anchors"][0]["side"], c["anchors"][0]["quote"]) for c in p["comments"]],
+                         [("zh", "中文"), ("en", u1["display_en"][:3])])
+        self.assertEqual([a["quote"] for c in p["comment_backups"][-1]["comments"] for a in c["anchors"]], ["不同"])
+
+    def test_cancelled_translation_backs_up_comments_on_unsaved_chinese(self):
+        self.model.release.clear()
+        job = self.service.submit(self.pid, {"revision": 0, "confirm_usage": True})["job"]
+        self.assertTrue(self.model.entered.wait(2))
+        block = self.service.snapshot(self.pid)["blocks"][0]
+        unit = block["units"][0]
+        self.service.preview(self.pid, job["id"], {unit["id"]: [unit["masked"], "中文预览"]})
+        for side, quote in (("zh", "中文"), ("en", unit["display_en"][:2])):
+            self.service.add_comment(self.pid, {"revision": 0, "text": "意见", "scope": "auto", "anchors": [
+                {"side": side, "unit_id": unit["id"], "block_id": block["id"], "start": 0, "end": 2, "quote": quote}]})
+        p = self.service.cancel(self.pid)
+        self.model.release.set()
+        self.service.executor.shutdown(wait=True)
+        p = self.service.read(self.pid)
+        self.assertEqual([c["anchors"][0]["side"] for c in p["comments"]], ["en"])
+        self.assertEqual(p["comment_backups"][-1]["comments"][0]["anchors"][0]["quote"], "中文")
+
     def test_restore_creates_version_and_export_preserves_paths(self):
         self.translated()
         p = self.service.restore(self.pid, {"revision": 1, "target": 0})

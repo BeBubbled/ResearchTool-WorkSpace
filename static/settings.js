@@ -2,10 +2,10 @@
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["general", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
+const SETTINGS_TABS = ["general", "appearance", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
 // Sidebar groups (macOS System Settings style): accounts & engines, services, then per-module defaults.
 const SETTINGS_GROUPS = [
-  { label: "通用", items: [["general", "通用"], ["doctor", "环境检查"], ["usage", "用量"]] },
+  { label: "通用", items: [["general", "通用"], ["appearance", "外观与语言"], ["doctor", "环境检查"], ["usage", "用量"]] },
   { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["billing", "费用确认"]] },
   { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
   { label: "功能", items: [["reader", "精读"], ["workflow", "双语改稿"], ["three-pass", "Three-Pass"], ["studio", "ResearchStudio"]] },
@@ -23,19 +23,65 @@ let hooks = { onTabChange() {}, onChanged() {}, onSaved() {} };
 // Tools availability (Mathpix / GitHub) changed: let the host page refresh what it shows.
 async function reloadTools() { await hooks.onChanged(); }
 
+// Fast endpoints (plain config reads) gate the first paint; slow ones (Codex / Claude CLI status, the
+// revision workflow and the ResearchStudio environment probe each spawn or query a local program) fill in
+// their own panes when they arrive, so the window never waits on the slowest check.
+const SLOW_LOADERS = {
+  codex: () => loadGlobalCodexConfig(),
+  claude: () => loadGlobalClaudeConfig().catch(error => { state.claudeConfig = { available: false, error: error.message }; }),
+  workflow: () => loadGlobalWorkflowConfig().catch(error => { state.workflowError = error.message; }),
+  studio: () => loadStudioConfig(),
+};
+const pending = new Set();
+// Fields the user typed into since the last full render; a background refresh puts these values back.
+const dirtyFields = new Set();
+const fieldKey = node => node?.matches?.("input, select, textarea") ? `${node.form?.id || node.closest("[data-settings-panel]")?.dataset.settingsPanel || ""}|${node.name || node.id || ""}` : "";
+const fieldByKey = key => [...form.querySelectorAll("input, select, textarea")].find(node => fieldKey(node) === key);
+
 async function mount(root, options = {}) {
   form = root;
   hooks = { ...hooks, ...options };
   // HIG: reopen on the pane the user last looked at unless a link names one.
   state.settingsTab = SETTINGS_TABS.includes(options.tab) ? options.tab : storedPane() || state.settingsTab;
   form.innerHTML = `<div class="llm-manager-loading">正在读取本机全局配置…</div>`;
+  if (!form.dataset.dirtyTracking) {
+    form.dataset.dirtyTracking = "1";
+    const track = event => { const key = fieldKey(event.target); if (key && key !== "|settingsSearch") dirtyFields.add(key); };
+    form.addEventListener("input", track);
+    form.addEventListener("change", track);
+  }
+  let rendered = false;
+  const slow = Object.entries(SLOW_LOADERS).map(([key, load]) => {
+    pending.add(key);
+    return Promise.resolve().then(load).catch(() => {}).finally(() => { pending.delete(key); if (rendered) refreshKeepingEdits(); });
+  });
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalCodexConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalClaudeConfig(), loadGlobalWorkflowConfig(), loadReaderActions(), loadStudioConfig()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadReaderActions()]);
     renderLlmManager();
+    rendered = true;
   } catch (error) {
     form.innerHTML = `<p class="message">${escapeHtml(error.message)}</p><button type="button" data-retry-llm>重新加载</button>`;
     form.querySelector("[data-retry-llm]")?.addEventListener("click", () => mount(root, options));
   }
+  return Promise.all(slow);
+}
+
+// Re-render after background data arrived without losing what the user is typing, the focus or the scroll.
+function refreshKeepingEdits() {
+  const values = [...dirtyFields].map(key => { const node = fieldByKey(key); return node ? [key, node.type === "checkbox" ? node.checked : node.value] : null; }).filter(Boolean);
+  const active = document.activeElement;
+  const activeKey = fieldKey(active) || (active?.id ? `#${active.id}` : "");
+  const caret = typeof active?.selectionStart === "number" ? [active.selectionStart, active.selectionEnd] : null;
+  const scroller = document.scrollingElement;
+  const top = scroller?.scrollTop || 0;
+  renderLlmManager("", "", "llm", { keepEdits: true });
+  values.forEach(([key, value]) => { const node = fieldByKey(key); if (!node) return; if (node.type === "checkbox") node.checked = value; else node.value = value; });
+  const target = activeKey.startsWith("#") ? form.querySelector(activeKey) : activeKey ? fieldByKey(activeKey) : null;
+  if (target && form.contains(active) === false) {
+    target.focus({ preventScroll: true });
+    if (caret) { try { target.setSelectionRange(...caret); } catch {} }
+  }
+  if (scroller) scroller.scrollTop = top;
 }
 
 // 精读 defaults are per-browser: they share static/reader.js's localStorage entry, and the reader picks up
@@ -60,7 +106,7 @@ const BILLING_ENGINES = [
 // Remembered layout state (pane widths, open tabs, sort orders…) — cleared by 重置界面布局.
 const LAYOUT_PREFIXES = ["research-toolkit.inspector.", "research-toolkit.library.", "research-toolkit.settings.", "research-toolkit.prompts.", "paper-lens.selection-more-open", "health.trend-scale", "paperRevision.commentDialogPos"];
 // Exportable browser preferences: layout state plus reader defaults and cost acknowledgements.
-const EXPORT_PREFIXES = [...LAYOUT_PREFIXES, "research-toolkit.billing-ack", "paper-lens.selection-settings.v1", "research-toolkit.toolbox.", "research-toolkit.activity.desktop"];
+const EXPORT_PREFIXES = [...LAYOUT_PREFIXES, "research-toolkit.billing-ack", "paper-lens.selection-settings.v1", "research-toolkit.toolbox.", "research-toolkit.activity.desktop", "research-theme", "research-lang", "research-font", "research-ink", "research-content-ink"];
 const storedKeys = prefixes => {
   const keys = [];
   try { for (let i = 0; i < localStorage.length; i += 1) { const key = localStorage.key(i); if (prefixes.some(prefix => key.startsWith(prefix))) keys.push(key); } } catch {}
@@ -92,6 +138,141 @@ function renderGeneralSettingsPanel() {
           <p class="hint">检查器的宽度和打开的标签、面板开关、文献库的来源与排序、上次打开的设置面板等会记在浏览器里。当前记住了 <strong>${storedKeys(LAYOUT_PREFIXES).length}</strong> 项。重置不影响精读默认值、费用确认和任何账号配置。</p>
         </div>
       </section>`;
+}
+
+// ---- 外观与语言: language, colour theme, interface font and text colour. Saved per browser; every open page
+// (and the page behind the settings window) follows at once — see static/theme.js and static/i18n.js.
+const FONT_CHOICES = [
+  ["default", "默认", "各模块原有字体"],
+  ["system", "系统", "跟随操作系统界面字体"],
+  ["misans", "MiSans", "小米开源字体，未安装时从 jsDelivr 加载"],
+  ["anthropic", "Anthropic Sans", "需要本机已安装该字体"],
+  ["custom", "自定义", "输入本机已安装的字体名称"],
+];
+const INK_CHOICES = [["default", "主题默认", ""], ["black", "纯黑", "#000000"], ["graphite", "石墨", "#1f2328"], ["custom", "自定义", ""]];
+const CONTENT_INK_CHOICES = [["default", "跟随文字颜色", ""], ["black", "纯黑", "#000000"], ["graphite", "石墨", "#1f2328"], ["custom", "自定义", ""]];
+
+// One row of colour choices (文字颜色 / 正文文字颜色); `key` is the appearance field it writes.
+function inkChoices(key, label, choices, value) {
+  const mode = /^#/.test(value) ? "custom" : value;
+  const custom = /^#/.test(value) ? value : "#2f5fb3";
+  return `
+          <div class="appearance-inks" role="radiogroup" aria-label="${label}" data-ink-key="${key}">${choices.map(([id, name, color]) => `
+            <label class="appearance-ink ${id === mode ? "active" : ""}" data-ink="${id}"><input type="radio" name="appearance-${key}" value="${id}" ${id === mode ? "checked" : ""}><i aria-hidden="true" style="${color ? `background:${color}` : id === "custom" ? `background:${custom}` : ""}"></i><span>${name}</span>${id === "custom" ? `<code data-ink-hex>${mode === "custom" ? custom : ""}</code>` : ""}</label>`).join("")}
+            <input type="color" data-ink-color value="${escapeHtml(custom)}" aria-label="选择${label}" title="选择任意颜色">
+          </div>`;
+}
+const themeApi = () => window.ClientTheme;
+const i18nApi = () => window.ClientI18n;
+
+function fontNote(font, custom) {
+  const api = themeApi();
+  if (!api?.fontAvailable) return "";
+  if (font === "anthropic") return api.fontAvailable("Anthropic Sans") || api.fontAvailable("Anthropic Sans Text") ? "已在本机找到 Anthropic Sans。" : "本机未安装 Anthropic Sans，暂时显示为系统字体。安装后刷新页面即可生效。";
+  if (font === "misans") {
+    if (api.fontAvailable("MiSans VF")) return "已使用本机安装的 MiSans。";
+    const loaded = [...(document.fonts || [])].some(face => face.family.replace(/"/g, "") === "MiSans" && face.status === "loaded");
+    return loaded ? "已从 jsDelivr 加载 MiSans；离线时显示为系统字体，可安装到本机离线使用。" : "正在从 jsDelivr 加载 MiSans（需要联网）；也可以安装到本机离线使用。";
+  }
+  if (font === "custom") {
+    const first = String(custom || "").split(",")[0].trim();
+    if (!first) return "输入字体名称，多个用逗号分隔，按顺序回退。";
+    return api.fontAvailable(first) ? `已在本机找到 ${first}。` : `本机未找到 ${first}，请检查名称是否与系统里的字体名一致。`;
+  }
+  return "";
+}
+
+function renderAppearanceSettingsPanel() {
+  const look = themeApi()?.appearance?.() || { font: "default", fontCustom: "", ink: "default", contentInk: "default" };
+  const lang = i18nApi()?.current?.() || "zh";
+  const theme = themeApi()?.current?.() || "paper";
+  const languages = i18nApi()?.languages || [{ id: "zh", name: "简体中文" }, { id: "en", name: "English" }];
+  return `
+      <section class="settings-tab-panel appearance-settings" data-settings-panel="appearance" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>外观与语言</h3><span class="preset-id">保存在此浏览器</span></div>
+          <p class="hint">界面语言、颜色主题、界面字体与文字颜色。修改后所有打开的页面立即生效。</p></div>
+        </div>
+        <div class="reader-settings-group">
+          <h4>语言 · Language</h4>
+          <div class="appearance-segment" role="radiogroup" aria-label="界面语言">${languages.map(item => `
+            <label><input type="radio" name="appearanceLang" value="${item.id}" ${item.id === lang ? "checked" : ""}><span data-i18n-skip>${item.name}</span></label>`).join("")}
+          </div>
+          <p class="hint">英文界面覆盖导航、设置、改稿与精读的菜单和按钮；论文正文、译文、批注与笔记保持原样。少数提示可能仍显示中文。</p>
+        </div>
+        <div class="reader-settings-group">
+          <h4>颜色主题</h4>
+          <div class="appearance-themes" role="radiogroup" aria-label="颜色主题">${(themeApi()?.themes || []).map(item => `
+            <button type="button" role="radio" class="appearance-theme ${item.id === theme ? "active" : ""}" aria-checked="${item.id === theme}" data-appearance-theme="${item.id}"><i aria-hidden="true" style="background:linear-gradient(90deg,${item.bg} 0 58%,${item.accent} 58%)"></i><span>${escapeHtml(item.name)}</span></button>`).join("")}
+          </div>
+          <p class="hint">也可以从左侧导航底部的“主题”用滚轮快速预览。</p>
+        </div>
+        <div class="reader-settings-group">
+          <h4>界面字体</h4>
+          <div class="appearance-fonts" role="radiogroup" aria-label="界面字体">${FONT_CHOICES.map(([id, label, note]) => `
+            <label class="appearance-font ${id === look.font ? "active" : ""}"><input type="radio" name="appearanceFont" value="${id}" ${id === look.font ? "checked" : ""}>
+              <strong class="appearance-font-${id}">${label}</strong><small>${note}</small></label>`).join("")}
+          </div>
+          <label class="appearance-custom-font ${look.font === "custom" ? "" : "hidden"}"><span>字体名称</span><input data-appearance-font-custom value="${escapeHtml(look.fontCustom)}" placeholder="例如 HarmonyOS Sans SC, Source Han Sans SC" autocomplete="off" spellcheck="false"></label>
+          <p class="hint" data-appearance-font-note>${escapeHtml(fontNote(look.font, look.fontCustom))}</p>
+          <p class="hint">影响菜单、按钮、设置与面板文字。精读的阅读字体在精读的“排版”选项卡里设置，改稿正文字体在改稿的“视图”选项卡里切换。</p>
+        </div>
+        <div class="reader-settings-group">
+          <h4>文字颜色</h4>${inkChoices("ink", "文字颜色", INK_CHOICES, look.ink)}
+          <p class="hint">所有界面文字：标题、菜单、按钮、标签、说明与占位提示。次要文字按同一颜色自动调浅，层次保持不变。主题默认是略带主题色调的深色。</p>
+          <p class="appearance-preview" data-i18n-skip>界面文字 Interface <span style="color:var(--t-ink-2)">次要文字</span> <span style="color:var(--t-muted)">说明文字</span> <span style="color:var(--t-faint)">占位提示</span></p>
+        </div>
+        <div class="reader-settings-group">
+          <h4>正文文字颜色</h4>${inkChoices("contentInk", "正文文字颜色", CONTENT_INK_CHOICES, look.contentInk || "default")}
+          <p class="hint">具体文本内容：精读的论文正文与 AI 回答、笔记，改稿的原文与译文，提示词编辑区和各处输入的长文本。PDF 原版页面是图片，颜色不受影响。</p>
+          <p class="appearance-preview appearance-preview-content" data-i18n-skip>示例正文 Sample text — The quick brown fox jumps over the lazy dog. 永和九年，岁在癸丑。</p>
+        </div>
+      </section>`;
+}
+
+function wireAppearanceSettings() {
+  const panel = form.querySelector('[data-settings-panel="appearance"]');
+  if (!panel) return;
+  const api = themeApi();
+  panel.querySelectorAll('input[name="appearanceLang"]').forEach(input => input.addEventListener("change", () => i18nApi()?.set(input.value)));
+  panel.querySelectorAll("[data-appearance-theme]").forEach(button => button.addEventListener("click", () => {
+    api?.apply(button.dataset.appearanceTheme);
+    panel.querySelectorAll("[data-appearance-theme]").forEach(item => { const on = item === button; item.classList.toggle("active", on); item.setAttribute("aria-checked", String(on)); });
+  }));
+  const note = panel.querySelector("[data-appearance-font-note]");
+  const customField = panel.querySelector(".appearance-custom-font");
+  const customInput = panel.querySelector("[data-appearance-font-custom]");
+  const refreshFont = () => {
+    const look = api?.appearance?.() || {};
+    panel.querySelectorAll(".appearance-font").forEach(label => label.classList.toggle("active", label.querySelector("input").checked));
+    customField.classList.toggle("hidden", look.font !== "custom");
+    note.textContent = fontNote(look.font, look.fontCustom);
+    // Web fonts arrive a moment later; check again once they have loaded.
+    document.fonts?.ready.then(() => { note.textContent = fontNote(look.font, look.fontCustom); });
+  };
+  panel.querySelectorAll('input[name="appearanceFont"]').forEach(input => input.addEventListener("change", () => { api?.setAppearance({ font: input.value }); refreshFont(); if (input.value === "custom") customInput.focus(); }));
+  customInput?.addEventListener("input", () => { api?.setAppearance({ fontCustom: customInput.value }); refreshFont(); });
+  panel.querySelectorAll("[data-ink-key]").forEach(group => {
+    const key = group.dataset.inkKey;
+    const color = group.querySelector("[data-ink-color]");
+    const hex = group.querySelector("[data-ink-hex]");
+    const customRadio = group.querySelector('input[type=radio][value="custom"]');
+    const setInk = mode => {
+      api?.setAppearance({ [key]: mode === "custom" ? color.value : mode });
+      group.querySelectorAll(".appearance-ink").forEach(label => label.classList.toggle("active", label.querySelector("input").checked));
+      if (hex) hex.textContent = mode === "custom" ? color.value : "";
+    };
+    group.querySelectorAll("input[type=radio]").forEach(input => input.addEventListener("change", () => setInk(input.value)));
+    // 自定义 opens the colour picker straight away; picking a colour (from the chip or the swatch) applies it.
+    group.querySelector('.appearance-ink[data-ink="custom"]')?.addEventListener("click", event => { if (event.target.matches("input")) return; try { color.showPicker(); } catch { color.click(); } });
+    const pick = () => {
+      customRadio.checked = true;
+      group.querySelector('.appearance-ink[data-ink="custom"] i')?.style.setProperty("background", color.value);
+      setInk("custom");
+    };
+    color.addEventListener("input", pick);
+    color.addEventListener("change", pick);
+  });
 }
 
 // The drawer embeds this page without the client shell; use the host page's activity API then.
@@ -291,7 +472,7 @@ function renderStudioSettingsPanel() {
       <section class="settings-tab-panel studio-settings" data-settings-panel="studio" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
-            <div class="llm-preset-heading"><h3>ResearchStudio · 运行环境</h3><span class="preset-id ${modules.length && ready === modules.length ? "" : "speech-unconfigured"}">${modules.length ? `${ready}/${modules.length} 可运行` : "未检测"}</span></div>
+            <div class="llm-preset-heading"><h3>ResearchStudio · 运行环境</h3><span class="preset-id ${modules.length && ready === modules.length ? "" : "speech-unconfigured"}">${pending.has("studio") ? "检查中…" : modules.length ? `${ready}/${modules.length} 可运行` : "未检测"}</span></div>
             <p class="hint">任务使用全局 Codex 默认模型与推理强度（见 Codex）。环境检查只验证基础依赖；上游服务、字体和具体论文仍可能影响生成结果。</p>
           </div>
           <button type="button" data-refresh-studio>重新检查</button>
@@ -380,7 +561,7 @@ function renderReaderSettingsPanel() {
         <div class="section-heading llm-manager-heading">
           <div>
             <div class="llm-preset-heading"><h3>精读 · 默认行为</h3><span class="preset-id">保存在此浏览器</span></div>
-            <p class="hint">不常改的默认值，改动立即生效，已打开的精读页会自动同步。字体、字号与行距请在精读工具栏的“Aa 排版”里随时调整。</p>
+            <p class="hint">不常改的默认值，改动立即生效，已打开的精读页会自动同步。字体、字号与行距请在精读功能区的“排版”选项卡里随时调整。</p>
           </div>
         </div>
         <p id="readerSettingsStatus" class="manager-message hidden" role="status"></p>
@@ -599,7 +780,8 @@ function renderThreePassLengthCard(phase, config) {
   </article>`;
 }
 
-function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
+function renderLlmManager(message = "", kind = "", messageTarget = "llm", { keepEdits = false } = {}) {
+  if (!keepEdits) dirtyFields.clear();
   if (message && kind === "ok") hooks.onSaved(messageTarget);
   const editing = state.editingLlmId ? state.llmPresets.find(item => item.id === state.editingLlmId) : null;
   const speech = state.speechConfig || {
@@ -623,7 +805,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
   const codexReady = Boolean(codex.available && codex.chatgptAuthenticated && codexModel);
   const codexRuntime = codexRuntimeText(codex.runtime);
   const paneStatus = {
-    codex: codexReady, claude: Boolean(claude.plan), llm: state.llmPresets.length > 0,
+    codex: pending.has("codex") ? undefined : codexReady, claude: pending.has("claude") ? undefined : Boolean(claude.plan), llm: state.llmPresets.length > 0,
     mathpix: Boolean(mathpix.configured), google: Boolean(google.configured), speech: Boolean(speech.configured), github: Boolean(github.configured),
   };
   const cards = state.llmPresets.map(preset => `
@@ -674,7 +856,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
       <section class="settings-tab-panel codex-manager" data-settings-panel="codex" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
-            <div class="llm-preset-heading"><h3>Codex 额度与默认设置</h3><span class="preset-id ${codexReady ? "" : "speech-unconfigured"}">${codexReady ? "已连接" : "不可用"}</span></div>
+            <div class="llm-preset-heading"><h3>Codex 额度与默认设置</h3><span class="preset-id ${codexReady ? "" : "speech-unconfigured"}">${pending.has("codex") ? "读取中…" : codexReady ? "已连接" : "不可用"}</span></div>
             <p class="hint">默认自动安装并更新项目内 Codex 稳定版；不会修改全局 Codex CLI 配置。</p>
           </div>
           <div class="codex-heading-actions">
@@ -682,7 +864,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
             <button type="button" class="test-button" data-refresh-codex>刷新账户与额度</button>
           </div>
         </div>
-        <p id="codexManagerStatus" class="manager-message ${messageTarget === "codex" ? escapeHtml(kind) : ""} ${message && messageTarget === "codex" ? "" : (codexReady ? "ok" : "warn")}" role="status">${messageTarget === "codex" && message ? escapeHtml(message) : escapeHtml(codexReady ? `ChatGPT ${codex.planType || "账户"} 已连接 · ${codexModels.length} 个可用模型${codexRuntime ? ` · ${codexRuntime}` : ""}` : (codex.error || "Codex 尚未通过 ChatGPT 登录。"))}</p>
+        <p id="codexManagerStatus" class="manager-message ${messageTarget === "codex" ? escapeHtml(kind) : ""} ${message && messageTarget === "codex" ? "" : (codexReady ? "ok" : "warn")}" role="status">${messageTarget === "codex" && message ? escapeHtml(message) : escapeHtml(codexReady ? `ChatGPT ${codex.planType || "账户"} 已连接 · ${codexModels.length} 个可用模型${codexRuntime ? ` · ${codexRuntime}` : ""}` : (pending.has("codex") ? "正在读取 Codex 账户与额度…" : codex.error || "Codex 尚未通过 ChatGPT 登录。"))}</p>
         <div class="codex-quota-heading"><div><span class="eyebrow">USAGE</span><h4>剩余额度</h4></div><span class="hint">额度是即时快照，刷新后更新</span></div>
         <div class="codex-quota-grid">${renderCodexQuotaCards(codex.rateLimits)}</div>
         <form id="codexConfigForm" class="llm-editor-form codex-editor-form">
@@ -694,7 +876,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
       <section class="settings-tab-panel claude-manager" data-settings-panel="claude" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
-            <div class="llm-preset-heading"><h3>Claude Code CLI</h3><span class="preset-id ${claude.plan ? "" : "speech-unconfigured"}">${claude.plan ? "已连接" : "不可用"}</span></div>
+            <div class="llm-preset-heading"><h3>Claude Code CLI</h3><span class="preset-id ${claude.plan ? "" : "speech-unconfigured"}">${pending.has("claude") ? "读取中…" : claude.plan ? "已连接" : "不可用"}</span></div>
             <p class="hint">双语改稿通过本机已登录的 claude CLI 调用，消耗 Claude 套餐额度（与 claude.ai / Claude Code 共用）。调用时移除 API Key 环境变量、禁用全部工具，并在空目录中运行。</p>
           </div>
           <div class="codex-heading-actions">
@@ -702,14 +884,15 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm") {
             <button type="button" class="test-button" data-refresh-claude>刷新状态</button>
           </div>
         </div>
-        <p id="claudeManagerStatus" class="manager-message ${messageTarget === "claude" && message ? escapeHtml(kind) : (claude.plan ? "ok" : "warn")}" role="status">${messageTarget === "claude" && message ? escapeHtml(message) : escapeHtml(claude.plan ? `已登录 · ${claude.subscriptionType || "Claude"} 套餐${claude.version ? ` · CLI ${claude.version}` : ""}` : (claude.error || "未找到 Claude Code CLI。"))}</p>
-        ${claude.plan ? "" : `<p class="hint">登录方式：在终端运行 <code>claude</code>，按提示用 Claude 账号（Pro / Max）登录，然后点“刷新状态”。若 claude 不在 PATH 中，可在 .env 中设置 <code>CLAUDE_CODE_CLI</code> 为其绝对路径。</p>`}
+        <p id="claudeManagerStatus" class="manager-message ${messageTarget === "claude" && message ? escapeHtml(kind) : (claude.plan ? "ok" : "warn")}" role="status">${messageTarget === "claude" && message ? escapeHtml(message) : escapeHtml(claude.plan ? `已登录 · ${claude.subscriptionType || "Claude"} 套餐${claude.version ? ` · CLI ${claude.version}` : ""}` : (pending.has("claude") ? "正在读取 Claude Code 状态…" : claude.error || "未找到 Claude Code CLI。"))}</p>
+        ${claude.plan || pending.has("claude") ? "" : `<p class="hint">登录方式：在终端运行 <code>claude</code>，按提示用 Claude 账号（Pro / Max）登录，然后点“刷新状态”。若 claude 不在 PATH 中，可在 .env 中设置 <code>CLAUDE_CODE_CLI</code> 为其绝对路径。</p>`}
         ${claude.cliPath ? `<p class="hint">CLI 路径：<code>${escapeHtml(claude.cliPath)}</code></p>` : ""}
         <p class="hint">双语改稿各步骤使用哪个 Claude 模型与推理强度，在 <a href="#settings/workflow" data-goto-workflow>双语改稿</a> 分区中设置。</p>
       </section>
 ${renderReaderSettingsPanel()}
 ${renderStudioSettingsPanel()}
 ${renderGeneralSettingsPanel()}
+${renderAppearanceSettingsPanel()}
 ${renderDoctorSettingsPanel()}
 ${renderUsageSettingsPanel()}
 ${renderBillingSettingsPanel()}
@@ -722,7 +905,7 @@ ${renderAdvancedSettingsPanel()}
           </div>
         </div>
         <p id="workflowManagerStatus" class="manager-message ${messageTarget === "workflow" ? escapeHtml(kind) : ""} ${message && messageTarget === "workflow" ? "" : "hidden"}" role="status">${messageTarget === "workflow" ? escapeHtml(message) : ""}</p>
-        <div id="workflowEditor" class="workflow-editor"></div>
+        <div id="workflowEditor" class="workflow-editor">${pending.has("workflow") ? `<p class="hint">正在读取各引擎状态…</p>` : state.workflowError ? `<p class="manager-message bad">${escapeHtml(state.workflowError)}</p>` : ""}</div>
         <p class="hint">默认：翻译用 Google 翻译，对不齐的句子由 Sonnet · 中补译；通读、修订与核对用 Opus · 中。未登录或未配置的引擎可以先选上，提交时才会检查。</p>
         <div class="llm-editor-actions"><button type="button" data-reset-workflow>恢复推荐值</button><button type="button" class="primary" data-save-workflow>保存默认工作流</button></div>
       </section>
@@ -863,6 +1046,7 @@ ${renderAdvancedSettingsPanel()}
   form.querySelector("[data-delete-github]")?.addEventListener("click", removeGlobalGithubConfig);
   wireReaderSettings();
   wireBrowserSettings();
+  wireAppearanceSettings();
   wireDoctorAndUsage();
   form.querySelector("[data-refresh-studio]")?.addEventListener("click", async event => {
     event.currentTarget.disabled = true;

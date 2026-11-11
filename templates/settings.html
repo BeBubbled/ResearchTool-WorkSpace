@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>全局设置 · 科研工具箱</title>
-  <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/styles.css?v=20261108-toolbox">
-  <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=2">
-  <link rel="stylesheet" href="/static/settings_page.css?v=7">
+  {% include "_theme_head.html" %}
+  <link rel="stylesheet" href="/static/styles.css?v=20261109-uiink2">
+  <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=20261109-uiink">
+  <link rel="stylesheet" href="/static/settings_page.css?v=20261109-uiink">
 </head>
 <body class="settings-page{% if embed %} settings-embedded{% endif %}">
   {% if not embed %}{% set client_active = "settings" %}{% include "_client_nav.html" %}{% endif %}
@@ -17,7 +17,7 @@
   </main>
   <script src="/static/engine_picker.js?v=2"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/settings.js?v=7"></script>
+  <script src="/static/settings.js?v=10"></script>
   <script>
     (() => {
       const embedded = {{ "true" if embed else "false" }};
@@ -29,6 +29,10 @@
         onTabChange: tab => history.replaceState(null, "", `${location.pathname}${location.search}#${tab}`),
         onSaved: () => notifyParent("research-settings-saved"),
         onChanged: () => notifyParent("research-settings-saved"),
+      });
+      // In the settings window, Esc closes it (the search box and pickers handle their own Esc first).
+      if (embedded) document.addEventListener("keydown", event => {
+        if (event.key === "Escape" && !event.defaultPrevented && !document.querySelector(".theme-picker:not([hidden])")) notifyParent("research-settings-close");
       });
       window.addEventListener("hashchange", () => window.GlobalSettings.activate(tabFromHash()));
       window.addEventListener("message", event => {

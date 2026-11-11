@@ -4,18 +4,160 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Paper Lens · 科研论文阅读器</title>
-  <meta name="theme-color" content="#182a5b">
-  <link rel="stylesheet" href="/static/reader.css?v=20261108-toolbar">
+  {% include "_theme_head.html" %}
+  <link rel="stylesheet" href="/static/reader.css?v=20261109-uiink">
+  <link rel="stylesheet" href="/static/ribbon.css?v=4">
   <script>
     window.MathJax = { tex: { inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']] }, svg: { fontCache: 'global' } };
   </script>
   <script defer src="/static/vendor/mathjax/es5/tex-mml-chtml.js"></script>
 </head>
 <body{% if embed %} class="reader-embedded"{% endif %}>
-  {% if embed %}<link rel="stylesheet" href="/static/client_shell.css?v=8"><script src="/static/engine_picker.js?v=2"></script>
+  {% if embed %}<link rel="stylesheet" href="/static/client_shell.css?v=12"><script src="/static/engine_picker.js?v=2"></script>
   <style>.reader-embedded .module-bar, .reader-embedded #newPaper { display:none !important; }</style>
   {% else %}{% set client_active = "reader" %}{% include "_client_nav.html" %}{% endif %}
   <header class="module-bar"><h1 class="module-bar-title">精读</h1><span class="module-bar-sub">PDF / Markdown 阅读 · OCR · 整篇翻译 · 划词解读 · Three-Pass</span><div class="module-bar-actions"><a class="module-bar-link" href="/settings#reader">精读设置</a><a class="module-bar-link" href="/settings#mathpix">OCR 与 AI</a></div></header>
+
+    <section class="ribbon reader-ribbon" data-ribbon="reader" aria-label="精读功能区">
+      <div class="ribbon-tabs">
+        <button type="button" class="ribbon-tab" data-ribbon-tab="home" data-command="功能区：开始" data-command-group="功能区">开始</button>
+        <button type="button" class="ribbon-tab" data-ribbon-tab="view" data-command="功能区：视图" data-command-group="功能区">视图</button>
+        <button type="button" class="ribbon-tab" data-ribbon-tab="layout" data-command="排版：目录、字体、字号与间距" data-command-group="功能区">排版</button>
+        <button type="button" class="ribbon-tab" data-ribbon-tab="speech" data-ribbon-follow="#speechMenuButton" data-command="功能区：朗读" data-command-group="功能区">朗读</button>
+        <span class="ribbon-tabs-extra toolbar-copy">
+          <strong id="paperDocumentTitle" class="paper-document-title">论文</strong>
+          <span id="readingStatus" class="status-pill">已就绪</span>
+          <span id="readerInteractionHint">划选内容以获得针对性解读</span>
+        </span>
+        <button type="button" class="ribbon-collapse" aria-label="折叠功能区" title="折叠功能区 (Ctrl+F1)"></button>
+      </div>
+      <div class="ribbon-panel" data-ribbon-panel="home" data-popover>
+        <div class="ribbon-group" role="group" aria-label="文档">
+          <div class="ribbon-group-body">
+            <button id="newPaper" data-command="导入另一篇论文" class="rb-btn rb-large rbi-upload" type="button" aria-label="导入另一篇论文" title="导入另一篇论文">导入另一篇</button>
+          </div>
+          <div class="ribbon-group-label">文档</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="阅读视图">
+          <div id="viewSwitch" class="ribbon-group-body" hidden>
+            <button type="button" data-view="original" data-command="视图：原文" data-shortcut="1" class="rb-btn rb-large rbi-doc active" title="显示原文 (1)"><span class="toolbar-full-label">原文</span></button>
+            <button type="button" data-view="translated" data-command="视图：译文" data-shortcut="2" class="rb-btn rb-large rbi-translate" title="显示译文 (2)"><span class="toolbar-full-label">译文</span></button>
+            <button id="liveTranslationViewButton" data-command="视图：点段翻译" data-shortcut="3" type="button" data-view="liveTranslation" class="rb-btn rb-large rbi-pointer" title="点击段落即时翻译 (3)"><span class="toolbar-full-label">点段翻译</span></button>
+            <button id="interleavedViewButton" data-command="视图：段落对照" data-shortcut="4" type="button" data-view="interleaved" class="rb-btn rb-large rbi-rows" title="原文与译文逐段交替 (4)"><span class="toolbar-full-label">段落对照</span></button>
+            <button id="sideBySideViewButton" data-command="视图：左右对照" data-shortcut="5" type="button" data-view="sideBySide" class="rb-btn rb-large rbi-columns" title="原文与译文左右并排 (5)"><span class="toolbar-full-label">左右对照</span></button>
+          </div>
+          <div class="ribbon-group-label">阅读视图</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="窗格">
+          <div class="ribbon-group-body">
+            <button id="outlineToggle" data-command="显示 / 隐藏章节栏" data-shortcut="mod+\" class="rb-btn rb-large rbi-panel-left" type="button" aria-label="隐藏章节栏" title="显示 / 隐藏左侧章节栏（会记住）" aria-controls="outlinePanel" aria-expanded="true">章节栏</button>
+            <button id="assistantToggle" data-command="显示 / 隐藏解读栏" data-shortcut="mod+alt+\" class="rb-btn rb-large rbi-panel-right" type="button" aria-label="隐藏解读栏" title="显示 / 隐藏右侧划词解读栏（会记住）" aria-controls="assistantPanel" aria-expanded="true">解读栏</button>
+          </div>
+          <div class="ribbon-group-label">窗格</div>
+        </div>
+      </div>
+      <div class="ribbon-panel" data-ribbon-panel="view" data-popover hidden>
+        <div class="ribbon-group" role="group" aria-label="缩放">
+          <div id="zoomControls" class="ribbon-group-body zoom-controls hidden">
+            <button id="zoomOut" data-command="缩小 PDF" type="button" class="rb-btn rb-large rbi-zoom-out" aria-label="缩小" title="缩小 PDF">缩小</button>
+            <span id="zoomLevel" class="rb-value rb-zoom-level">100%</span>
+            <button id="zoomIn" data-command="放大 PDF" type="button" class="rb-btn rb-large rbi-zoom-in" aria-label="放大" title="放大 PDF">放大</button>
+          </div>
+          <div class="ribbon-group-label">PDF 缩放</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="窗格">
+          <div class="ribbon-group-body">
+            <button type="button" class="rb-btn rb-large rbi-panel-left" data-ribbon-click="#outlineToggle" title="显示 / 隐藏左侧章节栏">章节栏</button>
+            <button type="button" class="rb-btn rb-large rbi-panel-right" data-ribbon-click="#assistantToggle" title="显示 / 隐藏右侧划词解读栏">解读栏</button>
+          </div>
+          <div class="ribbon-group-label">窗格</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="设置">
+          <div class="ribbon-group-body">
+            <a class="rb-btn rb-large rbi-font-ui" href="/settings#appearance" title="界面语言、字体、文字颜色与颜色主题">外观与语言</a>
+            <a class="rb-btn rb-large rbi-gear" href="/settings#reader" title="页面边距、划词默认动作与各动作模型">精读设置</a>
+            <a class="rb-btn rb-large rbi-cpu" href="/settings#mathpix" title="Mathpix OCR 与 AI 引擎">OCR 与 AI</a>
+          </div>
+          <div class="ribbon-group-label">设置</div>
+        </div>
+      </div>
+      <div class="ribbon-panel" data-ribbon-panel="layout" data-popover hidden>
+        <div class="ribbon-group" role="group" aria-label="正文">
+          <div class="ribbon-group-body rb-grid-2">
+            <label class="rb-field"><span>字号</span><input id="readerFontSize" type="number" min="10" max="48" step="0.5" inputmode="decimal"><small>px</small></label>
+            <label class="rb-field"><span>行距</span><input id="readerLineHeight" type="number" min="1" max="3" step="0.05" inputmode="decimal"><small>倍</small></label>
+            <label class="rb-field"><span>字距</span><input id="readerLetterSpacing" type="number" min="-3" max="12" step="0.1" inputmode="decimal"><small>px</small></label>
+            <label class="rb-field"><span>段距</span><input id="readerParagraphSpacing" type="number" min="0" max="96" step="1" inputmode="numeric"><small>px</small></label>
+          </div>
+          <div class="ribbon-group-label">正文</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="阅读字体">
+          <div class="ribbon-group-body rb-font-fields">
+            <label class="rb-field"><span>中文</span><input id="chineseFont" list="chineseFontOptions" placeholder="Songti SC, SimSun"></label>
+            <label class="rb-field"><span>英文</span><input id="englishFont" list="englishFontOptions" placeholder="Georgia, Times New Roman"></label>
+            <label class="rb-field rb-field-span"><span>数学</span><input id="mathFont" list="mathFontOptions" placeholder="STIX Two Math, Cambria Math"></label>
+            <datalist id="chineseFontOptions"><option value="Songti SC, SimSun"><option value="Microsoft YaHei, PingFang SC"><option value="MiSans"><option value="KaiTi, STKaiti"><option value="Noto Serif CJK SC"><option value="Noto Sans CJK SC"></datalist>
+            <datalist id="englishFontOptions"><option value="Georgia, Times New Roman"><option value="Times New Roman"><option value="Arial, Helvetica"><option value="Inter"><option value="Anthropic Sans"><option value="Palatino Linotype"></datalist>
+            <datalist id="mathFontOptions"><option value="STIX Two Math, Cambria Math"><option value="Cambria Math"><option value="Latin Modern Math"><option value="STIXGeneral"><option value="Times New Roman"></datalist>
+          </div>
+          <div class="ribbon-group-label">阅读字体</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="布局">
+          <div class="ribbon-group-body">
+            <div class="ribbon-stack">
+              <label class="rb-check" title="宽度充足时显示在左侧；窗口变窄时自动收起"><input id="showTableOfContents" type="checkbox" checked>显示文档目录</label>
+              <div class="ribbon-row"><button id="resetReadingLayout" type="button" class="rb-btn rbi-undo" title="字号与间距恢复默认">正文</button><button id="resetTypography" type="button" class="rb-btn rbi-undo" title="阅读字体恢复默认">字体</button></div>
+            </div>
+          </div>
+          <div class="ribbon-group-label">布局 · 恢复默认</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="更多">
+          <div class="ribbon-group-body">
+            <a class="rb-btn rb-large rbi-gear" href="/settings#reader" title="页面边距、划词默认动作与各动作模型">更多排版</a>
+            <p id="selectionSettingsStatus" class="rb-status" role="status"></p>
+          </div>
+          <div class="ribbon-group-label">更多</div>
+        </div>
+      </div>
+      <div class="ribbon-panel" data-ribbon-panel="speech" data-popover hidden>
+        <div class="ribbon-group" role="group" aria-label="朗读">
+          <div class="ribbon-group-body">
+            <button id="startSpeech" data-command="开关点击朗读" class="rb-btn rb-large rbi-speaker speech-start-button hidden" type="button" aria-label="关闭点击段落朗读" title="关闭点击段落朗读" aria-pressed="true"><span data-speech-label>点击朗读：开</span></button>
+            <button id="stopSpeech" data-command="停止朗读" class="rb-btn rb-large rbi-stop speech-stop-button hidden" type="button" aria-label="停止朗读" title="停止朗读" disabled>停止朗读</button>
+          </div>
+          <div class="ribbon-group-label">朗读</div>
+        </div>
+        <div class="ribbon-group" role="group" aria-label="语速">
+          <div class="ribbon-group-body">
+            <label id="speechRateControl" class="rb-field speech-rate-control hidden"><span>语速</span>
+              <select id="speechPlaybackRate" aria-label="Azure 朗读语速">
+                <option value="0.5">0.5×</option>
+                <option value="0.75">0.75×</option>
+                <option value="1">1.0×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+                <option value="1.75">1.75×</option>
+                <option value="2">2.0×</option>
+              </select>
+            </label>
+          </div>
+          <div class="ribbon-group-label">语速</div>
+        </div>
+      </div>
+    </section>
+    <div class="ribbon-stubs" aria-hidden="true">
+      <button id="viewMenuButton" type="button" tabindex="-1"><span id="viewMenuLabel">原文</span></button><div id="viewMenuList" hidden></div>
+      <button id="speechMenuButton" type="button" class="hidden" tabindex="-1"><span data-speech-menu-icon></span></button><div id="speechPopover" hidden></div>
+      <button id="selectionSettingsButton" type="button" tabindex="-1" aria-expanded="false"></button>
+      <div class="reader-layout-controls">
+        <button type="button" data-paper-width-delta="100" tabindex="-1">＋</button>
+        <input id="paperWidthSlider" type="range" min="470" max="2500" step="10" value="470" tabindex="-1">
+        <output id="paperWidthValue" for="paperWidthSlider">自动</output>
+        <button type="button" data-reader-axis-delta="-40" tabindex="-1">←</button>
+        <input id="readerAxisSlider" type="range" min="-1200" max="1200" step="10" value="0" tabindex="-1">
+        <output id="readerAxisValue" for="readerAxisSlider">0px</output>
+      </div>
+    </div>
 
   <main>
     <section id="uploadCard" class="upload-card">
@@ -70,8 +212,8 @@
     <section id="readerShell" class="reader-shell hidden">
       <aside id="outlinePanel" class="outline-panel">
         <div class="outline-heading">
-          <p class="eyebrow">文档结构</p>
-          <button id="closeOutline" class="panel-close-button" type="button" aria-label="关闭文档目录">×</button>
+          <p class="eyebrow">章节</p>
+          <button id="closeOutline" class="quiet pane-hide" type="button" title="隐藏章节栏（可用「开始 › 章节栏」恢复）" aria-label="隐藏章节栏">‹</button>
         </div>
         <h2 id="documentTitle">论文</h2>
         <nav id="outline" aria-label="论文目录"></nav>
@@ -79,118 +221,7 @@
 
       <article class="paper-panel">
         <button id="paperResizeHandle" class="paper-resize-handle hidden" type="button" role="separator" aria-label="正文宽度由窗口自动调整" aria-orientation="vertical" aria-valuemin="470" aria-valuemax="2500" aria-valuenow="470"></button>
-        <div class="paper-toolbar">
-          <div class="toolbar-copy">
-            <strong id="paperDocumentTitle" class="paper-document-title">论文</strong>
-            <span id="readingStatus" class="status-pill">已就绪</span>
-            <span id="readerInteractionHint">划选内容以获得针对性解读</span>
-          </div>
-          <div class="toolbar-actions">
-            <button id="outlineToggle" data-command="显示 / 隐藏目录" data-shortcut="mod+\" class="toolbar-text-button panel-toggle-button" type="button" aria-label="打开文档目录" title="打开文档目录" aria-controls="outlinePanel" aria-expanded="true"><span class="toolbar-icon" aria-hidden="true">☰</span><span class="toolbar-label">目录</span></button>
-            <button id="newPaper" data-command="导入另一篇论文" class="toolbar-text-button" type="button" aria-label="导入另一篇论文" title="导入另一篇论文"><span class="toolbar-icon" aria-hidden="true">←</span><span class="toolbar-label">导入另一篇</span></button>
-            <div class="view-switch toolbar-view-switch view-menu" id="viewSwitch" hidden>
-              <button id="viewMenuButton" type="button" class="toolbar-text-button view-menu-button" aria-haspopup="true" aria-expanded="false" aria-controls="viewMenuList" title="切换阅读视图（1–5）"><span class="toolbar-label">视图：</span><span id="viewMenuLabel">原文</span> ▾</button>
-              <div id="viewMenuList" class="toolbar-popover view-menu-list" role="group" aria-label="阅读视图" data-popover hidden>
-                <button type="button" data-view="original" data-command="视图：原文" data-shortcut="1" class="active" aria-label="显示原文" title="显示原文"><span class="toolbar-full-label">原文</span><span class="toolbar-compact-label" aria-hidden="true">原</span></button>
-                <button type="button" data-view="translated" data-command="视图：译文" data-shortcut="2" aria-label="显示译文" title="显示译文"><span class="toolbar-full-label">译文</span><span class="toolbar-compact-label" aria-hidden="true">译</span></button>
-                <button id="liveTranslationViewButton" data-command="视图：点段翻译" data-shortcut="3" type="button" data-view="liveTranslation" aria-label="点段翻译" title="点段翻译"><span class="toolbar-full-label">点段翻译</span><span class="toolbar-compact-label" aria-hidden="true">翻</span></button>
-                <button id="interleavedViewButton" data-command="视图：段落对照" data-shortcut="4" type="button" data-view="interleaved" aria-label="段落对照" title="段落对照"><span class="toolbar-full-label">段落对照</span><span class="toolbar-compact-label" aria-hidden="true">段</span></button>
-                <button id="sideBySideViewButton" data-command="视图：左右对照" data-shortcut="5" type="button" data-view="sideBySide" aria-label="左右对照" title="左右对照"><span class="toolbar-full-label">左右对照</span><span class="toolbar-compact-label" aria-hidden="true">对</span></button>
-              </div>
-            </div>
-            <div id="zoomControls" class="zoom-controls hidden"><button id="zoomOut" data-command="缩小 PDF" type="button" aria-label="缩小" title="缩小 PDF">−</button><span id="zoomLevel">100%</span><button id="zoomIn" data-command="放大 PDF" type="button" aria-label="放大" title="放大 PDF">＋</button></div>
-<div class="speech-menu">
-              <button id="speechMenuButton" type="button" class="toolbar-text-button speech-menu-button hidden" aria-haspopup="true" aria-expanded="false" aria-controls="speechPopover" title="朗读：点击段落朗读、语速与停止"><span class="toolbar-icon" data-speech-menu-icon aria-hidden="true">🔊</span><span class="toolbar-label">朗读 ▾</span></button>
-              <div id="speechPopover" class="toolbar-popover speech-popover" role="group" aria-label="朗读" data-popover hidden>
-            <label id="speechRateControl" class="speech-rate-control hidden"><span class="toolbar-label">语速</span>
-              <select id="speechPlaybackRate" aria-label="Azure 朗读语速">
-                <option value="0.5">0.5×</option>
-                <option value="0.75">0.75×</option>
-                <option value="1">1.0×</option>
-                <option value="1.25">1.25×</option>
-                <option value="1.5">1.5×</option>
-                <option value="1.75">1.75×</option>
-                <option value="2">2.0×</option>
-              </select>
-            </label>
-            <button id="startSpeech" data-command="开关点击朗读" class="speech-start-button hidden" type="button" aria-label="关闭点击段落朗读" title="关闭点击段落朗读" aria-pressed="true"><span class="toolbar-icon" data-speech-icon aria-hidden="true">🔊</span><span class="toolbar-label" data-speech-label>点击朗读：开</span></button>
-            <button id="stopSpeech" data-command="停止朗读" class="speech-stop-button hidden" type="button" aria-label="停止朗读" title="停止朗读" disabled><span class="toolbar-icon" aria-hidden="true">■</span><span class="toolbar-label">停止朗读</span></button>
-              </div>
-            </div>
-            <button id="selectionSettingsButton" data-command="排版：目录、字体、字号与间距" class="settings-button" type="button" aria-label="打开排版设置" title="排版：目录、字体、字号与间距" aria-expanded="false" aria-controls="selectionSettingsPanel">
-              <span class="toolbar-icon toolbar-icon-text" aria-hidden="true">Aa</span><span class="toolbar-label">排版</span>
-            </button>
-            <button id="assistantToggle" class="settings-button assistant-toggle-button" type="button" aria-label="打开划词解读" title="打开划词解读" aria-controls="assistantPanel" aria-expanded="false"><span class="toolbar-icon" aria-hidden="true">✦</span><span class="toolbar-label">解读</span></button>
-          </div>
-        </div>
-        <section id="selectionSettingsPanel" class="selection-settings hidden" aria-label="排版">
-          <div class="settings-heading">
-            <div><p class="eyebrow">TYPOGRAPHY</p><h2>排版</h2></div>
-            <button id="closeSelectionSettings" class="icon-button" type="button" aria-label="关闭排版">×</button>
-          </div>
-          <section class="layout-settings" aria-labelledby="readerLayoutTitle">
-            <label class="switch-row">
-              <span>
-                <strong id="readerLayoutTitle">显示文档目录</strong>
-                <small>宽度充足时显示在左侧；窗口变窄时自动收起，可从正文工具栏临时打开。</small>
-              </span>
-              <input id="showTableOfContents" type="checkbox" role="switch" checked>
-            </label>
-            <p class="adaptive-layout-note">正文宽度与 PDF 页面缩放会跟随浏览器实时调整，PDF 始终优先占据可用空间。</p>
-            <div class="reader-layout-controls hidden" aria-hidden="true">
-              <button type="button" data-paper-width-delta="100" tabindex="-1">＋</button>
-              <input id="paperWidthSlider" type="range" min="470" max="2500" step="10" value="470" tabindex="-1">
-              <output id="paperWidthValue" for="paperWidthSlider">自动</output>
-              <button type="button" data-reader-axis-delta="-40" tabindex="-1">←</button>
-              <input id="readerAxisSlider" type="range" min="-1200" max="1200" step="10" value="0" tabindex="-1">
-              <output id="readerAxisValue" for="readerAxisSlider">0px</output>
-            </div>
-          </section>
-          <section class="reading-layout-settings" aria-labelledby="readingLayoutTitle">
-            <div class="settings-section-heading">
-              <div><h3 id="readingLayoutTitle">正文排版</h3><p>调整可重排文档的字号与文字、行、段落之间的距离。</p></div>
-              <button id="resetReadingLayout" type="button">恢复默认</button>
-            </div>
-            <div class="reading-layout-grid">
-              <label class="numeric-settings-field">字号
-                <span><input id="readerFontSize" type="number" min="10" max="48" step="0.5" inputmode="decimal"><small>px</small></span>
-              </label>
-              <label class="numeric-settings-field">字距
-                <span><input id="readerLetterSpacing" type="number" min="-3" max="12" step="0.1" inputmode="decimal"><small>px</small></span>
-              </label>
-              <label class="numeric-settings-field">行距
-                <span><input id="readerLineHeight" type="number" min="1" max="3" step="0.05" inputmode="decimal"><small>倍</small></span>
-              </label>
-              <label class="numeric-settings-field">段距
-                <span><input id="readerParagraphSpacing" type="number" min="0" max="96" step="1" inputmode="numeric"><small>px</small></span>
-              </label>
-            </div>
-            <p class="typography-hint">Markdown、HTML、OCR 与译文按这里排版；原生 PDF 保留文件内嵌排版。</p>
-          </section>
-          <section class="typography-settings" aria-labelledby="typographyTitle">
-            <div class="settings-section-heading">
-              <div><h3 id="typographyTitle">阅读字体</h3><p>分别设置中英文正文与数学文本；可输入本机安装的字体名称。</p></div>
-              <button id="resetTypography" type="button">恢复默认</button>
-            </div>
-            <div class="typography-grid">
-              <label class="settings-field">中文字体
-                <input id="chineseFont" list="chineseFontOptions" placeholder="Songti SC, SimSun">
-              </label>
-              <label class="settings-field">英文字体
-                <input id="englishFont" list="englishFontOptions" placeholder="Georgia, Times New Roman">
-              </label>
-              <label class="settings-field">数学字体
-                <input id="mathFont" list="mathFontOptions" placeholder="STIX Two Math, Cambria Math">
-              </label>
-            </div>
-            <p class="typography-hint">适用于 Markdown、OCR/译文、划词回答和笔记。原生 PDF 画面继续使用 PDF 内嵌字体。</p>
-            <datalist id="chineseFontOptions"><option value="Songti SC, SimSun"><option value="Microsoft YaHei, PingFang SC"><option value="KaiTi, STKaiti"><option value="Noto Serif CJK SC"><option value="Noto Sans CJK SC"></datalist>
-            <datalist id="englishFontOptions"><option value="Georgia, Times New Roman"><option value="Times New Roman"><option value="Arial, Helvetica"><option value="Inter"><option value="Palatino Linotype"></datalist>
-            <datalist id="mathFontOptions"><option value="STIX Two Math, Cambria Math"><option value="Cambria Math"><option value="Latin Modern Math"><option value="STIXGeneral"><option value="Times New Roman"></datalist>
-          </section>
-          <p id="selectionSettingsStatus" class="settings-status" role="status"></p>
-          <a class="typography-more-link" href="/settings#reader">页面边距、划词默认动作与各动作模型 → 精读设置</a>
-        </section>
+        <section id="selectionSettingsPanel" class="selection-settings hidden" aria-label="排版" hidden><button id="closeSelectionSettings" type="button" hidden></button></section>
         <div id="paperContent" class="paper-content"></div>
         <div id="selectionMenu" class="selection-menu hidden">
           <p id="selectionPreview"></p>
@@ -237,7 +268,7 @@
             <button type="button" data-inspector-tab="three-pass" id="inspectorTab-three-pass" data-command="检查器：Three-Pass" data-shortcut="alt+3" aria-controls="inspectorPanel-three-pass">Three-Pass</button>
             <button type="button" data-inspector-tab="info" id="inspectorTab-info" data-command="检查器：信息" data-shortcut="alt+4" aria-controls="inspectorPanel-info">信息</button>
           </div>
-          <button id="closeAssistant" class="panel-close-button" type="button" aria-label="关闭检查器">×</button>
+          <button id="closeAssistant" class="quiet pane-hide" type="button" title="隐藏解读栏（可用「开始 › 解读栏」恢复）" aria-label="隐藏解读栏">›</button>
         </div>
         <section id="inspectorPanel-assistant" class="inspector-section" data-inspector-panel="assistant" role="tabpanel" aria-labelledby="inspectorTab-assistant">
           <p class="assistant-intro">划选原文或译文，可解释公式、推导步骤、检视假设或切换到实现视角。</p>
@@ -353,6 +384,7 @@
   </main>
   <script src="/static/prompt_handoff.js?v=1"></script>
   <script src="/static/inspector.js?v=1"></script>
-  <script src="/static/reader.js?v=20261108-notes3"></script>
+  <script src="/static/ribbon.js?v=1"></script>
+  <script src="/static/reader.js?v=20261109-panes"></script>
 </body>
 </html>
