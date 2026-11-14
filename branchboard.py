@@ -41,6 +41,14 @@ HIGHLIGHT_HEADER = "[针对上一条回答中的这段内容提问]"
 SUMMARY_MIN_CHARS = 360
 TREE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 SESSION_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+DEFAULT_TITLE = "新聊天"
+LEGACY_DEFAULT_TITLE = "未命名对话树"
+TITLE_RENAME_AT = 3  # 提出第几个问题时，用前几个问题重新命名一次
+TITLE_SYSTEM = (
+    "你为一段对话起标题。用户消息里是这段对话到目前为止提出的问题。"
+    "只输出标题本身：一行，概括对话主题，中文不超过 16 个字（英文不超过 8 个词），"
+    "语言与问题一致；不要引号、书名号、句末标点，也不要任何解释。"
+)
 SUMMARY_SYSTEM = (
     "你负责为一段对话回答写卡片摘要。把回答压缩成 3–6 条要点，每条不超过 40 个字，"
     "使用与回答相同的语言，保留关键结论、数字和专有名词。只输出一个 JSON 字符串数组，不要输出其他内容。"
@@ -179,6 +187,41 @@ def parse_summary(text: str) -> list[str]:
     return [line for line in lines if line][:6]
 
 
+def fallback_title(question: str) -> str:
+    """模型标题生成之前（或不可用时）先用第一个问题的首行。"""
+    lines = [line.strip() for line in (question or "").splitlines() if line.strip()]
+    return lines[0][:60] if lines else DEFAULT_TITLE
+
+
+def clean_title(text: str) -> str:
+    """模型输出 → 标题：取第一行，去掉引号、Markdown 标记和句末标点。"""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    first = re.sub(r"<[^>]{0,20}>", "", lines[0])  # 模型偶尔带出 </br> 之类的标签
+    title = re.sub(r"^(标题|title)\s*[:：]\s*", "", first.lstrip("#*- ").strip(), flags=re.I)
+    quotes = "\"'“”‘’「」『』《》`* "
+    title = title.strip(quotes).rstrip("。.!！?？;；,，").strip(quotes)  # 「标题」。 和 「标题。」 都要处理
+    return title[:60]
+
+
+def question_count(tree: dict[str, Any]) -> int:
+    return sum(len(questions_of(tree["turns"][tid])) for tid in tree["order"] if tid in tree["turns"])
+
+
+def question_texts(tree: dict[str, Any], limit: int) -> list[str]:
+    """按提问顺序取前 limit 个问题的文字；纯划词引用（没写问题）用引用的原文代替。"""
+    out: list[str] = []
+    for tid in tree["order"]:
+        for q in questions_of(tree["turns"].get(tid) or {}):
+            text = str(q.get("text") or "").strip() or str((q.get("quote") or {}).get("text") or "").strip()
+            if text:
+                out.append(text)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def new_answer() -> dict[str, Any]:
     return {"status": "pending", "markdown": "", "summary": None, "toolEvents": [], "filesChanged": [],
             "ranCommands": False, "error": "", "statusLine": ""}
@@ -288,7 +331,7 @@ class TreeStore:
             os.replace(tmp, path)
             index = self._read_index()
             index[tree["id"]] = {"cwd": tree["cwd"], "title": tree["title"], "updatedAt": tree["updatedAt"],
-                                 "turnCount": len(tree["turns"])}
+                                 "turnCount": len(tree["turns"]), "createdAt": tree.get("createdAt", "")}
             self._write_index(index)
 
     def forget(self, tree_id: str, *, delete_file: bool) -> None:
@@ -602,8 +645,14 @@ class BranchboardService:
                  popen: Callable[..., Any] = subprocess.Popen,
                  summarize: Callable[[str], list[str]] | None = None,
                  claude_status: Callable[[], dict[str, Any]] | None = None,
-                 complete: Callable[..., str] | None = None):
+                 complete: Callable[..., str] | None = None,
+                 titler: Callable[[list[str]], str] | None = None,
+                 default_cwd: Path | str | None = None):
         self.store = TreeStore(Path(runtime_dir))
+        # 新聊天不选目录时用的工作目录；第一次用到才创建
+        self.default_cwd = Path(default_cwd) if default_cwd else Path(runtime_dir) / "chats"
+        # 自动命名：titler(前几个问题) -> 标题；没有时用第一个问题的首行
+        self.titler = titler
         self.hub = EventHub()
         self.finder, self.popen, self.summarize, self.claude_status = finder, popen, summarize, claude_status
         # 完整版的模型辅助（分类、改写修正段落）：complete(messages, model, effort) -> 文本；无工具、不落盘
@@ -622,6 +671,10 @@ class BranchboardService:
                     turn["questions"] = questions_of(turn)  # 旧数据：单个问题补成问题列表
                     if turn.get("answer", {}).get("status") in ("pending", "streaming"):  # 上次运行时被打断
                         turn["answer"]["status"] = "interrupted"
+                if "titleSource" not in tree:  # 旧数据：标题还是占位或首问首行的算自动命名，其余算用户起的
+                    root = tree["turns"].get(tree.get("rootId") or "") or {}
+                    auto = tree.get("title") in (DEFAULT_TITLE, LEGACY_DEFAULT_TITLE, fallback_title(root.get("question", "")))
+                    tree["titleSource"] = "auto" if auto else "manual"
                 self._trees[tree_id] = tree
             return tree
 
@@ -636,12 +689,16 @@ class BranchboardService:
         return self.store.list()
 
     def create_tree(self, title: str, cwd: str, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-        title = (title or "").strip()[:120] or "未命名对话树"
+        title = (title or "").strip()[:120]
         cwd = (cwd or "").strip().strip('"')
-        if not cwd or not Path(cwd).is_dir():
+        if not cwd:  # 新聊天没选目录：用默认工作目录
+            self.default_cwd.mkdir(parents=True, exist_ok=True)
+            cwd = str(self.default_cwd)
+        if not Path(cwd).is_dir():
             raise ValueError("请选择一个存在的工作目录。")
         cwd = str(Path(cwd).resolve())
-        tree = {"id": uuid.uuid4().hex, "title": title, "cwd": cwd, "rootId": None, "turns": {}, "order": [],
+        tree = {"id": uuid.uuid4().hex, "title": title or DEFAULT_TITLE, "titleSource": "manual" if title else "auto",
+                "cwd": cwd, "rootId": None, "turns": {}, "order": [],
                 "createdAt": now_iso(), "settings": clean_settings(settings or {})}
         with self._lock:
             self.store.save(tree)
@@ -651,8 +708,9 @@ class BranchboardService:
     def update_tree(self, tree_id: str, data: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             tree = self.tree(tree_id)
-            if "title" in data:
-                tree["title"] = str(data["title"] or "").strip()[:120] or tree["title"]
+            title = str(data.get("title") or "").strip()[:120]
+            if title:  # 用户亲手改的名字，之后不再自动改
+                tree["title"], tree["titleSource"] = title, "manual"
             if isinstance(data.get("settings"), dict):
                 tree["settings"] = clean_settings({**tree.get("settings", {}), **data["settings"]})
             self.store.save(tree)
@@ -702,6 +760,7 @@ class BranchboardService:
         questions = self._requested_questions(data)
         with self._lock:
             tree = self.tree(tree_id)
+            asked_before = question_count(tree)
             sources = list(dict.fromkeys(q["sourceId"] for q in questions if q["sourceId"]))
             if not sources:
                 if tree["rootId"]:
@@ -748,12 +807,34 @@ class BranchboardService:
             tree["order"].append(turn["id"])
             if kind == "root":
                 tree["rootId"] = turn["id"]
-                if tree["title"] == "未命名对话树":
-                    tree["title"] = turn["question"].splitlines()[0][:60]
+            # 自动命名：提出第一个问题后命名，提出第 TITLE_RENAME_AT 个问题时按前几个问题更新一次
+            asked = asked_before + len(questions)
+            retitle = tree.get("titleSource") == "auto" and (asked_before == 0 or asked_before < TITLE_RENAME_AT <= asked)
+            if retitle and asked_before == 0:
+                tree["title"] = fallback_title(turn["question"])  # 模型标题回来之前先顶上
+                self.hub.publish(tree_id, "tree", {"title": tree["title"], "settings": tree["settings"]})
             self.store.save(tree)
             self.hub.publish(tree_id, "turn.created", public_turn(turn))
             self._start(tree, turn)
+            if retitle and self.titler:
+                threading.Thread(target=self._retitle, args=(tree, question_texts(tree, TITLE_RENAME_AT)),
+                                 name=f"branchboard-title-{tree_id[:8]}", daemon=True).start()
         return public_turn(turn)
+
+    def _retitle(self, tree: dict[str, Any], questions: list[str]) -> None:
+        try:
+            title = clean_title(self.titler(questions))
+        except Exception:  # noqa: BLE001 - 命名失败就保留现有标题
+            return
+        if not title:
+            return
+        with self._lock:
+            # 期间被用户改了名、或这棵树已被删除：不再覆盖
+            if tree.get("titleSource") != "auto" or self._trees.get(tree["id"]) is not tree:
+                return
+            tree["title"] = title
+            self.store.save(tree)
+            self.hub.publish(tree["id"], "tree", {"title": title, "settings": tree["settings"]})
 
     def retry_turn(self, tree_id: str, turn_id: str) -> dict[str, Any]:
         with self._lock:
@@ -1026,6 +1107,14 @@ def claude_summarizer(runner: Any) -> Callable[[str], list[str]]:
     return summarize
 
 
+def claude_titler(runner: Any) -> Callable[[list[str]], str]:
+    """用一次轻量、无工具、不落盘的调用给对话起标题。"""
+    def title(questions: list[str]) -> str:
+        user = "\n\n".join(f"问题 {i + 1}：{q[:1500]}" for i, q in enumerate(questions))
+        return runner.run([{"role": "system", "content": TITLE_SYSTEM}, {"role": "user", "content": user}], "sonnet", "low")
+    return title
+
+
 def create_branchboard_blueprint(service: BranchboardService) -> Blueprint:
     bp = Blueprint("branchboard_api", __name__, url_prefix="/api/branchboard")
 
@@ -1047,7 +1136,7 @@ def create_branchboard_blueprint(service: BranchboardService) -> Blueprint:
             except Exception as exc:  # noqa: BLE001
                 claude = {"available": False, "error": str(exc)}
         return jsonify({"claude": claude, "models": [{"id": k, "label": v} for k, v in MODELS.items()],
-                        "efforts": list(EFFORTS),
+                        "efforts": list(EFFORTS), "defaultCwd": str(service.default_cwd),
                         "permissionModes": [{"id": k, "label": v} for k, v in PERMISSION_MODES.items()]})
 
     @bp.get("/trees")

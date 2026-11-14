@@ -49,7 +49,7 @@ from prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_req
 from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
 from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint, snapshot_files as paper_revision_snapshot_files
 from claude_code_cli import ClaudeCodeRunner
-from branchboard import BranchboardService, claude_summarizer, create_branchboard_blueprint
+from branchboard import BranchboardService, claude_summarizer, claude_titler, create_branchboard_blueprint
 from google_translate import GoogleTranslator
 from local_paths import LocalPathService, create_local_paths_blueprint
 import pdf_core
@@ -8017,6 +8017,7 @@ branchboard_service = BranchboardService(
     summarize=claude_summarizer(branchboard_text_runner),
     claude_status=paper_revision_claude_runner.status,
     complete=branchboard_text_runner.run,  # 完整版的模型辅助：分类、改写修正段落
+    titler=claude_titler(branchboard_text_runner),  # 自动命名：首问命名，第三问更新
 )
 app.register_blueprint(create_branchboard_blueprint(branchboard_service))
 GOOGLE_TRANSLATE_ENV_KEY = "GOOGLE_TRANSLATE_API_KEY"

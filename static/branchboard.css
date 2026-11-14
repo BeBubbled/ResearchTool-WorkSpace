@@ -17,8 +17,10 @@ body.bb-body { display:flex; flex-direction:column; overflow:hidden; background:
 
 /* ---------- 顶栏 ---------- */
 .bb-bar { flex:none; gap:10px; }
-.bb-tree-picker { flex:none; display:flex; gap:6px; align-items:center; }
-.bb-tree-picker select { width:200px; }
+.bb-title { flex:0 1 auto; min-width:60px; max-width:340px; overflow:hidden; padding:4px 8px; margin-left:-8px; border-radius:7px; text-overflow:ellipsis; cursor:pointer; }
+.bb-title:hover { background:var(--t-surface-2); }
+.bb-title.fresh { animation:bb-title-in .5s ease; }
+@keyframes bb-title-in { from { opacity:.25; transform:translateY(3px); } to { opacity:1; transform:none; } }
 .bb-settings select { max-width:150px; }
 .bb-cwd { display:block; flex:0 1 auto; min-width:0; max-width:220px; overflow:hidden; padding:3px 8px; border-radius:999px; background:var(--t-surface-2); color:var(--t-muted); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
 .bb-cwd:empty { display:none; }
@@ -50,9 +52,41 @@ body.bb-body { display:flex; flex-direction:column; overflow:hidden; background:
 .bb-menu .bb-menu-narrow { display:none; }
 .bb-settings.pop { position:fixed; top:52px; right:16px; z-index:45; display:flex !important; flex-direction:column; gap:8px; padding:10px; border:1px solid var(--t-line); border-radius:10px; background:var(--t-panel); box-shadow:0 10px 30px rgba(0,0,0,.12); }
 .bb-settings.pop select { max-width:none; width:200px; }
-@media (max-width:1480px) { .bb-legend { display:none; } }
-@media (max-width:1320px) { .bb-cwd, #bbExportMd, #bbExportHtml { display:none; } .bb-menu .bb-menu-narrow { display:block; } }
-@media (max-width:1120px) { .bb-settings { display:none; } .bb-tree-picker select { width:160px; } }
+@media (max-width:1740px) { .bb-legend { display:none; } }
+@media (max-width:1580px) { .bb-cwd, #bbExportMd, #bbExportHtml { display:none; } .bb-menu .bb-menu-narrow { display:block; } }
+@media (max-width:1380px) { .bb-settings { display:none; } .bb-title { max-width:220px; } }
+
+/* ---------- 外壳：左栏聊天列表 + 右侧对话树 ---------- */
+.bb-shell { flex:1; min-height:0; display:flex; }
+.bb-content { flex:1; min-width:0; display:flex; flex-direction:column; }
+.bb-side { flex:none; width:264px; display:flex; flex-direction:column; gap:8px; padding:10px 10px 0; border-right:1px solid var(--t-line); background:var(--t-surface); }
+.bb-shell.side-collapsed .bb-side { display:none; }
+.bb-side-show { display:none; flex:none; margin-left:-8px; }
+.bb-shell.side-collapsed .bb-side-show { display:inline-flex; align-items:center; justify-content:center; }
+.bb-side-head { display:flex; align-items:center; height:28px; padding-left:6px; }
+.bb-side-brand { font-size:15px; font-weight:650; }
+.bb-side-head .bb-icon { display:inline-flex; align-items:center; justify-content:center; margin-left:auto; }
+.bb-side-new { display:flex; align-items:center; gap:8px; height:36px; padding:0 12px; border:1px solid var(--t-line); border-radius:9px; background:var(--t-panel); color:var(--t-ink); font:inherit; font-size:13.5px; font-weight:600; cursor:pointer; }
+.bb-side-new:hover { border-color:var(--t-accent-line); background:var(--t-accent-soft); color:var(--t-accent-strong); }
+.bb-side-search { height:30px; padding:0 10px; border:1px solid transparent; border-radius:8px; background:var(--t-surface-2); color:var(--t-ink); font:inherit; font-size:13px; outline:none; }
+.bb-side-search:focus { border-color:var(--t-accent-line); background:var(--t-panel); }
+.bb-side-list { flex:1; min-height:0; overflow-y:auto; margin:0 -6px; padding:0 6px 14px; }
+.bb-side-group { margin:12px 0 4px; padding:0 8px; color:var(--t-faint); font-size:11.5px; font-weight:650; }
+.bb-side-group:first-child { margin-top:4px; }
+.bb-side-item { position:relative; display:flex; align-items:center; border-radius:8px; }
+.bb-side-item:hover, .bb-side-item.menu-open { background:var(--t-surface-2); }
+.bb-side-item.active { background:var(--t-accent-soft); }
+.bb-side-open { flex:1; min-width:0; height:34px; padding:0 8px; overflow:hidden; border:0; background:none; color:var(--t-ink); font:inherit; font-size:13.5px; text-align:left; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+.bb-side-item.active .bb-side-open { color:var(--t-accent-strong); font-weight:600; }
+.bb-side-item.missing .bb-side-open { color:var(--t-faint); }
+.bb-side-more { flex:none; display:none; width:26px; height:26px; margin-right:4px; padding:0; border:0; border-radius:6px; background:none; color:var(--t-muted); font-size:16px; line-height:1; cursor:pointer; }
+.bb-side-item:hover .bb-side-more, .bb-side-item.menu-open .bb-side-more, .bb-side-more:focus-visible { display:block; }
+.bb-side-more:hover { background:var(--t-surface-3); color:var(--t-ink); }
+.bb-side-empty { margin:18px 8px; color:var(--t-faint); font-size:12.5px; line-height:1.6; }
+.bb-side-menu { position:fixed; top:0; right:auto; z-index:70; }
+@media (max-width:860px) {
+  .bb-side { position:fixed; left:var(--client-rail-width, 0px); top:0; bottom:0; z-index:50; box-shadow:10px 0 30px rgba(0,0,0,.14); }
+}
 
 /* ---------- 画布 ---------- */
 .bb-main { position:relative; flex:1; min-height:0; overflow:hidden; }
@@ -147,6 +181,11 @@ body.bb-body { display:flex; flex-direction:column; overflow:hidden; background:
   padding:9px 10px 10px; border:1px solid var(--t-line); border-radius:12px; background:var(--t-panel); box-shadow:0 10px 32px rgba(0,0,0,.10); }
 .bb-composer.empty-mode { bottom:auto; top:48%; }
 .bb-composer-target { display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:6px; font-size:12px; }
+.bb-cwd-pick { flex:0 1 auto; min-width:0; display:inline-flex; align-items:center; gap:5px; max-width:300px; height:24px; padding:0 9px; border:1px solid var(--t-line); border-radius:999px; background:var(--t-surface); color:var(--t-ink-2); font:inherit; font-size:12px; cursor:pointer; }
+.bb-cwd-pick span:last-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bb-cwd-pick:hover:not(:disabled) { border-color:var(--t-accent-line); color:var(--t-accent-strong); }
+.bb-cwd-pick:disabled { cursor:default; opacity:.75; }
+.bb-composer-note { min-width:0; overflow:hidden; color:var(--t-faint); text-overflow:ellipsis; white-space:nowrap; }
 .bb-chip { flex:none; padding:2px 8px; border-radius:999px; background:var(--bb-main-soft); color:var(--t-accent-strong); font-weight:650; }
 .bb-chip.hl { background:var(--bb-hl-soft); color:var(--bb-hl); }
 .bb-target-quote { min-width:0; overflow:hidden; color:var(--t-ink-2); text-overflow:ellipsis; white-space:nowrap; border-left:2px solid var(--bb-hl); padding-left:6px; }

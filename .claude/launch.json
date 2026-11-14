@@ -1,0 +1,103 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "paper-revision-harness",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "tests/paper_revision_browser_harness.py"
+      ],
+      "port": 8793
+    },
+    {
+      "name": "paper-revision-harness-slow",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import os, sys, runpy, flask; sys.path.insert(0, 'tests'); import test_paper_revision as t; init = t.FakeGoogle.__init__; t.FakeGoogle.__init__ = lambda self, **kw: (init(self, **kw), self.break_ids.update({'accuracy', 'uses'}))[0]; os.environ['HARNESS_TRANSLATE_DELAY'] = '120'; run = flask.Flask.run; flask.Flask.run = lambda self, **kw: run(self, **{**kw, 'port': 8799}); runpy.run_path('tests/paper_revision_browser_harness.py', run_name='__main__')"
+      ],
+      "port": 8799
+    },
+    {
+      "name": "settings-stub",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\b09c34b8679e6798\\fde70954-8339-4bf6-9547-c948fa1cdaf6\\scratchpad\\settings_stub.py"
+      ],
+      "port": 8794
+    },
+    {
+      "name": "web-panel",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\0be59e46279b2e85\\5d3d64fe-dbf7-482f-b5f8-7e856d159f28\\scratchpad\\run_panel.py"
+      ],
+      "port": 8796
+    },
+    {
+      "name": "web-panel-session",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\2dd7da26a378574c\\d9c385df-7373-40e7-894c-1e2b4ec9ae14\\scratchpad\\run_panel.py"
+      ],
+      "port": 8797
+    },
+    {
+      "name": "web-panel-layout",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\2dd7da26a378574c\\e937b78b-575a-496d-aa66-1244173d198b\\scratchpad\\run_panel.py"
+      ],
+      "port": 8798
+    },
+    {
+      "name": "gaps-harness",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\2dd7da26a378574c\\e937b78b-575a-496d-aa66-1244173d198b\\scratchpad\\gaps_harness.py"
+      ],
+      "port": 8799
+    },
+    {
+      "name": "web-panel-theme",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\8611da40b75a53eb\\c91a7be3-aea8-4a00-b8e0-cac32957ff82\\scratchpad\\run_panel.py"
+      ],
+      "port": 8801
+    },
+    {
+      "name": "web-panel-extras",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\c0a0d63dacafa112\\f405381a-3bff-41e6-ad01-d69a8d3bc495\\scratchpad\\run_panel.py"
+      ],
+      "port": 8805
+    },
+    {
+      "name": "web-panel-i18n",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\c15aafcd6bfed62c\\70b62433-4bd8-4d23-8138-e7fed64a87e7\\scratchpad\\run_panel.py"
+      ],
+      "port": 8811
+    },
+    {
+      "name": "revision-harness-i18n",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-c",
+        "import sys, runpy, flask; sys.path.insert(0, 'tests'); run = flask.Flask.run; flask.Flask.run = lambda self, **kw: run(self, **{**kw, 'port': 8812}); runpy.run_path('tests/paper_revision_browser_harness.py', run_name='__main__')"
+      ],
+      "port": 8812
+    },
+    {
+      "name": "web-panel-branchboard",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "C:\\Users\\bebub\\AppData\\Local\\Temp\\claude\\2dd7da26a378574c\\42d4cc10-5373-48c6-aa51-eaafd48e7236\\scratchpad\\run_panel.py"
+      ],
+      "port": 8815
+    }
+  ]
+}

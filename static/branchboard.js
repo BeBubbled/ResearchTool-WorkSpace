@@ -1,5 +1,8 @@
 /* 对话树（Branchboard）页面：无限画布、卡片、问题小框草稿、划词提问、抽屉、权限批准与 SSE 实时更新。
 
+   外壳像聊天应用：左栏是聊天列表，右边是当前聊天的对话树。「新聊天」不用先建树——
+   直接问第一个问题就建好了；标题由后端自动起（首问命名，第三问更新），手动改名后不再变。
+
    交互模型：
    - 大框 = 一轮的回答卡片，顶部是一个或多个问题小框。
    - 双击大框（或点「继续提问」）→ 在那里出现一个可输入的问题小框（普通追问）。
@@ -13,6 +16,11 @@
   const $ = id => document.getElementById(id);
   const API = "/api/branchboard";
   const LAST_TREE_KEY = "branchboard.lastTree";
+  const CWD_KEY = "branchboard.cwd";
+  const SIDE_KEY = "branchboard.sideCollapsed";
+  const NEW_TITLE = "新聊天";
+  const stored = key => { try { return localStorage.getItem(key); } catch (_e) { return null; } };
+  const store = (key, value) => { try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (_e) { /* 无痕模式 */ } };
   const MODE_KEY = "branchboard.mode";
   const DRAFT_W = 270;
   const storedMode = (() => { try { return localStorage.getItem(MODE_KEY); } catch (_e) { return null; } })();
@@ -27,6 +35,8 @@
     drafts: [], draftSeq: 0, sending: false,
     // 子树合并：expandedMerge[id] 展开 id 收起的卡片；showOriginal[id] 让合并过的卡片暂时显示原版
     expandedMerge: {}, showOriginal: {}, view: null,
+    // 新聊天要用的工作目录；空串 = 后端的默认目录
+    newCwd: stored(CWD_KEY) || "", filter: "", menuTree: null,
   };
   const modeOf = id => S.cardMode[id] || S.mode;
   /** 被合并收起的卡片 → 收起它的那张卡片。 */
@@ -48,7 +58,7 @@
   function rerenderAll() { if (!S.tree) return; for (const id of S.tree.order) renderTurn(S.tree.turns[id]); renderDrafts(); layoutNow(); }
 
   const els = {
-    viewport: $("bbViewport"), stage: $("bbStage"), wires: $("bbWires"), drafts: $("bbDrafts"), treeSelect: $("bbTreeSelect"),
+    viewport: $("bbViewport"), stage: $("bbStage"), wires: $("bbWires"), drafts: $("bbDrafts"), list: $("bbTreeList"),
     composer: $("bbComposer"), question: $("bbQuestion"), send: $("bbSend"), ask: $("bbAskSelection"),
     draftBar: $("bbDraftBar"), hint: $("bbHint"),
     drawer: $("bbDrawer"), drawerBody: $("bbDrawerBody"), empty: $("bbEmpty"), status: $("bbStatus"),
@@ -85,48 +95,102 @@
     const models = [["", "默认模型"], ...S.config.models.map(m => [m.id, m.label])];
     const efforts = [["", "默认强度"], ...S.config.efforts.map(e => [e, `强度 ${e}`])];
     const modes = S.config.permissionModes.map(m => [m.id, m.label]);
-    fillSelect($("bbModel"), models); fillSelect($("bbTreeModel"), models);
-    fillSelect($("bbEffort"), efforts); fillSelect($("bbTreeEffort"), efforts);
-    fillSelect($("bbPermission"), modes); fillSelect($("bbTreePermission"), modes);
+    fillSelect($("bbModel"), models);
+    fillSelect($("bbEffort"), efforts);
+    fillSelect($("bbPermission"), modes);
     const claude = S.config.claude;
     if (claude && claude.error) showStatus(claude.error);
   }
   function showStatus(text) { els.status.textContent = text; els.status.classList.toggle("hidden", !text); }
 
+  /* ---------- 左栏：聊天列表 ---------- */
+  const baseName = path => String(path || "").split(/[\\/]/).filter(Boolean).pop() || String(path || "");
+  const DAY = 86400000;
+  function dateGroup(iso) {
+    const t = Date.parse(iso || "");
+    if (!t) return "更早";
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const days = Math.floor((today.getTime() - t) / DAY) + 1;  // 0 = 今天
+    return days <= 0 ? "今天" : days === 1 ? "昨天" : days <= 7 ? "过去 7 天" : days <= 30 ? "过去 30 天" : "更早";
+  }
+  function renderList() {
+    const needle = S.filter.trim().toLowerCase();
+    const items = needle ? S.trees.filter(t => (t.title || "").toLowerCase().includes(needle)) : S.trees;
+    let last = null;
+    els.list.innerHTML = items.map(t => {
+      const group = dateGroup(t.updatedAt);
+      const head = group !== last ? `<p class="bb-side-group">${group}</p>` : "";
+      last = group;
+      const active = S.tree && S.tree.id === t.id;
+      return `${head}<div class="bb-side-item${active ? " active" : ""}${t.missing ? " missing" : ""}" data-id="${t.id}">
+        <button class="bb-side-open" type="button"${active ? ' aria-current="page"' : ""} title="${esc(t.title)}${t.missing ? "（文件缺失）" : ""}\n📁 ${esc(t.cwd || "")}">${esc(t.title || NEW_TITLE)}</button>
+        <button class="bb-side-more" type="button" aria-haspopup="menu" aria-label="更多" title="更多">⋯</button></div>`;
+    }).join("") || `<p class="bb-side-empty">${needle ? "没有匹配的聊天。" : "还没有聊天。直接在右边问第一个问题就开始了。"}</p>`;
+  }
+  async function refreshList() {
+    try { S.trees = (await api("GET", "/trees")).trees; } catch (_e) { return; }
+    renderList();
+  }
+  /** 标题变了（自动命名 / 改名）：顶栏和左栏一起更新。 */
+  function showTitle(animate) {
+    const el = $("bbTitle");
+    const title = S.tree ? S.tree.title : NEW_TITLE;
+    const changed = el.textContent !== title;
+    el.textContent = title;
+    el.title = S.tree ? `${title}\n点击重命名` : "";
+    if (animate && changed) { el.classList.remove("fresh"); void el.offsetWidth; el.classList.add("fresh"); }
+    if (S.tree) { const meta = S.trees.find(t => t.id === S.tree.id); if (meta) meta.title = title; }
+    renderList();
+  }
+
   async function loadTrees(selectId) {
     const { trees } = await api("GET", "/trees");
     S.trees = trees;
-    els.treeSelect.innerHTML = trees.length
-      ? trees.map(t => `<option value="${t.id}">${esc(t.title)}${t.missing ? "（文件缺失）" : ""}</option>`).join("")
-      : `<option value="">（还没有对话树）</option>`;
-    let id = selectId;
-    if (!id) { try { id = localStorage.getItem(LAST_TREE_KEY); } catch (_e) { /* 无痕模式 */ } }
-    if (!trees.some(t => t.id === id)) id = trees[0] && trees[0].id;
-    if (id) { els.treeSelect.value = id; await openTree(id); }
-    else showNoTree();
+    let id = selectId || stored(LAST_TREE_KEY);
+    if (!trees.some(t => t.id === id)) id = null;
+    if (id) await openTree(id);
+    else newChat();
   }
 
-  function showNoTree() {
-    closeStream();
-    S.tree = null; clearStage(); clearDrafts();
+  /** 新聊天：还没有树，问出第一个问题时才创建。 */
+  function newChat() {
+    closeStream(); closeDrawer();
+    S.tree = null; S.selected = null; clearStage(); clearDrafts();
+    store(LAST_TREE_KEY, null);
     $("bbCwd").textContent = "";
-    $("bbEmptyTitle").textContent = "还没有对话树";
-    $("bbEmptyText").textContent = "新建一棵树并选择工作目录。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。";
-    $("bbEmptyCreate").classList.remove("hidden");
-    els.empty.classList.remove("hidden");
-    els.composer.classList.add("hidden");
-    els.hint.classList.add("hidden");
+    showTitle(false);
+    updateEmpty();
+    S.zoom = 1; S.panX = 40; S.panY = 40; applyTransform();
+    els.question.focus();
   }
+
+  function showCwdPick() {
+    const fixed = !!S.tree;  // 已建好的树，工作目录不能再换
+    const path = fixed ? S.tree.cwd : S.newCwd;
+    const isDefault = !path || (S.config && path === S.config.defaultCwd);
+    $("bbCwdPickName").textContent = isDefault ? "默认目录" : baseName(path);
+    $("bbCwdPick").disabled = fixed;
+    $("bbCwdPick").title = `工作目录：${path || (S.config && S.config.defaultCwd) || "默认目录"}${fixed ? "" : "\n点击换一个目录"}`;
+    $("bbCwdReset").classList.toggle("hidden", fixed || isDefault);
+  }
+  $("bbCwdPick").addEventListener("click", async () => {
+    try {
+      const result = await window.LocalPaths.pick({ kind: "folder", title: "选择这个聊天的工作目录" });
+      if (result && result.path) { S.newCwd = result.path; store(CWD_KEY, S.newCwd); showCwdPick(); }
+    } catch (err) { toast(err.message); }
+  });
+  $("bbCwdReset").addEventListener("click", () => { S.newCwd = ""; store(CWD_KEY, null); showCwdPick(); });
 
   async function openTree(id) {
     let data;
     try { data = await api("GET", `/trees/${id}`); }
-    catch (err) { toast(err.message); showNoTree(); return; }
+    catch (err) { toast(err.message); newChat(); return; }
     closeStream(); closeDrawer(); clearStage(); clearDrafts();
     S.tree = data.tree; S.selected = null;
-    try { localStorage.setItem(LAST_TREE_KEY, id); } catch (_e) { /* 忽略 */ }
-    $("bbCwd").textContent = "📁 " + (S.tree.cwd.split(/[\\/]/).filter(Boolean).pop() || S.tree.cwd);
+    store(LAST_TREE_KEY, id);
+    $("bbCwd").textContent = "📁 " + baseName(S.tree.cwd);
     $("bbCwd").title = `工作目录：${S.tree.cwd}`;
+    showTitle(false);
     const st = S.tree.settings || {};
     $("bbModel").value = st.model || ""; $("bbEffort").value = st.effort || ""; $("bbPermission").value = st.permissionMode || "default";
     for (const tid of S.tree.order) renderTurn(S.tree.turns[tid]);
@@ -137,10 +201,10 @@
 
   /** 空树：底部输入框问起点；有起点之后：画布上双击 / 划词出小框。 */
   function updateEmpty() {
-    const blank = S.tree && !S.tree.rootId;
+    const blank = !S.tree || !S.tree.rootId;
     $("bbEmptyTitle").textContent = "从一个问题开始";
-    $("bbEmptyText").textContent = "先问第一个问题。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。";
-    $("bbEmptyCreate").classList.add("hidden");
+    $("bbEmptyText").textContent = "问出第一个问题，就开始了一棵对话树。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。";
+    showCwdPick();
     els.empty.classList.toggle("hidden", !blank);
     els.composer.classList.toggle("hidden", !blank);
     els.composer.classList.toggle("empty-mode", !!blank);
@@ -161,9 +225,9 @@
     });
     es.addEventListener("tree", e => {
       const d = JSON.parse(e.data);
+      if (!S.tree || S.tree.id !== tid) return;
       Object.assign(S.tree, d);
-      const opt = els.treeSelect.querySelector(`option[value="${tid}"]`);
-      if (opt) opt.textContent = d.title;
+      showTitle(true);
     });
   }
   function closeStream() { if (S.es) { S.es.close(); S.es = null; } }
@@ -176,6 +240,8 @@
     renderTurn(t);
     if (isNew) {
       updateEmpty();
+      const meta = S.trees.find(x => x.id === S.tree.id);  // 刚聊过的排到最前
+      if (meta) { meta.updatedAt = new Date().toISOString(); S.trees.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")); renderList(); }
       // 来源卡片要刷新：回显新的划词标记，「重试」按钮也随之消失
       for (const sid of core.sourcesOf(t)) if (turn(sid)) renderTurn(turn(sid));
     }
@@ -670,9 +736,18 @@
   /* ---------- 起点 ---------- */
   async function sendRoot() {
     const question = els.question.value.trim();
-    if (!question || !S.tree || S.tree.rootId) return;
+    if (!question || els.send.disabled || (S.tree && S.tree.rootId)) return;
     els.send.disabled = true;
     try {
+      if (!S.tree) {
+        // 新聊天：问出第一个问题时才建树；标题留空，由后端自动命名
+        const { tree } = await api("POST", "/trees", {
+          cwd: S.newCwd, settings: { model: $("bbModel").value, effort: $("bbEffort").value, permissionMode: $("bbPermission").value },
+        });
+        await refreshList();
+        await openTree(tree.id);
+        if (!S.tree) return;
+      }
       const { turn: created } = await api("POST", `/trees/${S.tree.id}/turns`, { question });
       els.question.value = "";
       upsertTurn(created);
@@ -1070,40 +1145,76 @@
   $("bbDrawerFullVersion").addEventListener("click", () => S.drawerId && openFullVersion(S.drawerId));
 
   /* ---------- 新建 / 设置 / 菜单 / 导出 ---------- */
-  function openTreeDialog() {
-    $("bbTreeTitle").value = ""; $("bbTreeError").classList.add("hidden");
-    $("bbTreeCwd").value = S.tree ? S.tree.cwd : "";
-    $("bbTreeModel").value = ""; $("bbTreeEffort").value = ""; $("bbTreePermission").value = "default";
-    $("bbTreeDialog").showModal();
-  }
-  $("bbNewTree").addEventListener("click", openTreeDialog);
-  $("bbEmptyCreate").addEventListener("click", openTreeDialog);
-  $("bbBrowseCwd").addEventListener("click", async () => {
-    try {
-      const result = await window.LocalPaths.pick({ kind: "folder", title: "选择对话树的工作目录" });
-      if (result && result.path) $("bbTreeCwd").value = result.path;
-    } catch (err) { toast(err.message); }
-  });
-  $("bbTreeForm").addEventListener("submit", async e => {
-    if (e.submitter && e.submitter.value === "cancel") return;
-    e.preventDefault();
-    try {
-      const { tree } = await api("POST", "/trees", {
-        title: $("bbTreeTitle").value, cwd: $("bbTreeCwd").value,
-        settings: { model: $("bbTreeModel").value, effort: $("bbTreeEffort").value, permissionMode: $("bbTreePermission").value },
-      });
-      $("bbTreeDialog").close();
-      await loadTrees(tree.id);
-      els.question.focus();
-    } catch (err) {
-      $("bbTreeError").textContent = err.message; $("bbTreeError").classList.remove("hidden");
+  const keepDrafts = () => S.drafts.length && !confirm(`切换聊天会丢掉 ${S.drafts.length} 个未发送的问题小框，继续？`);
+  $("bbNewTree").addEventListener("click", () => { if (!keepDrafts()) newChat(); });
+  $("bbSideSearch").addEventListener("input", e => { S.filter = e.target.value; renderList(); });
+
+  /** 改名 / 移除 / 删除：顶栏「⋯」作用于当前聊天，左栏每一项的「⋯」作用于那一项。 */
+  async function treeAction(act, id) {
+    const meta = S.trees.find(t => t.id === id) || (S.tree && S.tree.id === id ? S.tree : null);
+    if (!meta) return;
+    const current = !!(S.tree && S.tree.id === id);
+    if (act === "rename") {
+      const title = prompt("聊天标题（手动改名后不再自动命名）", meta.title);
+      if (!title || !title.trim() || title.trim() === meta.title) return;
+      const { tree } = await api("PATCH", `/trees/${id}`, { title });
+      meta.title = tree.title;
+      if (current) { S.tree.title = tree.title; showTitle(true); } else renderList();
+    } else if (act === "forget" || act === "delete") {
+      const msg = act === "delete" ? `删除「${meta.title}」？对话树文件会被删除，无法恢复（Claude Code 自己的会话记录不受影响）。` : `从列表中移除「${meta.title}」？JSON 文件保留在工作目录的 .branchboard/ 里。`;
+      if (!confirm(msg)) return;
+      await api("DELETE", `/trees/${id}${act === "forget" ? "?keepFile=1" : ""}`);
+      if (current) newChat();
+      await refreshList();
     }
+  }
+  const sideMenu = $("bbSideMenu");
+  function closeSideMenu() {
+    sideMenu.classList.add("hidden"); S.menuTree = null;
+    els.list.querySelectorAll(".menu-open").forEach(el => el.classList.remove("menu-open"));
+  }
+  els.list.addEventListener("click", e => {
+    const item = e.target.closest(".bb-side-item");
+    if (!item) return;
+    const id = item.dataset.id;
+    if (e.target.closest(".bb-side-more")) {
+      e.stopPropagation();
+      const again = S.menuTree === id;
+      closeSideMenu();
+      if (again) return;
+      S.menuTree = id; item.classList.add("menu-open");
+      sideMenu.classList.remove("hidden");
+      const r = e.target.closest(".bb-side-more").getBoundingClientRect();
+      sideMenu.style.left = Math.min(r.left, window.innerWidth - sideMenu.offsetWidth - 8) + "px";
+      sideMenu.style.top = Math.min(r.bottom + 4, window.innerHeight - sideMenu.offsetHeight - 8) + "px";
+      return;
+    }
+    if (S.tree && S.tree.id === id) return;
+    if (keepDrafts()) return;
+    openTree(id);
+    if (window.innerWidth <= 860) setSide(true);  // 窄屏下侧栏盖在画布上，选完就收起
   });
-  els.treeSelect.addEventListener("change", () => {
-    if (!els.treeSelect.value) return;
-    if (S.drafts.length && !confirm(`切换对话树会丢掉 ${S.drafts.length} 个未发送的问题小框，继续？`)) { els.treeSelect.value = S.tree.id; return; }
-    openTree(els.treeSelect.value);
+  sideMenu.addEventListener("click", async e => {
+    const act = e.target.closest("button") && e.target.closest("button").dataset.act;
+    const id = S.menuTree;
+    closeSideMenu();
+    if (!act || !id) return;
+    try { await treeAction(act, id); } catch (err) { toast(err.message); }
   });
+  els.list.addEventListener("scroll", closeSideMenu);
+  $("bbTitle").addEventListener("click", async () => {
+    if (!S.tree) return;
+    try { await treeAction("rename", S.tree.id); } catch (err) { toast(err.message); }
+  });
+
+  function setSide(collapsed, remember) {
+    $("bbShell").classList.toggle("side-collapsed", collapsed);
+    if (remember) store(SIDE_KEY, collapsed ? "1" : "0");
+    scheduleLayout();
+  }
+  $("bbSideHide").addEventListener("click", () => setSide(true, true));
+  $("bbSideShow").addEventListener("click", () => setSide(false, true));
+  setSide(stored(SIDE_KEY) === "1" || (stored(SIDE_KEY) == null && window.innerWidth <= 860));
   for (const [id, key] of [["bbModel", "model"], ["bbEffort", "effort"], ["bbPermission", "permissionMode"]]) {
     $(id).addEventListener("change", async () => {
       if (!S.tree) return;
@@ -1114,6 +1225,7 @@
   $("bbMore").addEventListener("click", e => { e.stopPropagation(); $("bbMoreMenu").classList.toggle("hidden"); });
   document.addEventListener("click", e => {
     $("bbMoreMenu").classList.add("hidden");
+    closeSideMenu();
     if (!e.target.closest("#bbSettings")) $("bbSettings").classList.remove("pop");
   });
   $("bbMoreMenu").addEventListener("click", async e => {
@@ -1123,16 +1235,7 @@
       if (act === "export-md") $("bbExportMd").click();
       else if (act === "export-html") $("bbExportHtml").click();
       else if (act === "settings") { e.stopPropagation(); $("bbMoreMenu").classList.add("hidden"); $("bbSettings").classList.add("pop"); }
-      else if (act === "rename") {
-        const title = prompt("对话树标题", S.tree.title);
-        if (title && title.trim()) { await api("PATCH", `/trees/${S.tree.id}`, { title }); await loadTrees(S.tree.id); }
-      } else if (act === "forget" || act === "delete") {
-        const msg = act === "delete" ? `删除「${S.tree.title}」？对话树文件会被删除，无法恢复（Claude Code 自己的会话记录不受影响）。` : `从列表中移除「${S.tree.title}」？JSON 文件保留在工作目录的 .branchboard/ 里。`;
-        if (!confirm(msg)) return;
-        await api("DELETE", `/trees/${S.tree.id}${act === "forget" ? "?keepFile=1" : ""}`);
-        try { localStorage.removeItem(LAST_TREE_KEY); } catch (_e) { /* 忽略 */ }
-        await loadTrees();
-      }
+      else await treeAction(act, S.tree.id);
     } catch (err) { toast(err.message); }
   });
   function download(name, text, type) {
@@ -1167,6 +1270,6 @@
   setMode(S.mode);
   (async () => {
     try { await loadConfig(); } catch (err) { showStatus(err.message); }
-    try { await loadTrees(new URLSearchParams(location.search).get("tree")); } catch (err) { toast(err.message); showNoTree(); }
+    try { await loadTrees(new URLSearchParams(location.search).get("tree")); } catch (err) { toast(err.message); newChat(); }
   })();
 })();

@@ -283,6 +283,88 @@ class BranchboardTest(unittest.TestCase):
         self.assertEqual(client.delete(f"/api/branchboard/trees/{created['id']}").status_code, 200)
         self.assertFalse((h.cwd / ".branchboard" / f"{created['id']}.json").exists())
 
+    def test_new_chat_uses_default_cwd_and_auto_titles_on_first_and_third_question(self):
+        """新聊天不用选目录；首问后自动命名，第三问时按前三个问题更新，手动改名后不再变。"""
+        h = Harness(self)
+        calls = []
+
+        def titler(questions):
+            calls.append(list(questions))
+            return f"「标题 {len(calls)}」。\n多余的解释"
+        h.service.titler = titler
+
+        def wait_title(tid, title):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if h.service.snapshot(tid)["title"] == title:
+                    return
+                time.sleep(0.02)
+            self.fail(f"标题没有变成 {title}：{h.service.snapshot(tid)['title']}")
+
+        tree = h.service.create_tree("", "")
+        tid = tree["id"]
+        self.assertEqual(tree["title"], "新聊天")
+        self.assertEqual(Path(tree["cwd"]), (h.root / "runtime" / "chats").resolve())
+        self.assertTrue(Path(tree["cwd"]).is_dir())
+
+        h.scripts.append(text_turn(SID[0], "答一"))
+        root = h.service.create_turn(tid, {"question": "什么是表征学习\n补充说明"})
+        h.wait_status(tid, root["id"])
+        wait_title(tid, "标题 1")
+        self.assertEqual(calls, [["什么是表征学习\n补充说明"]])
+
+        h.scripts.append(text_turn(SID[1], "答二"))
+        second = h.service.create_turn(tid, {"parentId": root["id"], "kind": "follow", "question": "第二问"})
+        h.wait_status(tid, second["id"])
+        self.assertEqual(len(calls), 1)  # 第二个问题不改名
+
+        h.scripts.append(text_turn(SID[2], "答三"))
+        third = h.service.create_turn(tid, {"parentId": second["id"], "kind": "follow", "question": "第三问"})
+        h.wait_status(tid, third["id"])
+        wait_title(tid, "标题 2")
+        self.assertEqual(calls[1], ["什么是表征学习\n补充说明", "第二问", "第三问"])
+        self.assertEqual(h.service.list_trees()[0]["title"], "标题 2")
+
+        h.scripts.append(text_turn(SID[3], "答四"))
+        fourth = h.service.create_turn(tid, {"parentId": third["id"], "kind": "follow", "question": "第四问"})
+        h.wait_status(tid, fourth["id"])
+        self.assertEqual(len(calls), 2)
+
+        # 重新加载后仍记得是自动命名；手动改名之后不再自动改
+        self.assertEqual(h.make_service().tree(tid)["titleSource"], "auto")
+        self.assertEqual(h.service.update_tree(tid, {"title": "我起的名字"})["titleSource"], "manual")
+
+        named = h.service.create_tree("手动标题", str(h.cwd))
+        h.scripts.append(text_turn(SID[4], "答"))
+        turn = h.service.create_turn(named["id"], {"question": "一个问题"})
+        h.wait_status(named["id"], turn["id"])
+        self.assertEqual(h.service.snapshot(named["id"])["title"], "手动标题")
+        self.assertEqual(len(calls), 2)
+
+    def test_title_falls_back_to_first_line_and_multi_question_crosses_third(self):
+        h = Harness(self)
+        tree = h.service.create_tree("", str(h.cwd))
+        tid = tree["id"]
+        h.scripts.append(text_turn(SID[0], "答一"))
+        root = h.service.create_turn(tid, {"question": "第一个问题\n第二行"})
+        h.wait_status(tid, root["id"])
+        self.assertEqual(h.service.snapshot(tid)["title"], "第一个问题")  # 没有命名模型：用首问首行
+
+        calls = []
+        h.service.titler = lambda questions: calls.append(list(questions)) or "合并后的标题"
+        h.scripts.append(text_turn(SID[1], "答二"))
+        multi = h.service.create_turn(tid, {"questions": [
+            {"sourceId": root["id"], "text": "问二"}, {"sourceId": root["id"], "text": "", "quote": {"text": "答一"}}]})
+        h.wait_status(tid, multi["id"])
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and h.service.snapshot(tid)["title"] != "合并后的标题":
+            time.sleep(0.02)
+        self.assertEqual(h.service.snapshot(tid)["title"], "合并后的标题")  # 一次问两个：越过第三个问题
+        self.assertEqual(calls, [["第一个问题\n第二行", "问二", "答一"]])
+        self.assertEqual(branchboard.clean_title("**标题：“深度学习入门”**\n解释"), "深度学习入门")
+        self.assertEqual(branchboard.clean_title("  \n"), "")
+        self.assertEqual(branchboard.clean_title("一句话解释对比学习</br>"), "一句话解释对比学习")
+
     def test_multi_source_turn_forks_latest_source_and_injects_other_branches(self):
         """在多张卡片里划词、攒起来一次问出：从最近的来源分叉，其他分支的内容作为引用材料拼进消息。"""
         h = Harness(self)

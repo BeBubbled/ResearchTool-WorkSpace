@@ -6,16 +6,24 @@
   {% include "_theme_head.html" %}
   <title>对话树 · Research Toolkit</title>
   <meta name="description" content="把 Claude Code 会话渲染成二维对话树：主线水平延伸，划词提问向上下长出独立上下文的分支。">
-  <link rel="stylesheet" href="/static/branchboard.css?v=7">
+  <link rel="stylesheet" href="/static/branchboard.css?v=8">
 </head>
 <body class="bb-body">
   {% set client_active = "branchboard" %}{% include "_client_nav.html" %}
-  <header class="topbar module-bar bb-bar">
-    <h1 class="module-bar-title">对话树</h1>
-    <div class="bb-tree-picker">
-      <select id="bbTreeSelect" aria-label="选择对话树"></select>
-      <button id="bbNewTree" class="bb-btn" type="button" data-command="新建对话树…">新建</button>
+  <div id="bbShell" class="bb-shell">
+  <aside id="bbSide" class="bb-side" aria-label="聊天列表">
+    <div class="bb-side-head">
+      <span class="bb-side-brand">对话树</span>
+      <button id="bbSideHide" class="bb-icon" type="button" title="收起侧栏" aria-label="收起侧栏"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg></button>
     </div>
+    <button id="bbNewTree" class="bb-side-new" type="button" data-command="对话树：新聊天"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新聊天</button>
+    <input id="bbSideSearch" class="bb-side-search" type="search" placeholder="搜索聊天" aria-label="搜索聊天" autocomplete="off">
+    <nav id="bbTreeList" class="bb-side-list" aria-label="聊天"></nav>
+  </aside>
+  <div class="bb-content">
+  <header class="topbar module-bar bb-bar">
+    <button id="bbSideShow" class="bb-icon bb-side-show" type="button" title="展开侧栏" aria-label="展开侧栏"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg></button>
+    <h1 id="bbTitle" class="module-bar-title bb-title">新聊天</h1>
     <span id="bbCwd" class="bb-cwd" title="工作目录"></span>
     <div class="bb-settings" id="bbSettings">
       <select id="bbModel" aria-label="模型" title="模型"></select>
@@ -40,7 +48,7 @@
         <button type="button" role="menuitem" data-act="settings" class="bb-menu-narrow">模型与权限…</button>
         <button type="button" role="menuitem" data-act="rename">重命名…</button>
         <button type="button" role="menuitem" data-act="forget">从列表移除（保留文件）</button>
-        <button type="button" role="menuitem" data-act="delete" class="danger">删除这棵树…</button>
+        <button type="button" role="menuitem" data-act="delete" class="danger">删除这个聊天…</button>
       </div>
     </div>
   </header>
@@ -55,11 +63,14 @@
       <p class="bb-eyebrow">BRANCHBOARD</p>
       <h2 id="bbEmptyTitle">从一个问题开始</h2>
       <p id="bbEmptyText">先问第一个问题。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。</p>
-      <button id="bbEmptyCreate" class="bb-btn primary hidden" type="button">新建对话树</button>
     </section>
 
     <form id="bbComposer" class="bb-composer hidden" autocomplete="off">
-      <div class="bb-composer-target"><span class="bb-chip">起点</span></div>
+      <div class="bb-composer-target">
+        <button id="bbCwdPick" class="bb-cwd-pick" type="button"><span aria-hidden="true">📁</span><span id="bbCwdPickName"></span></button>
+        <button id="bbCwdReset" class="bb-link hidden" type="button">用默认目录</button>
+        <span class="bb-composer-note">Claude Code 在这个目录里读写文件、运行命令</span>
+      </div>
       <div class="bb-composer-row">
         <textarea id="bbQuestion" rows="2" maxlength="20000" placeholder="输入第一个问题，Enter 发送，Shift+Enter 换行"></textarea>
         <button id="bbSend" class="bb-btn primary" type="submit">发送</button>
@@ -90,22 +101,14 @@
       <div id="bbDrawerBody" class="bb-drawer-body"></div>
     </aside>
   </main>
+  </div>
+  </div>
 
-  <dialog id="bbTreeDialog" class="bb-dialog">
-    <form id="bbTreeForm" method="dialog">
-      <header><h2>新建对话树</h2><button class="bb-icon" value="cancel" aria-label="关闭">×</button></header>
-      <label>标题<input id="bbTreeTitle" maxlength="120" placeholder="可留空，默认取第一个问题"></label>
-      <label>工作目录<span class="bb-path"><input id="bbTreeCwd" required placeholder="Claude Code 在这个目录里读写文件、运行命令"><button id="bbBrowseCwd" class="bb-btn" type="button">浏览…</button></span></label>
-      <div class="bb-dialog-grid">
-        <label>模型<select id="bbTreeModel"></select></label>
-        <label>推理强度<select id="bbTreeEffort"></select></label>
-        <label>权限模式<select id="bbTreePermission"></select></label>
-      </div>
-      <p class="bb-hint">分支只隔离对话上下文，不隔离文件：分支里改动的文件，主线也能看到。整棵树保存在 <code>{工作目录}/.branchboard/</code>。</p>
-      <p id="bbTreeError" class="bb-error hidden"></p>
-      <footer><button class="bb-btn" value="cancel">取消</button><button class="bb-btn primary" id="bbTreeSubmit" value="default">创建</button></footer>
-    </form>
-  </dialog>
+  <div id="bbSideMenu" class="bb-menu bb-side-menu hidden" role="menu">
+    <button type="button" role="menuitem" data-act="rename">重命名…</button>
+    <button type="button" role="menuitem" data-act="forget">从列表移除（保留文件）</button>
+    <button type="button" role="menuitem" data-act="delete" class="danger">删除…</button>
+  </div>
 
   <dialog id="bbFvDialog" class="bb-dialog bb-fv" aria-label="完整版">
     <div class="bb-fv-wrap">
@@ -136,6 +139,6 @@
   <div id="bbToast" class="bb-toast hidden" role="status"></div>
   <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/branchboard_core.js?v=7"></script>
-  <script src="/static/branchboard.js?v=8"></script>
+  <script src="/static/branchboard.js?v=9"></script>
 </body>
 </html>
