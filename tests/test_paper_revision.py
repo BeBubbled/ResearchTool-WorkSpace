@@ -13,12 +13,12 @@ from pathlib import Path
 
 from flask import Flask
 
-import paper_revision
-from paper_revision import (PaperRevision, Conflict, TOKEN, create_paper_revision_blueprint, DEFAULT_WORKFLOW,
+from researchtool import paper_revision
+from researchtool.paper_revision import (PaperRevision, Conflict, TOKEN, create_paper_revision_blueprint, DEFAULT_WORKFLOW,
                             parse_files, realign_units, scope_ids, source_files, validate_text, workflow_shape)
-from paper_revision_import import read_local_project, bibliography_index
-from google_translate import GoogleTranslateError
-from claude_code_cli import ClaudeSessionMissing
+from researchtool.paper_revision_import import read_local_project, bibliography_index
+from researchtool.google_translate import GoogleTranslateError
+from researchtool.claude_code_cli import ClaudeSessionMissing
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADERS = {"X-Paper-Revision": "1"}

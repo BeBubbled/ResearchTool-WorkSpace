@@ -1,7 +1,7 @@
 """Grounding checks for the full-text reading notes (claims and terms)."""
 import unittest
 
-from paper_revision_context import validate_note
+from researchtool.paper_revision_context import validate_note
 
 SOURCES = [
     {"id": "p0001", "text": "RUO reaches the tiny-object AP$_\\text{tiny}$ of threshold-based ROI coding with\n\\nImages{} images."},

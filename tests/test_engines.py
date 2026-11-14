@@ -4,8 +4,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import engines
-from engines import EngineCatalog
+from researchtool import engines
+from researchtool.engines import EngineCatalog
 
 
 class EngineCatalogTest(unittest.TestCase):

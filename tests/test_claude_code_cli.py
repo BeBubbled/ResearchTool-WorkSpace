@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from claude_code_cli import ClaudeCodeRunner, find_claude_executable
+from researchtool.claude_code_cli import ClaudeCodeRunner, find_claude_executable
 
 
 class FakeProcess:
@@ -84,7 +84,7 @@ class ClaudeCodeRunnerTests(unittest.TestCase):
         self.assertEqual(len(fake.calls), 4)
 
     def test_global_defaults_come_from_env_with_recommendation_fallback(self):
-        from claude_code_cli import current_defaults, validate_defaults
+        from researchtool.claude_code_cli import current_defaults, validate_defaults
         env = {"CLAUDE_CODE_TRANSLATE_MODEL": "opus", "CLAUDE_CODE_TRANSLATE_EFFORT": "bogus",
                "CLAUDE_CODE_REVISE_MODEL": "", "CLAUDE_CODE_REVISE_EFFORT": "max"}
         with mock.patch.dict(os.environ, env):

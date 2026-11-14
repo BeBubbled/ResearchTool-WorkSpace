@@ -22,8 +22,7 @@ from typing import Callable
 
 import requests
 
-import usage_ledger
-
+from researchtool import usage_ledger
 # Cloud Translation – Basic edition (v2) only. Advanced (v3) features such as glossaries,
 # custom models or batch jobs are deliberately not used.
 ENDPOINT = "https://translation.googleapis.com/language/translate/v2"

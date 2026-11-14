@@ -19,18 +19,18 @@ from urllib.parse import quote, urlsplit
 
 from flask import Blueprint, jsonify, render_template, request, send_file
 
-from codex_three_pass import atomic_write_json, read_text_with_retry
-from prompt_workbench import local_request_error
-from paper_revision_import import (MAX_IMPORT_BYTES, SUFFIXES, bibliography_index, decode_file,
+from researchtool.codex_three_pass import atomic_write_json, read_text_with_retry
+from researchtool.prompt_workbench import local_request_error
+from researchtool.paper_revision_import import (MAX_IMPORT_BYTES, SUFFIXES, bibliography_index, decode_file,
                                    dependency_warnings, is_hidden, main_candidates, read_local_project, scan_main_candidates,
                                    select_main)
-from paper_revision_context import build_context, context_brief, references_for
-from google_translate import MAX_REQUEST_CHARS, MAX_SEGMENTS, GoogleTranslateError, parse_segment, segment_html
-from claude_code_cli import EFFORTS as CLAUDE_EFFORTS, MODELS as CLAUDE_MODELS
-from latex_display import collect_macros, prettify
-from claude_project import find_claude_project
-import engines
-from claude_code_cli import ClaudeSessionMissing
+from researchtool.paper_revision_context import build_context, context_brief, references_for
+from researchtool.google_translate import MAX_REQUEST_CHARS, MAX_SEGMENTS, GoogleTranslateError, parse_segment, segment_html
+from researchtool.claude_code_cli import EFFORTS as CLAUDE_EFFORTS, MODELS as CLAUDE_MODELS
+from researchtool.latex_display import collect_macros, prettify
+from researchtool.claude_project import find_claude_project
+from researchtool import engines
+from researchtool.claude_code_cli import ClaudeSessionMissing
 
 TOKEN = re.compile(r"⟦L\d{6}⟧")
 ACTIVE = {"queued", "running"}

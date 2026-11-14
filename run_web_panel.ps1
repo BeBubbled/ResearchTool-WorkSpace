@@ -21,7 +21,7 @@ try {
     $VenvPython = Initialize-ProjectPythonEnvironment -ProjectRoot $ProjectRoot -Prefix "toolbox"
     Ensure-BootstrapFfmpeg -Prefix "toolbox"
     Ensure-BootstrapTranslationBackend -ProjectRoot $ProjectRoot -Prefix "toolbox" | Out-Null
-    $MainScript = Join-Path $ProjectRoot "web_panel.py"
+    $env:PYTHONPATH = if ($env:PYTHONPATH) { "$ProjectRoot$([IO.Path]::PathSeparator)$env:PYTHONPATH" } else { $ProjectRoot }
 
     $env:WEB_PANEL_PORT = [string]$Port
     $env:WEB_PANEL_OPEN_BROWSER = if ($NoBrowser) { "0" } else { "1" }
@@ -30,7 +30,7 @@ try {
     Write-BootstrapStep "toolbox" "Starting local multi-tool panel on 127.0.0.1."
     Write-BootstrapStep "toolbox" "Your browser will open automatically when the panel is ready."
 
-    Invoke-BootstrapChecked $VenvPython @($MainScript)
+    Invoke-BootstrapChecked $VenvPython @("-m", "researchtool")
 }
 catch {
     Write-Host ""

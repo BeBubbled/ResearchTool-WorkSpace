@@ -49,6 +49,18 @@ ResearchStudio 首次使用需先准备环境（另需 Poppler、LibreOffice、F
 python scripts/setup_researchstudio.py --install-deps --video
 ```
 
+## 目录
+
+| 路径 | 内容 |
+|---|---|
+| `researchtool/` | 后端 Python 包，入口 `python -m researchtool`（启动脚本已代办） |
+| `templates/`、`static/` | 页面模板和前端脚本 |
+| `Potential_Scripts/` | 工具箱调用的图片 / 视频 / PPT / BibTeX 脚本 |
+| `translation_backend/` | Go 翻译后端 |
+| `browser_extension/` | ChatGPT 桥接扩展 |
+| `scripts/` | 环境准备脚本 |
+| `tests/` | 单元测试和浏览器夹具 |
+
 ## 计费与数据
 
 - 用 Codex 或 Claude Code 的任务消耗套餐额度，用 API 预设、Mathpix、Google 翻译的任务单独计费。提交前都要勾选使用确认。

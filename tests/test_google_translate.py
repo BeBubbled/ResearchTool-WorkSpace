@@ -5,7 +5,7 @@ import unittest
 
 import requests
 
-from google_translate import ENDPOINT, GoogleTranslateError, GoogleTranslator, parse_segment, segment_html
+from researchtool.google_translate import ENDPOINT, GoogleTranslateError, GoogleTranslator, parse_segment, segment_html
 
 TOKEN = re.compile(r"⟦L\d{6}⟧")
 

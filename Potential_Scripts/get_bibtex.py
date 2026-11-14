@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from citations import CitationResolver, local_bibtex  # noqa: E402
+from researchtool.citations import CitationResolver, local_bibtex  # noqa: E402
 
 try:
     from scholarly import scholarly

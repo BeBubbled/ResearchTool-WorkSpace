@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from flask import Flask
 
-from prompt_workbench import CHUNK_BYTES, READER_ACTION_DEFAULTS, TRANSFER_TTL, PromptWorkbench, create_prompt_blueprint
+from researchtool.prompt_workbench import CHUNK_BYTES, READER_ACTION_DEFAULTS, TRANSFER_TTL, PromptWorkbench, create_prompt_blueprint
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADERS = {"X-Prompt-Workbench": "1"}
@@ -116,12 +116,12 @@ class PromptWorkbenchTests(unittest.TestCase):
 
     def test_expiration_removes_files_and_capability(self):
         transfer_id, headers = self.transfer()
-        with patch("prompt_workbench.time.time", return_value=time.time() + TRANSFER_TTL + 1):
+        with patch("researchtool.prompt_workbench.time.time", return_value=time.time() + TRANSFER_TTL + 1):
             self.assertEqual(self.client.get(f"/api/prompts/transfers/{transfer_id}", headers=headers).status_code, 404)
         self.assertFalse((self.service.root / "transfers" / transfer_id).exists())
 
     def test_size_and_count_limits_leave_no_partial_upload(self):
-        with patch("prompt_workbench.MAX_BYTES", 10):
+        with patch("researchtool.prompt_workbench.MAX_BYTES", 10):
             response = self.client.post("/api/prompts/transfers", data={"prompt":"test","files":(io.BytesIO(b"12345678901"),"x.txt")}, headers=HEADERS)
         self.assertEqual(response.status_code, 413)
         self.assertEqual(list((self.service.root / "transfers").iterdir()), [])

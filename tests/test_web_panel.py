@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import web_panel
+from researchtool import web_panel
 from PIL import Image
 
 

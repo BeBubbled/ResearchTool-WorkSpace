@@ -5,7 +5,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from paper_library import PaperLibrary
+from researchtool.paper_library import PaperLibrary
 
 PDF_KEY = "a" * 64
 MD_KEY = "b" * 64

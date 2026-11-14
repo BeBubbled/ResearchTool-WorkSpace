@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import file_cache
-import web_panel
-from global_search import FileTextCache, GlobalSearch
+from researchtool import file_cache
+from researchtool import web_panel
+from researchtool.global_search import FileTextCache, GlobalSearch
 
 
 class StatCacheTest(unittest.TestCase):

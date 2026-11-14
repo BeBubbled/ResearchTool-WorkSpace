@@ -8,7 +8,7 @@ from pathlib import Path
 
 from flask import Flask
 
-from local_paths import LocalPathService, create_local_paths_blueprint
+from researchtool.local_paths import LocalPathService, create_local_paths_blueprint
 
 
 class LocalPathServiceTests(unittest.TestCase):

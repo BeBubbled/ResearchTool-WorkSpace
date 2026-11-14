@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from flask import Flask
 
-from research_studio import MODULES, ResearchStudio, StudioRunner, create_research_studio_blueprint
+from researchtool.research_studio import MODULES, ResearchStudio, StudioRunner, create_research_studio_blueprint
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADERS = {"X-ResearchStudio": "1"}
@@ -110,7 +110,7 @@ class StudioTests(unittest.TestCase):
         for data in ({"module":"bad"}, {"query":""}, {"query":"x" * 20001}, {"module":"paper2assets"}, {"projectId":"missing"}, {"paperId":"missing"}):
             self.assertEqual(self.submit(**data).status_code, 400)
         self.assertEqual(self.submit(paper=(io.BytesIO(b"not a pdf"), "paper.pdf")).status_code, 400)
-        with patch("research_studio.MAX_PDF_BYTES", 6):
+        with patch("researchtool.research_studio.MAX_PDF_BYTES", 6):
             self.assertEqual(self.submit(paper=(io.BytesIO(b"%PDF-12345"), "p.pdf")).status_code, 400)
         self.assertEqual(self.service.list_jobs(), [])
         self.assertEqual(list((self.service.root / "jobs").iterdir()), [])
@@ -158,7 +158,7 @@ class StudioTests(unittest.TestCase):
         phase.mkdir()
         for name in ("idea.std.zh.md", "idea.std.en.md", "idea.detail.en.md"):
             (phase / name).write_text("A research proposal")
-        with patch("research_studio.subprocess.run") as run:
+        with patch("researchtool.research_studio.subprocess.run") as run:
             run.return_value = Mock(returncode=0, stdout="STATE  : READY_TO_RENDER\n")
             self.assertTrue(self.service.validate_outputs(job))
             run.return_value.stdout = "STATE  : DONE\nTYPE   : terminal\n"

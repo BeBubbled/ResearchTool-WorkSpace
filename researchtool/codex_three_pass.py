@@ -20,9 +20,8 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Iterator
 from urllib.parse import urlsplit, urlunsplit
 
-import usage_ledger
-
-from managed_codex import (
+from researchtool import usage_ledger
+from researchtool.managed_codex import (
     CodexRuntimeResolution,
     ManagedCodexError,
     ManagedCodexInstaller,

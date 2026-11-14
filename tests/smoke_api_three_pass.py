@@ -12,8 +12,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import web_panel
-from codex_three_pass import ApiThreePassAnalysisManager, DirectApiExecutor, build_chunk_plan, infer_api_protocol
+from researchtool import web_panel
+from researchtool.codex_three_pass import ApiThreePassAnalysisManager, DirectApiExecutor, build_chunk_plan, infer_api_protocol
 
 
 def wait_for_ready(session, timeout: float = 3600) -> None:

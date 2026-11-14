@@ -14,8 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import codex_three_pass
-from codex_three_pass import (
+from researchtool import codex_three_pass
+from researchtool.codex_three_pass import (
     AnalysisSession,
     ApiThreePassAnalysisManager,
     CodexAppServerClient,
@@ -32,9 +32,7 @@ from codex_three_pass import (
     sse_events,
     validate_phase_lengths,
 )
-import web_panel
-
-
+from researchtool import web_panel
 def parts_markdown(label):
     """One single-read result: every part, each starting with its marker line."""
     return "\n\n".join(
@@ -908,7 +906,7 @@ for line in sys.stdin:
                 return real_popen(command, *args, **kwargs)
 
             for target, replacement in (("shutil.which", which), ("subprocess.Popen", popen)):
-                patcher = patch(f"codex_three_pass.{target}", replacement)
+                patcher = patch(f"researchtool.codex_three_pass.{target}", replacement)
                 patcher.start()
                 self.addCleanup(patcher.stop)
         self.client = CodexAppServerClient(root, str(self.server))

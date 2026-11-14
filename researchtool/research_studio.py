@@ -16,10 +16,10 @@ from pathlib import Path
 
 from flask import Blueprint, abort, jsonify, render_template, request, send_file
 
-from codex_three_pass import atomic_write_json, atomic_write_text, CodexProtocolError, read_text_with_retry
-from prompt_workbench import local_request_error
-import pdf_core
-from pdf_core import MAX_PDF_BYTES
+from researchtool.codex_three_pass import atomic_write_json, atomic_write_text, CodexProtocolError, read_text_with_retry
+from researchtool.prompt_workbench import local_request_error
+from researchtool import pdf_core
+from researchtool.pdf_core import MAX_PDF_BYTES
 
 
 UPSTREAM_URL = "https://github.com/microsoft/ResearchStudio"

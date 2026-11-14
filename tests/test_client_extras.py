@@ -14,13 +14,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import activity
-import citations
-import global_search
-import revision_tools
-import usage_ledger
-import web_panel
-
+from researchtool import activity
+from researchtool import citations
+from researchtool import global_search
+from researchtool import revision_tools
+from researchtool import usage_ledger
+from researchtool import web_panel
 LOCAL = {"Origin": "http://localhost"}
 
 

@@ -3,9 +3,9 @@ import hashlib
 import json
 import re
 
-from latex_display import prettify
+from researchtool.latex_display import prettify
 
-from paper_revision_import import cited_keys
+from researchtool.paper_revision_import import cited_keys
 
 CONTEXT_VERSION = 1
 CHUNK_CHARS = 14_000

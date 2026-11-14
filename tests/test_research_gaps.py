@@ -13,7 +13,7 @@ from unittest.mock import patch
 from flask import Flask
 from pypdf import PdfWriter
 
-from research_gaps import (
+from researchtool.research_gaps import (
     ArxivClient,
     PaperSource,
     ResearchGapService,
@@ -204,7 +204,7 @@ class ResearchGapTest(unittest.TestCase):
         def fake_extract(path: Path):
             return ("Extracted full text. " * 140, 7, f"Title for {path.stem}", ["Local Author"])
 
-        with patch("research_gaps.extract_pdf_document", side_effect=fake_extract):
+        with patch("researchtool.research_gaps.extract_pdf_document", side_effect=fake_extract):
             job = self.service.create_paper_import(project["id"], str(folder), recursive=True)
             job = self.wait_for_import(job["id"])
 
@@ -238,7 +238,7 @@ class ResearchGapTest(unittest.TestCase):
                 return ("tiny", 2, "Scanned", [])
             return ("Usable paper text. " * 150, 8, "Embedded paper title", ["A; B"])
 
-        with patch("research_gaps.extract_pdf_document", side_effect=fake_extract):
+        with patch("researchtool.research_gaps.extract_pdf_document", side_effect=fake_extract):
             job = self.service.create_paper_import(project["id"], str(folder))
             job = self.wait_for_import(job["id"])
 
@@ -288,7 +288,7 @@ class ResearchGapTest(unittest.TestCase):
                 release.wait(2)
             return ("Long enough paper text. " * 120, 4, path.stem, [])
 
-        with patch("research_gaps.extract_pdf_document", side_effect=slow_extract):
+        with patch("researchtool.research_gaps.extract_pdf_document", side_effect=slow_extract):
             job = self.service.create_paper_import(project["id"], str(folder))
             self.assertTrue(entered.wait(2))
             paused_request = self.service.pause_paper_import(job["id"])
@@ -443,7 +443,7 @@ class ResearchGapTest(unittest.TestCase):
         folder = self.root / "api-folder"
         folder.mkdir()
         (folder / "api.pdf").write_bytes(b"api-pdf")
-        with patch("research_gaps.extract_pdf_document", return_value=("API text. " * 250, 3, "API Paper", [])):
+        with patch("researchtool.research_gaps.extract_pdf_document", return_value=("API text. " * 250, 3, "API Paper", [])):
             response = client.post(
                 f"/api/research-gaps/projects/{project_id}/paper-imports",
                 json={"folderPath": str(folder), "recursive": True},
@@ -466,7 +466,7 @@ class ResearchGapTest(unittest.TestCase):
 
     def test_pdf_download_checks_magic_and_writes_atomically(self) -> None:
         destination = self.root / "download" / "paper.pdf"
-        with patch("research_gaps.safe_download_url", side_effect=lambda value: value):
+        with patch("researchtool.research_gaps.safe_download_url", side_effect=lambda value: value):
             result = download_pdf("https://example.org/paper.pdf", destination, FakeDownloadSession())
         self.assertEqual(result, destination)
         self.assertTrue(destination.read_bytes().startswith(b"%PDF-"))

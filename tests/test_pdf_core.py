@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pypdf import PdfWriter
 
-import pdf_core
-from pdf_core import PdfError
+from researchtool import pdf_core
+from researchtool.pdf_core import PdfError
 
 
 class PdfCoreTest(unittest.TestCase):

@@ -44,25 +44,25 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
 
-from research_gaps import ResearchGapService, create_research_gap_blueprint
-from prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_request_error
-from research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
-from paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint, snapshot_files as paper_revision_snapshot_files
-from claude_code_cli import ClaudeCodeRunner
-from branchboard import BranchboardService, claude_summarizer, claude_titler, create_branchboard_blueprint
-from google_translate import GoogleTranslator
-from local_paths import LocalPathService, create_local_paths_blueprint
-import pdf_core
-from pdf_core import PdfError
-from engines import EngineCatalog
-from file_cache import FILES as file_cache, MISSING as FILE_MISSING
-from paper_library import PaperLibrary, valid_key as paper_library_key
-import activity
-import usage_ledger
-from global_search import GlobalSearch
-from citations import CitationResolver
-from revision_tools import RevisionTools, create_revision_tools_blueprint
-from codex_three_pass import (
+from researchtool.research_gaps import ResearchGapService, create_research_gap_blueprint
+from researchtool.prompt_workbench import PromptWorkbench, create_prompt_blueprint, local_request_error
+from researchtool.research_studio import ResearchStudio, StudioRunner, create_research_studio_blueprint
+from researchtool.paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAULT_WORKFLOW, PaperRevision, create_paper_revision_blueprint, snapshot_files as paper_revision_snapshot_files
+from researchtool.claude_code_cli import ClaudeCodeRunner
+from researchtool.branchboard import BranchboardService, claude_summarizer, claude_titler, create_branchboard_blueprint
+from researchtool.google_translate import GoogleTranslator
+from researchtool.local_paths import LocalPathService, create_local_paths_blueprint
+from researchtool import pdf_core
+from researchtool.pdf_core import PdfError
+from researchtool.engines import EngineCatalog
+from researchtool.file_cache import FILES as file_cache, MISSING as FILE_MISSING
+from researchtool.paper_library import PaperLibrary, valid_key as paper_library_key
+from researchtool import activity
+from researchtool import usage_ledger
+from researchtool.global_search import GlobalSearch
+from researchtool.citations import CitationResolver
+from researchtool.revision_tools import RevisionTools, create_revision_tools_blueprint
+from researchtool.codex_three_pass import (
     ApiThreePassAnalysisManager,
     CodexTextRunner,
     DirectApiExecutor,
@@ -86,10 +86,10 @@ except ImportError:  # Dependency checks keep the rest of the panel usable.
     OpenAI = None  # type: ignore[assignment,misc]
 
 
-from sheet_to_anki import SheetToAnkiError, clean_cell, read_table, require_columns
+from researchtool.sheet_to_anki import SheetToAnkiError, clean_cell, read_table, require_columns
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
 load_dotenv(ENV_FILE, override=False)
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
@@ -147,7 +147,7 @@ GITHUB_API_VERSION = "2022-11-28"
 THREE_PASS_SKILL_PATH = PROJECT_ROOT / ".agents" / "skills" / "three-pass-paper-reader" / "SKILL.md"
 THREE_PASS_LENGTH_ENV_KEY = "THREE_PASS_LENGTH_CONFIG"
 
-app = Flask(__name__)
+app = Flask(__name__, root_path=str(PROJECT_ROOT))
 # The desktop panel is a long-running local process. Reload templates on each
 # request so an updated reader.html cannot be paired with a newer static script.
 app.config["TEMPLATES_AUTO_RELOAD"] = True

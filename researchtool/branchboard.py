@@ -29,7 +29,7 @@ from typing import Any, Callable, Iterator
 
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
-from claude_code_cli import EFFORTS, MODELS, child_env, find_claude_executable
+from researchtool.claude_code_cli import EFFORTS, MODELS, child_env, find_claude_executable
 
 TREE_DIR = ".branchboard"
 PERMISSION_MODES = {"default": "每次询问", "acceptEdits": "自动批准编辑", "plan": "计划模式"}

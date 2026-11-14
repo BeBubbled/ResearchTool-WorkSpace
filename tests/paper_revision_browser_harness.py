@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from flask import Flask, render_template
 from test_paper_revision import FakeGoogle, FakeModel, SOURCE
-from paper_revision import PaperRevision, create_paper_revision_blueprint
+from researchtool.paper_revision import PaperRevision, create_paper_revision_blueprint
 
 ROOT = Path(__file__).resolve().parents[1]
 app = Flask(__name__, template_folder=str(ROOT / "templates"), static_folder=str(ROOT / "static"))

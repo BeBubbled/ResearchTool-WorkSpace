@@ -42,4 +42,4 @@ if [[ "$current_hash" != "$installed_hash" ]]; then
     printf '%s\n' "$current_hash" > "$REQUIREMENTS_STAMP"
 fi
 
-exec "$VENV_PYTHON" "$PROJECT_ROOT/sheet_to_anki.py" "$@"
+exec env PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$VENV_PYTHON" -m researchtool.sheet_to_anki "$@"

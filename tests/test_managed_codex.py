@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from codex_three_pass import CodexAppServerClient, CodexProtocolError
-from managed_codex import (
+from researchtool.codex_three_pass import CodexAppServerClient, CodexProtocolError
+from researchtool.managed_codex import (
     CodexRuntimeResolution,
     ManagedCodexError,
     ManagedCodexInstaller,
@@ -148,7 +148,7 @@ class ManagedCodexClientTest(unittest.TestCase):
 
     def test_version_parser_accepts_codex_cli_output(self):
         completed = Mock(returncode=0, stdout="codex-cli 3.4.5\n", stderr="")
-        with patch("managed_codex.subprocess.run", return_value=completed):
+        with patch("researchtool.managed_codex.subprocess.run", return_value=completed):
             self.assertEqual(read_codex_version("/tmp/codex"), "3.4.5")
 
 

@@ -13,7 +13,7 @@ from flask import Flask, send_file
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from prompt_workbench import PromptWorkbench, create_prompt_blueprint
+from researchtool.prompt_workbench import PromptWorkbench, create_prompt_blueprint
 
 app = Flask(__name__, static_folder=str(ROOT / "static"), template_folder=str(ROOT / "templates"))
 temporary = tempfile.TemporaryDirectory(prefix="prompt-browser-test-")

@@ -14,8 +14,8 @@ from pathlib import Path
 
 from flask import Flask
 
-import branchboard
-from branchboard import BranchboardService, create_branchboard_blueprint, highlight_message, parse_summary
+from researchtool import branchboard
+from researchtool.branchboard import BranchboardService, create_branchboard_blueprint, highlight_message, parse_summary
 
 
 class FakeStdin:

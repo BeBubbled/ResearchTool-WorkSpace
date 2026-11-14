@@ -17,7 +17,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from codex_three_pass import TERMINAL_STATUSES, ThreePassAnalysisManager  # noqa: E402
+from researchtool.codex_three_pass import TERMINAL_STATUSES, ThreePassAnalysisManager  # noqa: E402
 
 
 def wait_until(predicate, timeout: float) -> None:

@@ -27,8 +27,8 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Blueprint, Response, jsonify, request
 
-import pdf_core
-from pdf_core import MAX_PDF_BYTES, PdfError
+from researchtool import pdf_core
+from researchtool.pdf_core import MAX_PDF_BYTES, PdfError
 
 
 SEMANTIC_SCHOLAR_BASE_URL = "https://api.semanticscholar.org/graph/v1"
