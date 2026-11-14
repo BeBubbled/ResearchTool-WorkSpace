@@ -14,6 +14,7 @@ Claude Code 以 ``--input-format stream-json`` 运行，权限请求通过 ``--p
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -56,11 +57,111 @@ def highlight_message(quote: str, question: str) -> str:
     return f"{HIGHLIGHT_HEADER}\n{quoted}\n\n{question.strip()}"
 
 
-def turn_prompt(turn: dict[str, Any]) -> str:
-    quote = (turn.get("quote") or {}).get("text")
-    if turn.get("kind") == "highlight" and quote:
-        return highlight_message(quote, turn["question"])
-    return turn["question"]
+def questions_of(turn: dict[str, Any]) -> list[dict[str, Any]]:
+    """一轮里的问题小框。旧数据只有 question / quote 一个问题，补成同样的结构。"""
+    items = turn.get("questions")
+    if isinstance(items, list) and items:
+        return items
+    item: dict[str, Any] = {"id": "q0", "text": turn.get("question", ""), "sourceId": turn.get("parentId")}
+    if turn.get("quote"):
+        item["quote"] = turn["quote"]
+    return [item]
+
+
+def context_ids(tree: dict[str, Any], turn_id: str | None) -> list[str]:
+    """某一轮完成后其会话里「看得到」的轮次：主父链上的每一轮，加上这些轮次拼接进来的其他分支来源。"""
+    seen: list[str] = []
+    cur = tree["turns"].get(turn_id or "")
+    while cur:
+        for tid in [cur["id"], *[q.get("sourceId") for q in questions_of(cur)]]:
+            if tid and tid in tree["turns"] and tid not in seen:
+                seen.append(tid)
+        cur = tree["turns"].get(cur.get("parentId") or "")
+    return seen
+
+
+def quote_block(quote: str) -> str:
+    return "\n".join("> " + line if line.strip() else ">" for line in quote.strip().splitlines())
+
+
+def turn_prompt(tree: dict[str, Any], turn: dict[str, Any]) -> str:
+    """本轮发给模型的用户消息。会话从主父节点分叉，所以主父链上的内容已在上下文里；
+    来自其他分支的被划词轮次不在上下文里，把它们的提问和回答作为引用材料拼在前面（§4 的扩展）。"""
+    items = questions_of(turn)
+    primary = turn.get("parentId")
+    visible = set(context_ids(tree, primary)) if primary else set()
+    number = {tid: i + 1 for i, tid in enumerate(tree["order"])}
+    injected = []
+    for item in items:
+        sid = item.get("sourceId")
+        if sid and sid not in visible and sid not in injected and sid in tree["turns"]:
+            injected.append(sid)
+    parts: list[str] = []
+    if injected:
+        blocks = []
+        for sid in injected:
+            src = tree["turns"][sid]
+            # 来源卡片合并过子树：用合并版（已经吸收了它下面各分支的结论）
+            answer = (src.get("merged") or {}).get("markdown") or (src.get("answer") or {}).get("markdown", "")
+            if len(answer) > 12000:
+                answer = answer[:12000] + "\n…（后略）"
+            blocks.append(f"### 第 {number.get(sid, '?')} 轮\n提问：{src.get('question', '')}\n\n回答：\n{answer}")
+        parts.append("[以下内容来自其他对话分支，此前的对话里没有它们]\n\n" + "\n\n".join(blocks))
+    blocks = []
+    for item in items:
+        sid, text = item.get("sourceId"), str(item.get("text") or "").strip()
+        quote = item.get("quote") or {}
+        lines = []
+        if quote.get("text"):
+            part = "提问" if quote.get("source") == "question" else "回答"
+            where = f"上一条{part}" if sid == primary and len(items) == 1 else f"第 {number.get(sid, '?')} 轮的{part}"
+            if quote.get("source") == "summary":
+                where += "摘要"
+            lines.append(f"[针对{where}中的这段内容提问]\n{quote_block(quote['text'])}")
+        lines.append(text or "（请结合上面这段内容展开说明。）")
+        blocks.append("\n\n".join(lines))
+    if len(blocks) == 1:
+        parts.append(blocks[0])
+    else:
+        parts.append(f"我有 {len(blocks)} 个相关的问题，请逐一回答：\n\n" +
+                     "\n\n".join(f"## 问题 {i + 1}\n{block}" for i, block in enumerate(blocks)))
+    # 主父卡片合并过子树：会话里只有它的原始回答，把合并版作为「以此为准」的材料放在最前面
+    merged = (tree["turns"].get(primary or "") or {}).get("merged") or {}
+    if merged.get("markdown"):
+        text = merged["markdown"]
+        if len(text) > 16000:
+            text = text[:16000] + "\n…（后略）"
+        parts.insert(0, f"[第 {number.get(primary, '?')} 轮的回答之后整合了 {len(merged.get('absorbed') or [])} 个划词分支的结论，"
+                        f"下面是整合后的版本；它和你此前的回答不一致的地方，以它为准]\n\n{text}")
+    return "\n\n".join(parts)
+
+
+def subtree_members(tree: dict[str, Any], root_id: str) -> list[str]:
+    """子树成员（与前端 subtreeMembers 一致）：从 root_id 上的划词分支出发，按创建顺序收进所有来源都已在子树里的卡片；
+    root_id 自己的普通追问（主线上的新问题）不算，同时挂在子树外卡片上的卡片也不算。"""
+    inside, members = {root_id}, []
+    for tid in tree["order"]:
+        turn = tree["turns"].get(tid)
+        if not turn or tid == root_id:
+            continue
+        sources = list(dict.fromkeys(q.get("sourceId") for q in questions_of(turn) if q.get("sourceId")))
+        if not sources or not all(s in inside for s in sources):
+            continue
+        if root_id in sources and not any(q.get("sourceId") == root_id and (q.get("quote") or {}).get("text")
+                                          for q in questions_of(turn)):
+            continue
+        inside.add(tid)
+        members.append(tid)
+    return members
+
+
+def absorbed_by(tree: dict[str, Any]) -> dict[str, str]:
+    """被合并收起的卡片 → 收起它的那张卡片。"""
+    owner: dict[str, str] = {}
+    for tid in tree["order"]:
+        for member in ((tree["turns"].get(tid) or {}).get("merged") or {}).get("absorbed") or []:
+            owner.setdefault(member, tid)
+    return owner
 
 
 def parse_summary(text: str) -> list[str]:
@@ -280,7 +381,9 @@ class TurnRun:
         answer["statusLine"] = "正在启动 Claude Code…"
         self.publish(force=True)
         self.send({"type": "control_request", "request_id": "init", "request": {"subtype": "initialize", "hooks": None}})
-        self.send({"type": "user", "message": {"role": "user", "content": turn_prompt(self.turn)},
+        with self.service._lock:
+            prompt = turn_prompt(self.tree, self.turn)
+        self.send({"type": "user", "message": {"role": "user", "content": prompt},
                    "parent_tool_use_id": None, "session_id": "default"})
         result = None
         try:
@@ -498,10 +601,13 @@ class BranchboardService:
     def __init__(self, runtime_dir: Path, *, finder: Callable[[], str | None] = find_claude_executable,
                  popen: Callable[..., Any] = subprocess.Popen,
                  summarize: Callable[[str], list[str]] | None = None,
-                 claude_status: Callable[[], dict[str, Any]] | None = None):
+                 claude_status: Callable[[], dict[str, Any]] | None = None,
+                 complete: Callable[..., str] | None = None):
         self.store = TreeStore(Path(runtime_dir))
         self.hub = EventHub()
         self.finder, self.popen, self.summarize, self.claude_status = finder, popen, summarize, claude_status
+        # 完整版的模型辅助（分类、改写修正段落）：complete(messages, model, effort) -> 文本；无工具、不落盘
+        self.complete = complete
         self._lock = threading.RLock()
         self._trees: dict[str, dict[str, Any]] = {}
         self._runs: dict[str, TurnRun] = {}
@@ -512,8 +618,9 @@ class BranchboardService:
             tree = self._trees.get(tree_id)
             if tree is None:
                 tree = self.store.load(tree_id)
-                for turn in tree["turns"].values():  # 上次运行时被打断的轮次
-                    if turn.get("answer", {}).get("status") in ("pending", "streaming"):
+                for turn in tree["turns"].values():
+                    turn["questions"] = questions_of(turn)  # 旧数据：单个问题补成问题列表
+                    if turn.get("answer", {}).get("status") in ("pending", "streaming"):  # 上次运行时被打断
                         turn["answer"]["status"] = "interrupted"
                 self._trees[tree_id] = tree
             return tree
@@ -521,7 +628,8 @@ class BranchboardService:
     def snapshot(self, tree_id: str) -> dict[str, Any]:
         with self._lock:
             tree = self.tree(tree_id)
-            return json.loads(json.dumps({**tree, "turns": {k: public_turn(v) for k, v in tree["turns"].items()},
+            data = {k: v for k, v in tree.items() if k != "fullVersionCache"}
+            return json.loads(json.dumps({**data, "turns": {k: public_turn(v) for k, v in tree["turns"].items()},
                                           "seq": self.hub.seq}))
 
     def list_trees(self) -> list[dict[str, Any]]:
@@ -559,48 +667,89 @@ class BranchboardService:
             self.store.forget(tree_id, delete_file=delete_file)
 
     # ---- 轮次 ----
-    def create_turn(self, tree_id: str, data: dict[str, Any]) -> dict[str, Any]:
-        question = str(data.get("question") or "").strip()
-        if not question:
-            raise ValueError("问题不能为空。")
-        kind = data.get("kind")
-        parent_id = data.get("parentId") or None
-        with self._lock:
-            tree = self.tree(tree_id)
-            if parent_id is None:
-                if tree["rootId"]:
-                    raise ValueError("这棵树已经有起点了，请从某个回答继续提问。")
-                kind = "root"
-            else:
-                parent = tree["turns"].get(parent_id)
-                if not parent:
-                    raise KeyError("父节点不存在。")
-                if kind not in ("follow", "highlight"):
-                    raise ValueError("轮次类型无效。")
-                if not parent.get("sessionId") or parent["answer"]["status"] not in ("done", "interrupted"):
-                    raise ValueError("父节点的回答还没完成，暂时不能从它继续。")
-            turn: dict[str, Any] = {"id": uuid.uuid4().hex, "treeId": tree_id, "parentId": parent_id, "kind": kind,
-                                    "createdAt": now_iso(), "question": question[:20000], "answer": new_answer(),
-                                    "permissions": []}
-            if kind == "highlight":
-                quote = data.get("quote") or {}
-                text = str(quote.get("text") or "").strip()
-                if not text:
+    @staticmethod
+    def _requested_questions(data: dict[str, Any]) -> list[dict[str, Any]]:
+        """请求里的问题小框；兼容旧格式 {parentId, kind, question, quote}。"""
+        items = data.get("questions")
+        if not isinstance(items, list):
+            item = {"sourceId": data.get("parentId") or None, "text": data.get("question")}
+            if data.get("kind") == "highlight":
+                item["quote"] = data.get("quote") or {}
+                if not str(item["quote"].get("text") or "").strip():
                     raise ValueError("划词提问需要选中一段原文。")
-                turn["quote"] = {"text": text[:4000], "source": "summary" if quote.get("source") == "summary" else "full"}
+            items = [item]
+        if not items or len(items) > 20:
+            raise ValueError("一次最多提 20 个问题。")
+        clean = []
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError("问题格式无效。")
+            entry: dict[str, Any] = {"id": f"q{index}", "text": str(item.get("text") or "").strip()[:20000],
+                                     "sourceId": item.get("sourceId") or None}
+            quote = item.get("quote") or {}
+            if isinstance(quote, dict) and str(quote.get("text") or "").strip():
+                entry["quote"] = {"text": str(quote["text"]).strip()[:4000],
+                                  "source": quote.get("source") if quote.get("source") in ("summary", "question") else "full"}
                 for key in ("start", "end"):
                     if isinstance(quote.get(key), int) and quote[key] >= 0:
-                        turn["quote"][key] = quote[key]
-                siblings = [t for t in tree["turns"].values() if t.get("parentId") == parent_id and t["kind"] == "highlight"]
-                turn["layout"] = {"dir": 1 if len(siblings) % 2 == 0 else -1}
-            if kind == "follow" and isinstance(data.get("dir"), int) and data["dir"] in (1, -1):
-                turn["layout"] = {"dir": data["dir"]}
+                        entry["quote"][key] = quote[key]
+            clean.append(entry)
+        if not any(entry["text"] for entry in clean):
+            raise ValueError("问题不能为空。")
+        return clean
+
+    def create_turn(self, tree_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        questions = self._requested_questions(data)
+        with self._lock:
+            tree = self.tree(tree_id)
+            sources = list(dict.fromkeys(q["sourceId"] for q in questions if q["sourceId"]))
+            if not sources:
+                if tree["rootId"]:
+                    raise ValueError("这棵树已经有起点了，请从某个回答继续提问。")
+                if len(questions) > 1 or any(q.get("quote") for q in questions):
+                    raise ValueError("起点只能是一个普通问题。")
+                kind, parent_id = "root", None
+            else:
+                if any(not q["sourceId"] for q in questions):
+                    raise ValueError("每个问题都要指明来自哪张卡片。")
+                owners = absorbed_by(tree)
+                for sid in sources:
+                    if sid in owners:
+                        raise ValueError(f"第 {tree['order'].index(sid) + 1} 轮已并入第 {tree['order'].index(owners[sid]) + 1} 轮，"
+                                         "请在合并后的卡片上提问，或先取消合并。")
+                    src = tree["turns"].get(sid)
+                    if not src:
+                        raise KeyError("被提问的卡片不存在。")
+                    if src["answer"]["status"] not in ("done", "interrupted"):
+                        raise ValueError(f"第 {tree['order'].index(sid) + 1} 轮的回答还没完成，暂时不能从它提问。")
+                # 主父节点：最近创建的来源，它的会话上下文最完整；其余来源以引用材料的形式拼进本轮消息
+                parent_id = max(sources, key=tree["order"].index)
+                if not tree["turns"][parent_id].get("sessionId"):
+                    raise ValueError("父节点没有可继续的 Claude Code 会话。")
+                if len(questions) > 1:
+                    kind = "multi"
+                else:
+                    kind = "highlight" if questions[0].get("quote") else "follow"
+            turn: dict[str, Any] = {"id": uuid.uuid4().hex, "treeId": tree_id, "parentId": parent_id, "kind": kind,
+                                    "createdAt": now_iso(), "questions": questions,
+                                    "question": "\n\n".join(q["text"] for q in questions if q["text"])[:20000],
+                                    "answer": new_answer(), "permissions": []}
+            if kind == "highlight":
+                turn["quote"] = questions[0]["quote"]
+            if parent_id:
+                # 和父节点同一行的只有它的第一个普通追问；其余（划词、多问题、第二个追问）各开新行，
+                # 方向按 下、上 交替并持久化，之后插入新分支不会让旧分支翻转。
+                children = [t for t in tree["turns"].values() if t.get("parentId") == parent_id]
+                first_follow = kind == "follow" and not any(t["kind"] == "follow" for t in children)
+                if not first_follow:
+                    branches = [t for t in children if (t.get("layout") or {}).get("dir")]
+                    turn["layout"] = {"dir": data["dir"] if data.get("dir") in (1, -1) else (1 if len(branches) % 2 == 0 else -1)}
             tree["turns"][turn["id"]] = turn
             tree["order"].append(turn["id"])
             if kind == "root":
                 tree["rootId"] = turn["id"]
                 if tree["title"] == "未命名对话树":
-                    tree["title"] = question.splitlines()[0][:60]
+                    tree["title"] = turn["question"].splitlines()[0][:60]
             self.store.save(tree)
             self.hub.publish(tree_id, "turn.created", public_turn(turn))
             self._start(tree, turn)
@@ -678,6 +827,188 @@ class BranchboardService:
             for seq, kind, data in events:
                 after = seq
                 yield f"id: {seq}\nevent: {kind}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    # ---- 完整版 / 子树合并：模型辅助（可选，只有用户点按钮才调用） ----
+    def _fv_node(self, tree: dict[str, Any], turn_id: str, node_id: Any) -> str:
+        """被处理的卡片必须是 turn_id 本身，或它的子树成员。"""
+        node_id = str(node_id or turn_id)
+        if node_id != turn_id and node_id not in subtree_members(tree, turn_id):
+            raise ValueError("这张卡片不在要合并的子树里。")
+        return node_id
+
+    def _fv_branches(self, tree: dict[str, Any], turn_id: str, refs: list[Any]) -> list[dict[str, Any]]:
+        """校验前端给的分支引用 {childId, qi[, childText]}：必须是划在 turn_id 上、且已完成的问题小框。
+        childText 是前端算好的「这个分支合并了它自己的子分支之后」的内容；没有时用原始回答。"""
+        turn = tree["turns"].get(turn_id)
+        if not turn:
+            raise KeyError("轮次不存在。")
+        if not turn["answer"].get("markdown"):
+            raise ValueError("这一轮还没有回答。")
+        out = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                raise ValueError("分支格式无效。")
+            child = tree["turns"].get(str(ref.get("childId") or ""))
+            qs = questions_of(child) if child else []
+            qi = ref.get("qi")
+            if not child or not isinstance(qi, int) or not 0 <= qi < len(qs):
+                raise KeyError("分支不存在。")
+            q = qs[qi]
+            if q.get("sourceId") != turn_id or not (q.get("quote") or {}).get("text"):
+                raise ValueError("这个分支不是划在这一轮上的。")
+            if child["answer"].get("status") != "done":
+                raise ValueError("分支的回答还没完成。")
+            answer = str(ref.get("childText") or "") or child["answer"].get("markdown", "")
+            out.append({"key": ref.get("key") or f"{child['id']}:{qi}", "n": tree["order"].index(child["id"]) + 1,
+                        "question": q.get("text") or "", "quote": q["quote"]["text"],
+                        "answer": answer if len(answer) <= 6000 else answer[:6000] + "\n…（后略）"})
+        return out
+
+    def full_version_classify(self, tree_id: str, turn_id: str, refs: list[Any]) -> dict[str, str]:
+        """一次调用给子树里所有划词分支分类：correct / explain / extend。refs: [{key, nodeId?, childId, qi}]。"""
+        if not self.complete:
+            raise RuntimeError("没有可用的 Claude Code，无法用模型分类。")
+        if not isinstance(refs, list) or not refs or len(refs) > 60:
+            raise ValueError("分支数量无效。")
+        with self._lock:
+            tree = self.tree(tree_id)
+            by_node: dict[str, list[Any]] = {}
+            for ref in refs:
+                node = self._fv_node(tree, turn_id, (ref or {}).get("nodeId") if isinstance(ref, dict) else None)
+                by_node.setdefault(node, []).append(ref)
+            branches = [b for node, group in by_node.items() for b in self._fv_branches(tree, node, group)]
+        listing = "\n\n".join(
+            f"### {b['key']}\n被划中的原文：{b['quote']}\n追问：{b['question'] or '（未写，只就这段展开）'}\n"
+            f"追问的回答（节选）：{b['answer'][:600]}" for b in branches)
+        text = self.complete([{"role": "system", "content": FV_CLASSIFY_SYSTEM},
+                              {"role": "user", "content": listing}], "sonnet", "low")
+        result = parse_json_object(text)
+        allowed = {b["key"] for b in branches}
+        return {k: v for k, v in result.items() if k in allowed and v in ("correct", "explain", "extend")}
+
+    def full_version_rewrite(self, tree_id: str, turn_id: str, groups: list[Any]) -> dict[str, Any]:
+        """逐段改写含「修正」分支的段落：每段一次调用，只输出改好的这一段。结果按内容缓存在树文件里。
+        groups: [{nodeId?, block, paragraph, items: [{childId, qi, childText?}]}]；前端应当先发最深的一层。"""
+        if not self.complete:
+            raise RuntimeError("没有可用的 Claude Code，无法用模型改写。")
+        if not isinstance(groups, list) or not groups or len(groups) > 12:
+            raise ValueError("一次最多改写 12 段。")
+        jobs = []
+        with self._lock:
+            tree = self.tree(tree_id)
+            cache = tree.setdefault("fullVersionCache", {})
+            for group in groups:
+                group = group if isinstance(group, dict) else {}
+                node = self._fv_node(tree, turn_id, group.get("nodeId"))
+                source = (tree["turns"].get(node) or {}).get("answer", {}).get("markdown", "")
+                paragraph = str(group.get("paragraph") or "")
+                if not paragraph.strip() or paragraph not in source:
+                    raise ValueError("段落与原回答不一致，请刷新后重试。")
+                branches = self._fv_branches(tree, node, group.get("items") or [])
+                if not branches:
+                    raise ValueError("这一段没有需要修正的分支。")
+                key = hashlib.sha256(json.dumps([paragraph, [[b["question"], b["quote"], b["answer"]] for b in branches]],
+                                                ensure_ascii=False).encode("utf-8")).hexdigest()[:32]
+                jobs.append({"nodeId": node, "block": group.get("block"), "paragraph": paragraph, "branches": branches,
+                             "key": key, "cached": cache.get(key)})
+        rewrites, called = [], 0
+        for job in jobs:
+            text = job["cached"]
+            if not text:
+                prompt = [f"## 原段落\n{job['paragraph']}"]
+                for b in job["branches"]:
+                    prompt.append(f"## 修正信息（第 {b['n']} 轮）\n被划中的原文：{b['quote']}\n追问：{b['question'] or '（未写）'}\n"
+                                  f"追问得到的回答：\n{b['answer']}")
+                text = self.complete([{"role": "system", "content": FV_REWRITE_SYSTEM},
+                                      {"role": "user", "content": "\n\n".join(prompt)}], "sonnet", "medium")
+                text = re.sub(r"^```(?:markdown|md)?\s*\n|\n?```\s*$", "", (text or "").strip()).strip()
+                if not text:
+                    raise ValueError("模型没有返回改写结果。")
+                called += 1
+                with self._lock:
+                    cache[job["key"]] = text
+                    while len(cache) > 200:
+                        cache.pop(next(iter(cache)))
+            rewrites.append({"nodeId": job["nodeId"], "block": job["block"], "text": text})
+        if called:
+            with self._lock:
+                self.store.save(tree)
+        return {"rewrites": rewrites, "called": called, "cached": len(jobs) - called}
+
+    # ---- 子树合并：把合并版写回卡片，并把并进来的卡片收起 ----
+    def merge_subtree(self, tree_id: str, turn_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        markdown = str(data.get("markdown") or "").strip()
+        absorbed = data.get("absorbed") or []
+        if not markdown:
+            raise ValueError("合并版是空的。")
+        if len(markdown) > 300_000:
+            raise ValueError("合并版太长了。")
+        if not isinstance(absorbed, list) or not all(isinstance(x, str) for x in absorbed):
+            raise ValueError("被合并的卡片列表无效。")
+        with self._lock:
+            tree = self.tree(tree_id)
+            turn = tree["turns"].get(turn_id)
+            if not turn:
+                raise KeyError("轮次不存在。")
+            if turn["answer"].get("status") != "done":
+                raise ValueError("这一轮的回答还没完成。")
+            if turn_id in absorbed_by(tree):
+                raise ValueError("这张卡片自己已经并入了别的卡片。")
+            members = subtree_members(tree, turn_id)
+            if not set(absorbed) <= set(members):
+                raise ValueError("只能合并这张卡片下面的子树。")
+            if any(tid in self._runs for tid in absorbed):
+                raise ValueError("子树里还有正在回答的卡片，等它完成再合并。")
+            stats = data.get("stats") if isinstance(data.get("stats"), dict) else {}
+            turn["merged"] = {"markdown": markdown, "absorbed": [tid for tid in tree["order"] if tid in set(absorbed)],
+                              "stats": {k: v for k, v in stats.items() if isinstance(v, int)}, "mergedAt": now_iso()}
+            # 子树里原先的合并（嵌套）已经包含在这次的结果里，一并解除，避免一张卡片被两处收起
+            for tid in absorbed:
+                tree["turns"][tid].pop("merged", None)
+            self.store.save(tree)
+            changed = [turn, *[tree["turns"][tid] for tid in absorbed]]
+        for t in changed:
+            self.publish_turn(tree, t)
+        return public_turn(turn)
+
+    def unmerge_subtree(self, tree_id: str, turn_id: str) -> dict[str, Any]:
+        with self._lock:
+            tree = self.tree(tree_id)
+            turn = tree["turns"].get(turn_id)
+            if not turn:
+                raise KeyError("轮次不存在。")
+            if not turn.pop("merged", None):
+                raise ValueError("这张卡片没有合并过。")
+            self.store.save(tree)
+        self.publish_turn(tree, turn)
+        return public_turn(turn)
+
+
+FV_CLASSIFY_SYSTEM = (
+    "你在整理一段对话：用户在一条回答里划中某段原文继续追问，得到了若干分支。判断每个分支对原回答起什么作用：\n"
+    "- correct：推翻、限定或修正了被划中的说法（原文说得不准、过强、过时或有误）；\n"
+    "- explain：解释概念、给出处或数字、补充定义，不改变原说法；\n"
+    "- extend：展开到原回答之外的新话题。\n"
+    "只输出一个 JSON 对象，键是每个分支标题（### 后面的字符串），值是 correct / explain / extend 之一，不要输出其他内容。"
+)
+FV_REWRITE_SYSTEM = (
+    "你在修订一篇回答。给你原回答中的一段，以及针对其中被划中原文的追问和回答（修正信息）。"
+    "改写这一段，使其中与被划中原文相关的说法吸收修正信息；与之无关的句子保持原样。"
+    "保持原文的语言、语气和 Markdown 格式，长度不超过原段落的 1.5 倍，不要提到「追问」「修正」「上一轮」。"
+    "只输出改写后的这一段，不要解释。"
+)
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    """从模型输出里取出第一个 JSON 对象；容忍 ```json 包裹。"""
+    match = re.search(r"\{[\s\S]*\}", text or "")
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def clean_settings(settings: dict[str, Any]) -> dict[str, str]:
@@ -780,6 +1111,38 @@ def create_branchboard_blueprint(service: BranchboardService) -> Blueprint:
         try:
             service.reply_permission(tree_id, turn_id, request_id, bool(body().get("allow")))
             return jsonify({"ok": True})
+        except (KeyError, ValueError) as exc:
+            return error(exc)
+
+    @bp.post("/trees/<tree_id>/turns/<turn_id>/full-version/classify")
+    def full_version_classify(tree_id: str, turn_id: str):
+        try:
+            return jsonify({"categories": service.full_version_classify(tree_id, turn_id, body().get("items"))})
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except (KeyError, ValueError) as exc:
+            return error(exc)
+
+    @bp.post("/trees/<tree_id>/turns/<turn_id>/full-version/rewrite")
+    def full_version_rewrite(tree_id: str, turn_id: str):
+        try:
+            return jsonify(service.full_version_rewrite(tree_id, turn_id, body().get("groups")))
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except (KeyError, ValueError) as exc:
+            return error(exc)
+
+    @bp.post("/trees/<tree_id>/turns/<turn_id>/merge")
+    def merge_subtree(tree_id: str, turn_id: str):
+        try:
+            return jsonify({"turn": service.merge_subtree(tree_id, turn_id, body())})
+        except (KeyError, ValueError) as exc:
+            return error(exc)
+
+    @bp.delete("/trees/<tree_id>/turns/<turn_id>/merge")
+    def unmerge_subtree(tree_id: str, turn_id: str):
+        try:
+            return jsonify({"turn": service.unmerge_subtree(tree_id, turn_id)})
         except (KeyError, ValueError) as exc:
             return error(exc)
 

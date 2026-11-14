@@ -1,4 +1,11 @@
-/* 对话树（Branchboard）页面：无限画布、卡片、划词提问、抽屉、权限批准与 SSE 实时更新。 */
+/* 对话树（Branchboard）页面：无限画布、卡片、问题小框草稿、划词提问、抽屉、权限批准与 SSE 实时更新。
+
+   交互模型：
+   - 大框 = 一轮的回答卡片，顶部是一个或多个问题小框。
+   - 双击大框（或点「继续提问」）→ 在那里出现一个可输入的问题小框（普通追问）。
+   - 在大框的回答或问题里划词 →「就此提问」→ 出现一个带引用的问题小框。
+   - 小框可以在多张卡片里攒多个，任意一个小框里按 Enter 一次问出：
+     生成一张新卡片，里面每个问题小框各自被来源卡片的有向箭头指着。 */
 (function () {
   "use strict";
   const core = window.BranchboardCore;
@@ -6,17 +13,44 @@
   const $ = id => document.getElementById(id);
   const API = "/api/branchboard";
   const LAST_TREE_KEY = "branchboard.lastTree";
+  const MODE_KEY = "branchboard.mode";
+  const DRAFT_W = 270;
+  const storedMode = (() => { try { return localStorage.getItem(MODE_KEY); } catch (_e) { return null; } })();
 
   const S = {
     config: null, trees: [], tree: null, els: {}, layout: null,
-    selected: null, target: null, drawerId: null, pendingSel: null,
+    selected: null, drawerId: null, pendingSel: null,
     zoom: 1, panX: 40, panY: 40, es: null, layoutTimer: 0,
+    // 显示模式：question 仅问题 / partial 问题 + 部分回答 / full 问题 + 完全展开；cardMode 是单张卡片的临时覆盖
+    mode: core.MODES.includes(storedMode) ? storedMode : "partial", cardMode: {},
+    // 待发送的问题小框：{key, sourceId, quote|null, text, dx, dy}；dx/dy 相对来源卡片左上角
+    drafts: [], draftSeq: 0, sending: false,
+    // 子树合并：expandedMerge[id] 展开 id 收起的卡片；showOriginal[id] 让合并过的卡片暂时显示原版
+    expandedMerge: {}, showOriginal: {}, view: null,
   };
+  const modeOf = id => S.cardMode[id] || S.mode;
+  /** 被合并收起的卡片 → 收起它的那张卡片。 */
+  function ownerMap() {
+    const m = new Map();
+    if (!S.tree) return m;
+    for (const id of S.tree.order) for (const x of ((S.tree.turns[id] || {}).merged || {}).absorbed || []) if (!m.has(x)) m.set(x, id);
+    return m;
+  }
+  /** 当前隐藏的卡片：合并它的卡片没有展开时。 */
+  function hiddenSet() {
+    const out = new Set();
+    for (const [x, owner] of ownerMap()) if (!S.expandedMerge[owner]) out.add(x);
+    return out;
+  }
+  const showingMerged = t => !!(t && t.merged && t.merged.markdown && !S.showOriginal[t.id]);
+  /** 脚注渲染成上标（合并版、完整版预览共用）。 */
+  const footnoteHtml = html => html.replace(/\[\^(\d+)\]:\s?/g, '<sup class="bb-fn-def">$1</sup> ').replace(/\[\^(\d+)\]/g, '<sup class="bb-fn">[$1]</sup>');
+  function rerenderAll() { if (!S.tree) return; for (const id of S.tree.order) renderTurn(S.tree.turns[id]); renderDrafts(); layoutNow(); }
 
   const els = {
-    viewport: $("bbViewport"), stage: $("bbStage"), wires: $("bbWires"), treeSelect: $("bbTreeSelect"),
-    composer: $("bbComposer"), question: $("bbQuestion"), send: $("bbSend"), targetLabel: $("bbTargetLabel"),
-    targetQuote: $("bbTargetQuote"), targetClear: $("bbTargetClear"), ask: $("bbAskSelection"),
+    viewport: $("bbViewport"), stage: $("bbStage"), wires: $("bbWires"), drafts: $("bbDrafts"), treeSelect: $("bbTreeSelect"),
+    composer: $("bbComposer"), question: $("bbQuestion"), send: $("bbSend"), ask: $("bbAskSelection"),
+    draftBar: $("bbDraftBar"), hint: $("bbHint"),
     drawer: $("bbDrawer"), drawerBody: $("bbDrawerBody"), empty: $("bbEmpty"), status: $("bbStatus"),
   };
 
@@ -33,13 +67,13 @@
   function toast(message) {
     const el = $("bbToast");
     el.textContent = message; el.classList.remove("hidden");
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add("hidden"), 3200);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add("hidden"), 3600);
   }
   const num = id => core.turnNumber(S.tree, id);
   const turn = id => S.tree && S.tree.turns[id];
-  const ready = t => t && t.sessionId && (t.answer.status === "done" || t.answer.status === "interrupted");
+  const finished = t => t && (t.answer.status === "done" || t.answer.status === "interrupted");
   const running = t => t && (t.answer.status === "pending" || t.answer.status === "streaming");
-  const hasChildren = id => S.tree.order.some(cid => S.tree.turns[cid].parentId === id);
+  const hasChildren = id => S.tree.order.some(cid => core.sourcesOf(S.tree.turns[cid]).includes(id));
   const fillSelect = (select, items, value) => {
     select.innerHTML = items.map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("");
     select.value = value ?? (items[0] && items[0][0]);
@@ -74,40 +108,43 @@
 
   function showNoTree() {
     closeStream();
-    S.tree = null; clearStage();
+    S.tree = null; clearStage(); clearDrafts();
     $("bbCwd").textContent = "";
     $("bbEmptyTitle").textContent = "还没有对话树";
-    $("bbEmptyText").textContent = "新建一棵树并选择工作目录。主线向右延伸；在任意回答里选中文字即可就此追问，分支有自己独立的上下文。";
+    $("bbEmptyText").textContent = "新建一棵树并选择工作目录。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。";
     $("bbEmptyCreate").classList.remove("hidden");
     els.empty.classList.remove("hidden");
     els.composer.classList.add("hidden");
+    els.hint.classList.add("hidden");
   }
 
   async function openTree(id) {
     let data;
     try { data = await api("GET", `/trees/${id}`); }
     catch (err) { toast(err.message); showNoTree(); return; }
-    closeStream(); closeDrawer(); clearStage();
-    S.tree = data.tree; S.selected = null; S.target = null;
+    closeStream(); closeDrawer(); clearStage(); clearDrafts();
+    S.tree = data.tree; S.selected = null;
     try { localStorage.setItem(LAST_TREE_KEY, id); } catch (_e) { /* 忽略 */ }
     $("bbCwd").textContent = "📁 " + (S.tree.cwd.split(/[\\/]/).filter(Boolean).pop() || S.tree.cwd);
     $("bbCwd").title = `工作目录：${S.tree.cwd}`;
     const st = S.tree.settings || {};
     $("bbModel").value = st.model || ""; $("bbEffort").value = st.effort || ""; $("bbPermission").value = st.permissionMode || "default";
     for (const tid of S.tree.order) renderTurn(S.tree.turns[tid]);
-    updateEmpty(); setDefaultTarget();
+    updateEmpty();
     layoutNow(); fitAll();
     openStream(data.tree.seq || 0);
   }
 
+  /** 空树：底部输入框问起点；有起点之后：画布上双击 / 划词出小框。 */
   function updateEmpty() {
     const blank = S.tree && !S.tree.rootId;
     $("bbEmptyTitle").textContent = "从一个问题开始";
-    $("bbEmptyText").textContent = "主线向右延伸；在任意回答里选中文字即可就此追问，分支有自己独立的上下文，不会冲散主线。";
+    $("bbEmptyText").textContent = "先问第一个问题。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。";
     $("bbEmptyCreate").classList.add("hidden");
     els.empty.classList.toggle("hidden", !blank);
+    els.composer.classList.toggle("hidden", !blank);
     els.composer.classList.toggle("empty-mode", !!blank);
-    els.composer.classList.remove("hidden");
+    updateDraftBar();
   }
 
   /* ---------- SSE ---------- */
@@ -137,10 +174,16 @@
     if (!S.tree.order.includes(t.id)) S.tree.order.push(t.id);
     if (t.kind === "root") S.tree.rootId = t.id;
     renderTurn(t);
-    if (isNew) { updateEmpty(); }
-    if (S.target && S.target.parentId === t.id) renderTarget();
+    if (isNew) {
+      updateEmpty();
+      // 来源卡片要刷新：回显新的划词标记，「重试」按钮也随之消失
+      for (const sid of core.sourcesOf(t)) if (turn(sid)) renderTurn(turn(sid));
+    }
+    renderDrafts();
+    // 新分支出现 / 回答更新时，打开着的完整版跟着刷新
+    if (FV.turnId && $("bbFvDialog").open && (t.id === FV.turnId || core.sourcesOf(t).includes(FV.turnId))) renderFullVersion();
     if (S.drawerId === t.id) renderDrawer(false);
-    else if (S.drawerId && t.parentId === S.drawerId && isNew) renderDrawer(false);
+    else if (S.drawerId && isNew && core.sourcesOf(t).includes(S.drawerId)) renderDrawer(false);
   }
 
   /* ---------- 卡片 ---------- */
@@ -151,24 +194,41 @@
     S.layout = null;
   }
 
+  const KIND_TAG = {
+    root: '<span class="bb-tag main">起点</span>', follow: '<span class="bb-tag main">继续提问</span>',
+    highlight: '<span class="bb-tag hl">划词提问</span>', multi: '<span class="bb-tag hl">多处提问</span>',
+  };
+
+  /** 一轮 = 一张卡片：顶部是问题小框（可以有多个，每个对应一条指过来的箭头），下面是回答。 */
   function renderTurn(t) {
-    let pair = S.els[t.id];
-    if (!pair) {
-      const q = document.createElement("div");
-      q.className = "bb-card bb-q"; q.dataset.id = t.id; q.style.width = LAYOUT.QW + "px";
-      const a = document.createElement("div");
-      a.className = "bb-card bb-a"; a.dataset.id = t.id; a.style.width = LAYOUT.AW + "px";
-      els.stage.append(q, a);
-      pair = S.els[t.id] = { q, a };
+    let el = S.els[t.id];
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "bb-card"; el.dataset.id = t.id;
+      els.stage.insertBefore(el, els.drafts);
+      S.els[t.id] = el;
     }
+    const mode = modeOf(t.id);
+    el.dataset.mode = mode;
+    el.style.width = LAYOUT.WIDTH[mode] + "px";
     const n = num(t.id);
-    const tag = t.kind === "highlight" ? '<span class="bb-tag hl">划词提问</span>'
-      : t.kind === "follow" ? '<span class="bb-tag main">继续提问</span>' : '<span class="bb-tag main">起点</span>';
-    const quote = t.quote ? `<div class="bb-quote"><b>划中的原文${t.quote.source === "summary" ? "（摘要）" : ""}</b>${esc(t.quote.text)}</div>` : "";
-    pair.q.innerHTML = `${tag}<span class="bb-num">#${n}</span>${quote}<div class="bb-qtext">${esc(t.question)}</div>`;
-    pair.a.innerHTML = answerCardHtml(t, n);
-    const preview = pair.a.querySelector(".bb-preview");
+    const qs = core.questionsOf(t);
+    const qboxes = qs.map((q, i) => {
+      const owner = i === 0 ? ownerMap().get(t.id) : null;
+      const head = i === 0 ? `${KIND_TAG[t.kind] || ""}${owner ? `<span class="bb-absorbed-tag">已并入 #${num(owner)}</span>` : ""}<span class="bb-num">#${n}</span>` : "";
+      const from = q.sourceId && turn(q.sourceId) ? num(q.sourceId) : 0;
+      const quote = q.quote && q.quote.text
+        ? `<div class="bb-quote" data-quote-of="${esc(q.sourceId || "")}"${q.sourceId && turn(q.sourceId) ? ` style="--src:${core.sourceColor(S.tree, q.sourceId)}"` : ""}><b>摘自 #${from}${q.quote.source === "summary" ? " 的摘要" : q.quote.source === "question" ? " 的提问" : ""}</b>${esc(q.quote.text)}</div>`
+        : (qs.length > 1 && from ? `<div class="bb-qfrom">接 #${from}</div>` : "");
+      return `<div class="bb-qin" data-qi="${i}">${head}${quote}<div class="bb-qtext">${esc(q.text || "（就这段内容展开）")}</div></div>`;
+    }).join("");
+    el.classList.toggle("absorbed", ownerMap().has(t.id));
+    el.classList.toggle("merged", showingMerged(t));
+    el.innerHTML = `<div class="bb-qins">${qboxes}</div><div class="bb-ans">${answerHtml(t, n, mode)}</div>`;
+    const preview = el.querySelector(".bb-preview");
     if (preview) preview.classList.toggle("clipped", preview.scrollHeight > preview.clientHeight + 2);
+    markChildQuotes(el.querySelector(".bb-qins"), t.id, "question");
+    if (mode === "full") markChildQuotes(el.querySelector(".bb-answer-full"), t.id, "full");
     applySelectionClasses();
     scheduleLayout();
   }
@@ -192,20 +252,42 @@
     }).join("");
   }
 
-  function answerCardHtml(t, n) {
+  function answerHtml(t, n, mode) {
     const a = t.answer;
+    const merged = showingMerged(t);
+    const md = merged ? t.merged.markdown : a.markdown;
     let body = "";
-    if (a.summary && a.summary.length && a.status === "done") body = `<ul class="bb-summary">${a.summary.map(s => `<li>${esc(s)}</li>`).join("")}</ul>`;
-    else if (a.markdown) body = `<div class="bb-preview bb-md">${core.markdownToHtml(core.previewMarkdown(a.markdown, 10))}</div>`;
+    if (mode === "full") {
+      body = md ? `<div class="bb-answer-full bb-md">${footnoteHtml(core.markdownToHtml(md))}</div>` : "";
+    } else if (mode === "partial") {
+      if (!merged && a.summary && a.summary.length && a.status === "done") body = `<ul class="bb-summary">${a.summary.map(s => `<li>${esc(s)}</li>`).join("")}</ul>`;
+      else if (md) body = `<div class="bb-preview bb-md">${footnoteHtml(core.markdownToHtml(core.previewMarkdown(md, 10)))}</div>`;
+    }
+    let mergeBar = "";
+    if (t.merged) {
+      const k = (t.merged.absorbed || []).length;
+      const expanded = !!S.expandedMerge[t.id];
+      mergeBar = `<div class="bb-merge-bar"><span class="bb-badge merged">${merged ? "合并版" : "原版"} · 已合并 ${k} 张卡片</span>
+        <button class="bb-link" type="button" data-merge-view="${t.id}">${merged ? "看原版" : "看合并版"}</button>
+        <button class="bb-link" type="button" data-merge-expand="${t.id}">${expanded ? "收起" : `展开 ${k} 张`}</button></div>`;
+    }
     const status = running(t) ? `<div class="bb-statusline">${esc(a.statusLine || "等待 Claude Code…")}</div>` : "";
     const error = a.status === "error" ? `<div class="bb-error-text">${esc(a.error || "出错了")}</div>` : "";
     const actions = [];
     if (running(t)) actions.push(`<button class="bb-btn small" type="button" data-interrupt="${t.id}">中断</button>`);
     if ((a.status === "error" || a.status === "interrupted") && !hasChildren(t.id)) actions.push(`<button class="bb-btn small" type="button" data-retry="${t.id}">重试</button>`);
-    if (ready(t)) actions.push(`<button class="bb-btn small" type="button" data-follow="${t.id}">继续提问</button>`);
-    const more = a.markdown || a.toolEvents.length ? '<span class="bb-more">查看完整回答 →</span>' : "";
-    return `<span class="bb-tag ans">回答 #${n}</span>${badgesHtml(a)}${status}${permissionsHtml(t)}${error}${body}
-      <div class="bb-a-foot">${more}${actions.join("")}</div>`;
+    if (finished(t)) actions.push(`<button class="bb-btn small" type="button" data-follow="${t.id}" title="也可以双击卡片">继续提问</button>`);
+    const hasAnswer = a.markdown || a.toolEvents.length;
+    const toggle = !hasAnswer ? "" : mode === "full"
+      ? `<button class="bb-link" type="button" data-expand="${t.id}" data-to="${S.mode === "full" ? "partial" : S.mode}">收起</button>`
+      : `<button class="bb-link" type="button" data-expand="${t.id}" data-to="full">展开全文</button>`;
+    const details = hasAnswer ? `<button class="bb-link" type="button" data-details="${t.id}">详情</button>` : "";
+    const fullVersion = a.status === "done" && hasBranches(t.id) && !ownerMap().has(t.id)
+      ? `<button class="bb-link" type="button" data-full-version="${t.id}" title="把这张卡片下面的划词子树整合进来：导出完整版，或合并到这张卡片">${t.merged ? "合并…" : "完整版 / 合并"}</button>` : "";
+    const meta = mode === "question" && a.status === "done"
+      ? `<span class="bb-meta">${a.summary && a.summary.length ? `${a.summary.length} 条要点` : `${(a.markdown || "").length} 字`}</span>` : "";
+    return `<div class="bb-ans-head"><span class="bb-tag ans">回答 #${n}</span>${badgesHtml(a)}${meta}</div>${mergeBar}${status}${permissionsHtml(t)}${error}${body}
+      <div class="bb-a-foot">${toggle}${details}${fullVersion}${actions.join("")}</div>`;
   }
 
   /* ---------- 布局 ---------- */
@@ -217,40 +299,104 @@
   function layoutNow() {
     if (!S.tree) return;
     const sizes = {};
+    const hidden = hiddenSet();
+    const view = S.view = hidden.size ? { ...S.tree, order: S.tree.order.filter(id => !hidden.has(id)) } : S.tree;
     for (const id of S.tree.order) {
-      const pair = S.els[id];
-      if (pair) sizes[id] = { qh: pair.q.offsetHeight, ah: pair.a.offsetHeight };
+      const el = S.els[id];
+      if (!el) continue;
+      el.style.display = hidden.has(id) ? "none" : "";
+      if (hidden.has(id)) continue;
+      // 每个问题小框一个连线挂点：小框较高时取它顶部往下 26px，避免挂到很长的问题中间
+      const qms = [...el.querySelectorAll(".bb-qin")].map(q => q.offsetTop + Math.min(q.offsetHeight / 2, 26));
+      sizes[id] = { w: el.offsetWidth, h: el.offsetHeight, qms };
     }
-    const layout = S.layout = core.layoutTree(S.tree, sizes);
+    const layout = S.layout = core.layoutTree(view, sizes);
     for (const g of Object.values(layout.cards)) {
-      const pair = S.els[g.id];
-      if (!pair) continue;
-      pair.q.style.left = g.qx + "px"; pair.q.style.top = g.y + "px";
-      pair.a.style.left = g.ax + "px"; pair.a.style.top = g.y + "px";
+      const el = S.els[g.id];
+      if (!el) continue;
+      el.style.left = g.x + "px"; el.style.top = g.y + "px";
     }
     els.stage.style.width = layout.width + "px"; els.stage.style.height = layout.height + "px";
     els.wires.setAttribute("width", layout.width); els.wires.setAttribute("height", layout.height);
+    positionDrafts();
     drawWires();
   }
 
   function drawWires() {
-    const path = new Set(S.selected ? core.ancestors(S.tree, S.selected) : []);
-    const dim = id => (S.selected && !path.has(id) ? " dim" : "");
-    let svg = "";
-    for (const w of core.layoutWires(S.tree, S.layout)) {
-      const d = dim(w.id);
-      if (w.type === "qa") {
-        svg += `<path class="qa${d}" d="M${w.x1},${w.y1} H${w.x2}" stroke-width="2"/><path class="qa${d}" d="M${w.x2 - 7},${w.y2 - 4} L${w.x2},${w.y2} L${w.x2 - 7},${w.y2 + 4}" fill="none" stroke-width="2"/>`;
-      } else if (w.type === "highlight") {
-        svg += `<path class="highlight${d}" d="M${w.x1},${w.y1} V${w.y2}" stroke-width="2"/><circle class="highlight-dot${d}" cx="${w.x1}" cy="${w.y1}" r="4"/><circle class="highlight-dot${d}" cx="${w.x2}" cy="${w.y2}" r="4"/>`;
-      } else {
-        const mx = (w.x1 + w.x2) / 2;
-        const p = w.type === "follow" ? `M${w.x1},${w.y1} H${w.x2}` : `M${w.x1},${w.y1} H${mx} V${w.y2} H${w.x2}`;
-        svg += `<path class="${w.type}${d}" d="${p}" stroke-width="2"/><circle class="follow-dot${d}" cx="${w.x1}" cy="${w.y1}" r="4"/><circle class="follow-dot${d}" cx="${w.x2}" cy="${w.y2}" r="4"/>`;
-      }
+    if (!S.layout) return;
+    const ctx = new Set(S.selected ? core.contextIds(S.tree, S.selected) : []);
+    const dim = w => (S.selected && !(ctx.has(w.id) && ctx.has(w.sourceId)) ? " dim" : "");
+    // 箭头：主线一种颜色，划词线按来源卡片各用一种颜色（与目标卡片里引用框的颜色一致）
+    const marker = (id, fill) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" ${fill}/></marker>`;
+    let svg = `<defs>${marker("bbArrowMain", 'class="arrow-main"')}${core.SOURCE_COLORS.map((c, i) => marker(`bbArrow${i}`, `fill="${c}"`)).join("")}</defs>`;
+    for (const w of core.layoutWires(S.view || S.tree, S.layout)) {
+      const hl = w.type === "highlight";
+      const color = hl ? w.color : "";
+      const arrow = hl ? `bbArrow${core.SOURCE_COLORS.indexOf(w.color)}` : "bbArrowMain";
+      const q = core.questionsOf(turn(w.id))[w.qi] || {};
+      const tip = `#${num(w.sourceId)} → #${num(w.id)}${core.questionsOf(turn(w.id)).length > 1 ? ` · 问题 ${w.qi + 1}` : ""}`
+        + (q.quote && q.quote.text ? ` · 划词「${q.quote.text.replace(/\s+/g, " ").slice(0, 40)}」` : " · 继续提问");
+      // 每条线一组：透明的粗线负责悬停命中，细线负责显示
+      svg += `<g class="wire ${w.type}${dim(w)}" data-from="${w.sourceId}" data-to="${w.id}"${color ? ` style="--wire:${color}"` : ""}>`
+        + `<path class="wire-hit" d="${w.d}"><title>${esc(tip)}</title></path>`
+        + `<path class="wire-line" d="${w.d}" marker-end="url(#${arrow})"/>`
+        + `<circle class="wire-dot" cx="${w.x1}" cy="${w.y1}" r="3.2"/></g>`;
+    }
+    // 草稿小框：从来源卡片拉一条淡淡的虚线过去
+    for (const dr of S.drafts) {
+      const g = S.layout.cards[dr.sourceId];
+      if (!g) continue;
+      const x2 = g.x + dr.dx, y2 = g.y + dr.dy + 18;
+      const x1 = Math.min(Math.max(x2, g.x + 12), g.x + g.w - 12);
+      const y1 = y2 > g.y + g.h ? g.y + g.h : Math.max(g.y, Math.min(y2 - 18, g.y + g.h));
+      if (y2 - 18 > g.y + g.h || x2 > g.x + g.w) svg += `<path class="draft-wire" d="M${x1},${y1} L${x2},${y2}" stroke-width="1.5" fill="none"/>`;
     }
     els.wires.innerHTML = svg;
+    applyFocus();
   }
+
+  /* ---------- 悬停聚焦：线多了以后，只突出和当前卡片 / 当前连线相关的那几条 ---------- */
+  const focus = { card: null, wire: null };
+  function applyFocus() {
+    const active = focus.card || focus.wire;
+    els.wires.classList.toggle("has-focus", !!active);
+    els.stage.classList.toggle("has-focus", !!active);
+    const linked = new Set();
+    els.wires.querySelectorAll("g.wire").forEach(g => {
+      const from = g.dataset.from, to = g.dataset.to;
+      const hot = focus.wire ? g === focus.wire : !!focus.card && (from === focus.card || to === focus.card);
+      g.classList.toggle("hot", hot);
+      if (hot) { linked.add(from); linked.add(to); }
+    });
+    if (focus.card) linked.add(focus.card);
+    for (const [id, el] of Object.entries(S.els)) el.classList.toggle("linked", active ? linked.has(id) : false);
+  }
+  els.stage.addEventListener("mouseover", e => {
+    if (pan) return;
+    const wire = e.target.closest && e.target.closest("g.wire");
+    const card = e.target.closest && e.target.closest(".bb-card");
+    const next = { card: wire ? null : (card ? card.dataset.id : null), wire: wire || null };
+    if (next.card === focus.card && next.wire === focus.wire) return;
+    focus.card = next.card; focus.wire = next.wire;
+    applyFocus();
+  });
+  els.stage.addEventListener("mouseleave", () => { focus.card = null; focus.wire = null; applyFocus(); });
+  els.wires.addEventListener("click", e => {
+    // 点一条线：跳到它指向的那张卡片并高亮上下文
+    const wire = e.target.closest("g.wire");
+    if (wire) { e.stopPropagation(); select(wire.dataset.to); revealTurn(wire.dataset.to); }
+  });
+
+  function setMode(mode) {
+    if (!core.MODES.includes(mode)) return;
+    S.mode = mode; S.cardMode = {};
+    try { localStorage.setItem(MODE_KEY, mode); } catch (_e) { /* 忽略 */ }
+    document.querySelectorAll(".bb-modes [data-mode]").forEach(b => {
+      b.classList.toggle("on", b.dataset.mode === mode); b.setAttribute("aria-checked", String(b.dataset.mode === mode));
+    });
+    if (S.tree) { for (const id of S.tree.order) renderTurn(S.tree.turns[id]); layoutNow(); }
+  }
+  document.querySelectorAll(".bb-modes [data-mode]").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
 
   /* ---------- 平移 / 缩放 ---------- */
   function applyTransform() {
@@ -269,48 +415,118 @@
   function fitAll() {
     if (!S.layout || !S.tree.order.length) { S.zoom = 1; S.panX = 40; S.panY = 40; applyTransform(); return; }
     const rect = els.viewport.getBoundingClientRect();
-    const bottom = els.composer.classList.contains("hidden") ? 0 : 110;
+    const bottom = 70;
     const z = Math.min(1, Math.max(0.15, Math.min(rect.width / S.layout.width, (rect.height - bottom) / S.layout.height)));
     S.zoom = z;
     S.panX = (rect.width - S.layout.width * z) / 2;
     S.panY = Math.max(0, (rect.height - bottom - S.layout.height * z) / 2);
     applyTransform();
   }
-  function revealTurn(id) {
-    layoutNow();
-    const g = S.layout && S.layout.cards[id];
-    if (!g) return;
+  /** 把画布坐标的矩形移进视口。 */
+  function revealRect(x, y, w, h) {
     const rect = els.viewport.getBoundingClientRect();
-    const x1 = S.panX + g.qx * S.zoom, x2 = S.panX + (g.ax + LAYOUT.AW) * S.zoom;
-    const y1 = S.panY + g.y * S.zoom, y2 = y1 + Math.max(g.qh, g.ah, 120) * S.zoom;
+    const x1 = S.panX + x * S.zoom, x2 = S.panX + (x + w) * S.zoom;
+    const y1 = S.panY + y * S.zoom, y2 = S.panY + (y + h) * S.zoom;
     const margin = 40, drawerW = els.drawer.classList.contains("open") ? els.drawer.offsetWidth : 0;
-    if (x2 > rect.width - drawerW - margin) S.panX -= x2 - (rect.width - drawerW - margin);
-    if (x1 < margin) S.panX += margin - x1;
-    if (y2 > rect.height - 130) S.panY -= Math.min(y2 - (rect.height - 130), y1 - margin);
+    if (x2 > rect.width - drawerW - margin) S.panX -= Math.min(x2 - (rect.width - drawerW - margin), x1 - margin);
+    else if (x1 < margin) S.panX += margin - x1;
+    if (y2 > rect.height - 90) S.panY -= Math.min(y2 - (rect.height - 90), y1 - margin);
     else if (y1 < margin) S.panY += margin - y1;
     applyTransform();
   }
+  function revealTurn(id) {
+    layoutNow();
+    const g = S.layout && S.layout.cards[id];
+    if (g) revealRect(g.x, g.y, g.w, Math.max(g.h, 120));
+  }
+  /** 屏幕坐标 → 画布坐标。 */
+  function toStage(clientX, clientY) {
+    const rect = els.viewport.getBoundingClientRect();
+    return { x: (clientX - rect.left - S.panX) / S.zoom, y: (clientY - rect.top - S.panY) / S.zoom };
+  }
 
-  let pan = null;
+  /* 拖拽手势：
+     - 在空白处、卡片的非文字区域（边距、标签、按钮栏之外的空隙）按下 → 直接平移画布；
+     - 在可划词的文字上按下 → 先当作划词；只要指针拖出了这张卡片，就判定为「想去看别处」，
+       清掉选区、改为平移（位移从按下的那一刻算起，画面不会跳）；
+     - 按住空格拖动，或用鼠标中键拖动 → 无论按在哪里都只平移，不会选中文字。 */
+  const TEXT_AREAS = ".bb-qtext, .bb-md, .bb-summary, .bb-quote, .bb-error-text, .bb-perm code";
+  const NO_PAN = ".bb-draft, .bb-composer, .bb-drawer, .bb-ask-selection, .bb-draftbar, button, textarea, input, select, a, summary";
+  let pan = null, maybeSelect = null, spaceDown = false, suppressClick = false;
+
+  function startPan(origin, pointerId) {
+    pan = { x: origin.x, y: origin.y, px: origin.px, py: origin.py, moved: false, pointerId };
+    els.stage.classList.add("no-select");  // 平移期间不再产生新的选区
+  }
+  function movePan(clientX, clientY) {
+    const dx = clientX - pan.x, dy = clientY - pan.y;
+    if (!pan.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+      // 真的拖起来了才捕获指针：按下就捕获的话，原地单击 / 双击会被浏览器派发给视口而不是卡片
+      pan.moved = true;
+      els.viewport.classList.add("panning");
+      try { els.viewport.setPointerCapture(pan.pointerId); } catch (_e) { /* 指针已释放 */ }
+    }
+    if (pan.moved) { S.panX = pan.px + dx; S.panY = pan.py + dy; applyTransform(); }
+  }
+  function endPan() {
+    if (!pan) return;
+    if (pan.moved) { suppressClick = true; setTimeout(() => { suppressClick = false; }, 0); }
+    else if (!pan.fromCard) select(null);
+    pan = null;
+    els.viewport.classList.remove("panning");
+    els.stage.classList.remove("no-select");
+  }
+
   els.viewport.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || e.target.closest(".bb-card, .bb-composer, .bb-drawer, .bb-ask-selection")) return;
-    pan = { x: e.clientX, y: e.clientY, px: S.panX, py: S.panY, moved: false };
-    els.viewport.setPointerCapture(e.pointerId);
-    els.viewport.classList.add("panning");
+    const forcePan = e.button === 1 || (e.button === 0 && spaceDown);
+    if (!forcePan && (e.button !== 0 || e.target.closest(NO_PAN))) return;
+    const origin = { x: e.clientX, y: e.clientY, px: S.panX, py: S.panY };
+    const card = e.target.closest(".bb-card");
+    if (forcePan) {
+      e.preventDefault();
+      window.getSelection().removeAllRanges();
+      startPan(origin, e.pointerId);
+    } else if (card && e.target.closest(TEXT_AREAS)) {
+      maybeSelect = { ...origin, card, pointerId: e.pointerId };  // 先让浏览器正常选字
+    } else {
+      startPan(origin, e.pointerId);
+      if (card) pan.fromCard = true;  // 在卡片空隙处按下又原地松开：仍算点击卡片
+    }
   });
-  els.viewport.addEventListener("pointermove", e => {
-    if (!pan) return;
-    const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true;
-    S.panX = pan.px + dx; S.panY = pan.py + dy; applyTransform();
+  els.viewport.addEventListener("mousedown", e => {
+    // 中键会触发浏览器自动滚动；在卡片空隙处按下左键会开始选字。两种情况都交给平移处理。
+    if (e.button === 1 || (e.button === 0 && (spaceDown || (pan && !maybeSelect)))) e.preventDefault();
   });
-  els.viewport.addEventListener("pointerup", () => {
-    if (!pan) return;
-    if (!pan.moved) { select(null); setDefaultTarget(); }
-    pan = null; els.viewport.classList.remove("panning");
+  document.addEventListener("pointermove", e => {
+    if (maybeSelect && e.pointerId === maybeSelect.pointerId) {
+      const r = maybeSelect.card.getBoundingClientRect();
+      const outside = e.clientX < r.left - 4 || e.clientX > r.right + 4 || e.clientY < r.top - 4 || e.clientY > r.bottom + 4;
+      if (outside) {
+        window.getSelection().removeAllRanges();
+        els.ask.classList.add("hidden");
+        const origin = maybeSelect;
+        maybeSelect = null;
+        startPan(origin, e.pointerId);
+        movePan(e.clientX, e.clientY);
+      }
+      return;
+    }
+    if (pan) movePan(e.clientX, e.clientY);
   });
+  const finishPointer = () => { maybeSelect = null; endPan(); };
+  document.addEventListener("pointerup", finishPointer);
+  document.addEventListener("pointercancel", finishPointer);
+
+  document.addEventListener("keydown", e => {
+    if (e.code !== "Space" || e.repeat) return;
+    if (e.target.closest && e.target.closest("input, textarea, select, [contenteditable], button")) return;
+    e.preventDefault();
+    spaceDown = true; els.viewport.classList.add("space-pan");
+  });
+  document.addEventListener("keyup", e => { if (e.code === "Space") { spaceDown = false; els.viewport.classList.remove("space-pan"); } });
+  window.addEventListener("blur", () => { spaceDown = false; els.viewport.classList.remove("space-pan"); });
   els.viewport.addEventListener("wheel", e => {
-    if (e.target.closest(".bb-drawer, .bb-composer")) return;
+    if (e.target.closest(".bb-drawer, .bb-composer, .bb-draft textarea")) return;
     e.preventDefault();
     if (e.ctrlKey || e.metaKey) {
       const rect = els.viewport.getBoundingClientRect();
@@ -320,118 +536,196 @@
     }
   }, { passive: false });
 
-  /* ---------- 选中与路径高亮 ---------- */
+  /* ---------- 选中与上下文高亮 ---------- */
   function select(id) {
     S.selected = id;
     applySelectionClasses();
-    if (S.layout) drawWires();
+    drawWires();
   }
   function applySelectionClasses() {
-    const path = new Set(S.selected && S.tree ? core.ancestors(S.tree, S.selected) : []);
+    const ctx = new Set(S.selected && S.tree ? core.contextIds(S.tree, S.selected) : []);
     els.stage.classList.toggle("has-selection", !!S.selected);
-    for (const [id, pair] of Object.entries(S.els)) {
-      for (const el of [pair.q, pair.a]) {
-        el.classList.toggle("on-path", path.has(id));
-        el.classList.toggle("selected", id === S.selected);
-        el.classList.toggle("target", !!S.target && S.target.parentId === id && el === pair.a);
-      }
+    const targets = new Set(S.drafts.map(d => d.sourceId));
+    for (const [id, el] of Object.entries(S.els)) {
+      el.classList.toggle("on-path", ctx.has(id));
+      el.classList.toggle("selected", id === S.selected);
+      el.classList.toggle("target", targets.has(id));
     }
   }
 
-  /* ---------- 输入目标 ---------- */
-  function setDefaultTarget() {
-    if (!S.tree) return;
-    if (!S.tree.rootId) S.target = { parentId: null, kind: "root" };
-    else S.target = { parentId: core.mainLeaf(S.tree), kind: "follow" };
-    renderTarget();
-  }
-  function setTarget(target, focus = true) {
-    S.target = target; renderTarget();
-    if (focus) els.question.focus();
-  }
-  function renderTarget() {
-    const t = S.target;
-    if (!t || !S.tree) return;
-    const label = els.targetLabel;
-    label.classList.toggle("hl", t.kind === "highlight");
-    els.targetQuote.classList.toggle("hidden", t.kind !== "highlight");
-    let blocked = "";
-    if (t.kind === "root") {
-      label.textContent = "起点"; els.question.placeholder = "输入第一个问题，Ctrl+Enter 发送";
-    } else {
-      const p = turn(t.parentId);
-      const n = num(t.parentId);
-      if (t.kind === "highlight") {
-        label.textContent = `划词提问 · 回答 #${n}`;
-        els.targetQuote.textContent = t.quote.text.replace(/\s+/g, " ");
-        els.targetQuote.title = t.quote.text;
-      } else {
-        const forked = S.tree.order.some(id => S.tree.turns[id].parentId === t.parentId && S.tree.turns[id].kind === "follow");
-        label.textContent = forked ? `从回答 #${n} 另开一行继续` : `继续提问 · 接回答 #${n}`;
-      }
-      if (!ready(p)) blocked = running(p) ? `等待回答 #${n} 完成…` : `回答 #${n} 没有可继续的会话`;
-      els.question.placeholder = blocked || "输入问题，Ctrl+Enter 发送";
+  /* ---------- 问题小框草稿 ---------- */
+  function clearDrafts() { S.drafts = []; renderDrafts(); }
+
+  /** 在来源卡片附近加一个问题小框。at：画布坐标（双击点 / 选区下方），缺省放在卡片右下。 */
+  function addDraft(sourceId, quote, at) {
+    const src = turn(sourceId);
+    const g = S.layout && S.layout.cards[sourceId];
+    if (!src || !g) return;
+    const owner = ownerMap().get(sourceId);
+    if (owner) { toast(`回答 #${num(sourceId)} 已并入 #${num(owner)}，请在合并后的卡片上提问，或先取消合并。`); return; }
+    if (running(src)) { toast(`回答 #${num(sourceId)} 还没完成，完成后再提问。`); return; }
+    if (!finished(src)) { toast(`回答 #${num(sourceId)} 出错了，不能从它继续。`); return; }
+    let dx = at ? at.x - g.x - 20 : g.w - DRAFT_W + 24;
+    let dy = at ? at.y - g.y + 10 : g.h + 14;
+    dx = Math.max(-40, Math.min(dx, g.w - 40));
+    // 同一张卡片上已有的小框：往下错开，避免叠在一起
+    for (const other of S.drafts) {
+      if (other.sourceId === sourceId && Math.abs(other.dx - dx) < DRAFT_W && Math.abs(other.dy - dy) < 90) dy = other.dy + 96;
     }
-    const isMain = t.kind === "follow" && t.parentId === core.mainLeaf(S.tree);
-    els.targetClear.classList.toggle("hidden", t.kind === "root" || isMain);
-    els.send.disabled = !!blocked;
+    const draft = { key: `d${++S.draftSeq}`, sourceId, quote: quote || null, text: "", dx, dy };
+    S.drafts.push(draft);
+    renderDrafts();
+    const box = els.drafts.querySelector(`[data-key="${draft.key}"]`);
+    if (box) {
+      revealRect(g.x + dx, g.y + dy, DRAFT_W, box.offsetHeight + 20);
+      box.querySelector("textarea").focus();
+    }
+  }
+
+  function removeDraft(key) {
+    const i = S.drafts.findIndex(d => d.key === key);
+    if (i >= 0) S.drafts.splice(i, 1);
+    renderDrafts();
+    const last = els.drafts.querySelector(".bb-draft:last-child textarea");
+    if (last) last.focus();
+  }
+
+  function renderDrafts() {
+    if (!S.tree) { els.drafts.innerHTML = ""; updateDraftBar(); return; }
+    const hiddenNow = hiddenSet();
+    S.drafts = S.drafts.filter(d => turn(d.sourceId) && !hiddenNow.has(d.sourceId));
+    const keep = new Set(S.drafts.map(d => d.key));
+    els.drafts.querySelectorAll(".bb-draft").forEach(el => { if (!keep.has(el.dataset.key)) el.remove(); });
+    S.drafts.forEach((d, i) => {
+      let box = els.drafts.querySelector(`[data-key="${d.key}"]`);
+      if (!box) {
+        box = document.createElement("div");
+        box.className = "bb-draft"; box.dataset.key = d.key; box.style.width = DRAFT_W + "px";
+        const quote = d.quote ? `<div class="bb-quote" style="--src:${core.sourceColor(S.tree, d.sourceId)}"><b>划中的${d.quote.source === "question" ? "提问" : d.quote.source === "summary" ? "摘要" : "原文"}</b>${esc(d.quote.text)}</div>` : "";
+        box.innerHTML = `<div class="bb-draft-head"><span class="bb-chip ${d.quote ? "hl" : ""}"></span><button class="bb-icon small" type="button" data-remove-draft title="删除这个小框（Esc）">×</button></div>
+          ${quote}<textarea rows="2" maxlength="20000" placeholder="${d.quote ? "就这段内容问点什么（可留空，只作引用）" : "继续提问…"}"></textarea>`;
+        const ta = box.querySelector("textarea");
+        ta.value = d.text;
+        ta.addEventListener("input", () => { d.text = ta.value; autosizeTextarea(ta); updateDraftBar(); scheduleLayoutDraftsOnly(); });
+        ta.addEventListener("keydown", e => {
+          if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendDrafts(); }
+          else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); removeDraft(d.key); }
+        });
+        box.querySelector("[data-remove-draft]").addEventListener("click", () => removeDraft(d.key));
+        els.drafts.append(box);
+      }
+      box.querySelector(".bb-chip").textContent = `${S.drafts.length > 1 ? `${i + 1}. ` : ""}${d.quote ? "划词" : "继续"} · 回答 #${num(d.sourceId)}`;
+    });
+    positionDrafts();
     applySelectionClasses();
+    updateDraftBar();
+    drawWires();
+  }
+  let draftTimer = 0;
+  function scheduleLayoutDraftsOnly() { clearTimeout(draftTimer); draftTimer = setTimeout(drawWires, 60); }
+  function autosizeTextarea(ta) { ta.style.height = "auto"; ta.style.height = Math.min(220, ta.scrollHeight + 2) + "px"; }
+
+  function positionDrafts() {
+    if (!S.layout) return;
+    for (const d of S.drafts) {
+      const g = S.layout.cards[d.sourceId];
+      const box = els.drafts.querySelector(`[data-key="${d.key}"]`);
+      if (!g || !box) continue;
+      box.style.left = g.x + d.dx + "px"; box.style.top = g.y + d.dy + "px";
+    }
   }
 
-  async function send() {
-    const question = els.question.value.trim();
-    const t = S.target;
-    if (!question || !t || els.send.disabled) return;
-    els.send.disabled = true;
+  function updateDraftBar() {
+    const n = S.drafts.length;
+    els.draftBar.classList.toggle("hidden", !n);
+    els.hint.classList.toggle("hidden", !!n || !S.tree || !S.tree.rootId);
+    if (!n) return;
+    const sources = [...new Set(S.drafts.map(d => d.sourceId))].map(id => "#" + num(id));
+    $("bbDraftSummary").innerHTML = `<b>${n} 个问题小框</b> · 来自 ${esc(sources.join("、"))}${n > 1 ? " → 将合成一张新卡片" : ""}`;
+    $("bbDraftSend").disabled = S.sending || !S.drafts.some(d => d.text.trim());
+  }
+
+  async function sendDrafts() {
+    if (S.sending || !S.drafts.length) return;
+    if (!S.drafts.some(d => d.text.trim())) { toast("至少在一个小框里写下问题。"); return; }
+    const blocked = S.drafts.find(d => !finished(turn(d.sourceId)));
+    if (blocked) { toast(`回答 #${num(blocked.sourceId)} 还没完成，完成后再发送。`); return; }
+    S.sending = true; updateDraftBar();
     try {
-      const payload = { kind: t.kind, parentId: t.parentId, question };
-      if (t.kind === "highlight") payload.quote = t.quote;
-      const { turn: created } = await api("POST", `/trees/${S.tree.id}/turns`, payload);
-      els.question.value = ""; autosize();
+      const questions = S.drafts.map(d => ({ sourceId: d.sourceId, text: d.text.trim(), quote: d.quote || undefined }));
+      const { turn: created } = await api("POST", `/trees/${S.tree.id}/turns`, { questions });
+      clearDrafts();
       upsertTurn(created);
       select(created.id);
-      setTarget({ parentId: created.id, kind: "follow" }, false);
       revealTurn(created.id);
     } catch (err) {
       toast(err.message);
     } finally {
-      renderTarget();
+      S.sending = false; updateDraftBar();
     }
   }
-  function autosize() { els.question.style.height = "auto"; els.question.style.height = Math.min(200, els.question.scrollHeight + 2) + "px"; }
+  $("bbDraftSend").addEventListener("click", sendDrafts);
+  $("bbDraftClear").addEventListener("click", () => { if (S.drafts.length < 2 || confirm(`清空 ${S.drafts.length} 个未发送的问题小框？`)) clearDrafts(); });
 
-  els.composer.addEventListener("submit", e => { e.preventDefault(); send(); });
-  els.question.addEventListener("input", autosize);
-  els.question.addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } });
-  els.targetClear.addEventListener("click", () => { setDefaultTarget(); els.question.focus(); });
+  /* ---------- 起点 ---------- */
+  async function sendRoot() {
+    const question = els.question.value.trim();
+    if (!question || !S.tree || S.tree.rootId) return;
+    els.send.disabled = true;
+    try {
+      const { turn: created } = await api("POST", `/trees/${S.tree.id}/turns`, { question });
+      els.question.value = "";
+      upsertTurn(created);
+      select(created.id);
+      revealTurn(created.id);
+    } catch (err) { toast(err.message); }
+    finally { els.send.disabled = false; }
+  }
+  els.composer.addEventListener("submit", e => { e.preventDefault(); sendRoot(); });
+  els.question.addEventListener("input", () => autosizeTextarea(els.question));
+  els.question.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendRoot(); } });
 
-  /* ---------- 卡片点击与按钮 ---------- */
+  /* ---------- 卡片点击、双击与按钮 ---------- */
   els.stage.addEventListener("click", async e => {
+    if (suppressClick || e.target.closest(".bb-draft")) return;  // 拖动画布结束时的那次 click 不算点击卡片
     const btn = e.target.closest("button");
-    if (btn) { await handleAction(btn); return; }
+    if (btn) { await handleAction(btn, e); return; }
     const card = e.target.closest(".bb-card");
     if (!card) return;
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && card.contains(sel.anchorNode)) return;  // 正在划词
-    const id = card.dataset.id;
-    select(id);
-    if (ready(turn(id))) setTarget({ parentId: id, kind: "follow" }, false);
-    openDrawer(id);
-  });
-  els.drawer.addEventListener("click", async e => {
-    const btn = e.target.closest("button[data-perm-allow], button[data-perm-deny]");
-    if (btn) { await handleAction(btn, S.drawerId); return; }
-    const quote = e.target.closest(".bb-qbox .bb-quote");
-    if (quote && S.drawerId) { const t = turn(S.drawerId); if (t && t.parentId) openDrawer(t.parentId, t.id); return; }
     const mark = e.target.closest("mark.bb-quote-mark");
-    if (mark) { const id = mark.dataset.child; select(id); revealTurn(id); }
+    if (mark) { select(mark.dataset.child); revealTurn(mark.dataset.child); return; }
+    const quote = e.target.closest(".bb-quote[data-quote-of]");
+    if (quote && turn(quote.dataset.quoteOf)) { select(quote.dataset.quoteOf); revealTurn(quote.dataset.quoteOf); return; }
+    // 单击卡片：高亮这一轮能看到的上下文；完整详情走「详情」按钮
+    select(card.dataset.id);
+    if (S.drawerId && S.drawerId !== card.dataset.id) openDrawer(card.dataset.id);
+  });
+  els.stage.addEventListener("dblclick", e => {
+    const card = e.target.closest(".bb-card");
+    if (!card || e.target.closest("button, .bb-draft, .bb-perm")) return;
+    window.getSelection().removeAllRanges();
+    els.ask.classList.add("hidden");
+    addDraft(card.dataset.id, null, toStage(e.clientX, e.clientY));
   });
 
-  async function handleAction(btn, drawerTurn) {
+  async function handleAction(btn, e) {
     const card = btn.closest(".bb-card");
-    const tid = (card && card.dataset.id) || drawerTurn;
+    const tid = (card && card.dataset.id) || S.drawerId;
     try {
-      if (btn.dataset.follow) { select(btn.dataset.follow); setTarget({ parentId: btn.dataset.follow, kind: "follow" }); }
+      if (btn.dataset.follow) {
+        const r = btn.getBoundingClientRect();
+        addDraft(btn.dataset.follow, null, toStage(r.left, r.bottom));
+      } else if (btn.dataset.details) { select(btn.dataset.details); openDrawer(btn.dataset.details); }
+      else if (btn.dataset.fullVersion) { select(btn.dataset.fullVersion); openFullVersion(btn.dataset.fullVersion); }
+      else if (btn.dataset.mergeView) { const id = btn.dataset.mergeView; S.showOriginal[id] = !S.showOriginal[id]; renderTurn(turn(id)); layoutNow(); }
+      else if (btn.dataset.mergeExpand) { const id = btn.dataset.mergeExpand; S.expandedMerge[id] = !S.expandedMerge[id]; rerenderAll(); revealTurn(id); }
+      else if (btn.dataset.expand) {
+        const id = btn.dataset.expand;
+        if (btn.dataset.to === S.mode) delete S.cardMode[id]; else S.cardMode[id] = btn.dataset.to;
+        renderTurn(turn(id)); layoutNow(); revealTurn(id);
+      }
       else if (btn.dataset.interrupt) { await api("POST", `/trees/${S.tree.id}/turns/${btn.dataset.interrupt}/interrupt`); toast("已请求中断"); }
       else if (btn.dataset.retry) { upsertTurn((await api("POST", `/trees/${S.tree.id}/turns/${btn.dataset.retry}/retry`)).turn); }
       else if (btn.dataset.permAllow || btn.dataset.permDeny) {
@@ -440,6 +734,7 @@
         await api("POST", `/trees/${S.tree.id}/turns/${tid}/permissions/${encodeURIComponent(btn.dataset.permAllow || btn.dataset.permDeny)}`, { allow });
       }
     } catch (err) { toast(err.message); }
+    if (e) e.stopPropagation();
   }
 
   /* ---------- 划词提问 ---------- */
@@ -450,12 +745,15 @@
     if (!text) return null;
     const range = sel.getRangeAt(0);
     const node = range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+    if (node.closest(".bb-draft")) return null;
     let turnId = null, source = "full";
-    const card = node.closest(".bb-a");
+    const card = node.closest(".bb-card");
     if (card && els.stage.contains(card)) {
+      // 回答（摘要 / 预览 / 全文）和问题小框里的文字都可以划词
       turnId = card.dataset.id;
       if (node.closest(".bb-summary")) source = "summary";
-      else if (!node.closest(".bb-preview")) return null;
+      else if (node.closest(".bb-qtext")) source = "question";
+      else if (!node.closest(".bb-preview, .bb-answer-full")) return null;
     } else if (node.closest(".bb-answer-full") && S.drawerId) {
       turnId = S.drawerId;
     }
@@ -463,11 +761,12 @@
     return { turnId, text: text.slice(0, 4000), source, rect: range.getBoundingClientRect() };
   }
 
-  document.addEventListener("mouseup", () => setTimeout(() => {
+  document.addEventListener("mouseup", e => setTimeout(() => {
+    if (e.target.closest && e.target.closest(".bb-ask-selection")) return;
     const info = selectionInfo();
     S.pendingSel = info;
     if (!info) { els.ask.classList.add("hidden"); return; }
-    els.ask.style.left = Math.max(8, Math.min(window.innerWidth - 110, info.rect.left + info.rect.width / 2 - 45)) + "px";
+    els.ask.style.left = Math.max(8, Math.min(window.innerWidth - 120, info.rect.left + info.rect.width / 2 - 50)) + "px";
     els.ask.style.top = Math.max(8, info.rect.top - 38) + "px";
     els.ask.classList.remove("hidden");
   }, 0));
@@ -481,15 +780,15 @@
     els.ask.classList.add("hidden");
     if (!info) return;
     const parent = turn(info.turnId);
-    if (!ready(parent)) { toast("这条回答还没完成，完成后再划词提问。"); return; }
     const quote = { text: info.text, source: info.source };
-    if (info.source === "full") {
+    if (info.source === "full" && !(showingMerged(parent) && els.stage.contains(document.elementFromPoint(info.rect.left + 1, info.rect.top + 1)))) {
       const hit = core.locateQuote(parent.answer.markdown, info.text);
       if (hit) { quote.start = hit.start; quote.end = hit.end; }
     }
     window.getSelection().removeAllRanges();
-    select(info.turnId);
-    setTarget({ parentId: info.turnId, kind: "highlight", quote });
+    // 选区在画布上：小框放在选区正下方；在抽屉里：放在卡片右下
+    const inStage = els.stage.contains(document.elementFromPoint(info.rect.left + 1, info.rect.top + 1));
+    addDraft(info.turnId, quote, inStage ? toStage(info.rect.left, info.rect.bottom) : null);
   });
 
   /* ---------- 抽屉 ---------- */
@@ -503,9 +802,17 @@
     els.drawer.classList.remove("open"); els.drawer.setAttribute("aria-hidden", "true");
   }
   $("bbDrawerClose").addEventListener("click", closeDrawer);
-  $("bbDrawerFollow").addEventListener("click", () => { if (S.drawerId) setTarget({ parentId: S.drawerId, kind: "follow" }); });
+  $("bbDrawerFollow").addEventListener("click", () => { if (S.drawerId) addDraft(S.drawerId, null, null); });
   $("bbDrawerInterrupt").addEventListener("click", () => S.drawerId && handleAction({ dataset: { interrupt: S.drawerId }, closest: () => null }));
   $("bbDrawerRetry").addEventListener("click", () => S.drawerId && handleAction({ dataset: { retry: S.drawerId }, closest: () => null }));
+  els.drawer.addEventListener("click", async e => {
+    const btn = e.target.closest("button[data-perm-allow], button[data-perm-deny]");
+    if (btn) { await handleAction(btn); return; }
+    const quote = e.target.closest(".bb-qbox .bb-quote[data-quote-of]");
+    if (quote && turn(quote.dataset.quoteOf)) { openDrawer(quote.dataset.quoteOf, S.drawerId); return; }
+    const mark = e.target.closest("mark.bb-quote-mark");
+    if (mark) { const id = mark.dataset.child; select(id); revealTurn(id); }
+  });
 
   function renderDrawer(fresh, focusChild) {
     const t = turn(S.drawerId);
@@ -516,12 +823,19 @@
     const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 30;
     const scroll = body.scrollTop;
     const a = t.answer, n = num(t.id);
-    $("bbDrawerEyebrow").textContent = `第 ${n} 轮 · ${core.KIND_LABEL[t.kind]}${t.parentId ? ` · 接回答 #${num(t.parentId)}` : ""}`;
-    $("bbDrawerTitle").textContent = t.question.split("\n")[0].slice(0, 80);
-    $("bbDrawerFollow").disabled = !ready(t);
+    const srcs = core.sourcesOf(t);
+    $("bbDrawerEyebrow").textContent = `第 ${n} 轮 · ${core.KIND_LABEL[t.kind] || ""}${srcs.length ? ` · 接 ${srcs.map(s => "#" + num(s)).join("、")}` : ""}`;
+    $("bbDrawerTitle").textContent = (t.question || "").split("\n")[0].slice(0, 80);
+    $("bbDrawerFollow").disabled = !finished(t);
+    $("bbDrawerFullVersion").classList.toggle("hidden", !(a.status === "done" && hasBranches(t.id)));
     $("bbDrawerInterrupt").classList.toggle("hidden", !running(t));
     $("bbDrawerRetry").classList.toggle("hidden", !((a.status === "error" || a.status === "interrupted") && !hasChildren(t.id)));
-    const quote = t.quote ? `<div class="bb-quote" title="在原回答中定位"><b>划中的原文 · 点击在回答 #${num(t.parentId)} 中定位</b>${esc(t.quote.text)}</div>` : "";
+    const qs = core.questionsOf(t);
+    const questions = qs.map((q, i) => {
+      const quote = q.quote && q.quote.text
+        ? `<div class="bb-quote" data-quote-of="${esc(q.sourceId || "")}" style="--src:${core.sourceColor(S.tree, q.sourceId)}" title="在来源中定位"><b>摘自 #${num(q.sourceId)} · 点击在原文中定位</b>${esc(q.quote.text)}</div>` : "";
+      return `<div class="bb-qbox">${quote}<b>${qs.length > 1 ? `问题 ${i + 1}` : "提问"}${!quote && q.sourceId && qs.length > 1 ? `（接 #${num(q.sourceId)}）` : ""}：</b>${esc(q.text || "（就这段内容展开）")}</div>`;
+    }).join("");
     const files = a.filesChanged.length ? `<p class="bb-section-title">修改的文件（分支不隔离文件，主线也能看到这些改动）</p><ul class="bb-files">${a.filesChanged.map(f => `<li><code>${esc(f)}</code></li>`).join("")}</ul>` : "";
     const tools = a.toolEvents.length ? `<p class="bb-section-title">工具调用（${a.toolEvents.length}）</p><div class="bb-tools">${a.toolEvents.map(ev => {
       const input = typeof ev.input === "string" ? ev.input : JSON.stringify(ev.input, null, 2);
@@ -532,20 +846,29 @@
     }).join("")}</div>` : "";
     const status = running(t) ? `<div class="bb-statusline">${esc(a.statusLine || "等待 Claude Code…")}</div>` : "";
     const error = a.status === "error" ? `<p class="bb-error-text">${esc(a.error)}</p>` : "";
-    body.innerHTML = `<div class="bb-qbox">${quote}<b>提问：</b>${esc(t.question)}</div>${files}${tools}${status}${permissionsHtml(t)}${error}
+    body.innerHTML = `${questions}${files}${tools}${status}${permissionsHtml(t)}${error}
       <div class="bb-answer-full bb-md">${core.markdownToHtml(a.markdown) || (running(t) ? "" : "<p><i>（没有文字回答）</i></p>")}</div>`;
-    // 回显：本回答里被划词追问过的原文
-    const container = body.querySelector(".bb-answer-full");
-    let focusMark = null;
-    for (const cid of S.tree.order) {
-      const c = S.tree.turns[cid];
-      if (c.parentId !== t.id || c.kind !== "highlight" || !c.quote || c.quote.source === "summary") continue;
-      const mark = markText(container, c.quote.text, cid);
-      if (cid === focusChild) focusMark = mark;
-    }
+    const focusMark = markChildQuotes(body.querySelector(".bb-answer-full"), t.id, "full", focusChild);
     if (focusMark) focusMark.scrollIntoView({ block: "center" });
     else if (fresh) body.scrollTop = 0;
     else body.scrollTop = atBottom && running(t) ? body.scrollHeight : scroll;
+  }
+
+  /** 回显：在一条回答（kind="full"）或它的问题小框（kind="question"）里标出被划词追问过的原文。
+      返回 focusChild 对应的 mark。 */
+  function markChildQuotes(container, turnId, kind, focusChild) {
+    if (!container || !S.tree) return null;
+    let focusMark = null;
+    for (const cid of S.tree.order) {
+      for (const q of core.questionsOf(S.tree.turns[cid])) {
+        if (q.sourceId !== turnId || !q.quote || !q.quote.text) continue;
+        const src = q.quote.source || "full";
+        if ((kind === "question") !== (src === "question") || src === "summary") continue;
+        const mark = markText(container, q.quote.text, cid);
+        if (cid === focusChild && mark) focusMark = mark;
+      }
+    }
+    return focusMark;
   }
 
   /** 在渲染后的 DOM 中找到一段文字（可跨元素），用 <mark> 包起来。返回第一个 mark。 */
@@ -553,7 +876,9 @@
     const norm = s => s.replace(/\s+/g, "");
     const target = norm(text);
     if (!target) return null;
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => (n.parentElement && n.parentElement.closest(".bb-quote, .bb-tag, .bb-num") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
     const nodes = []; let flat = ""; const map = [];
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       nodes.push(node);
@@ -573,17 +898,181 @@
       const range = document.createRange();
       range.setStart(node, start); range.setEnd(node, end);
       const mark = document.createElement("mark");
-      mark.className = "bb-quote-mark"; mark.dataset.child = childId; mark.title = `由此划词提问：#${num(childId)}（点击定位）`;
+      mark.className = "bb-quote-mark"; mark.dataset.child = childId; mark.title = `由此提问：#${num(childId)}（点击定位）`;
       try { range.surroundContents(mark); first = mark; } catch (_e) { /* 跨越元素边界的片段跳过 */ }
     }
     return first;
   }
 
+  /* ---------- 完整版 / 合并子树 ----------
+     对一张卡片：把它下面的划词子树自底向上整合回来（深的先合并，父卡片用子卡片合并后的内容）。
+     预览后可以导出 Markdown，也可以「合并进第 n 轮」——卡片显示合并版，并入的卡片收起。
+     默认零 token：分类用规则，修正附在段后。两个按钮才会调用模型：一次调用给全部分支分类；
+     逐层改写含修正的段落（先改最深的一层，再改上一层，有缓存）。分类调整和改写结果记在浏览器里。 */
+  const FV = { turnId: null, decisions: {}, rewrites: {}, busy: false, result: null };
+  const fvKey = () => `branchboard.fv.${S.tree.id}.${FV.turnId}`;
+  const estTokens = chars => { const k = Math.max(0.1, chars / 1.6 / 1000); return k < 1 ? `${Math.round(k * 1000)}` : `${k.toFixed(1)}k`; };
+  const hasBranches = id => core.fullVersionItems(S.tree, id).length > 0;
+  const fvOpts = () => ({ decisions: FV.decisions, rewrites: FV.rewrites });
+  const rewritten = g => !!(FV.rewrites[g.nodeId] && typeof FV.rewrites[g.nodeId][g.block] === "string");
+
+  function openFullVersion(turnId) {
+    FV.turnId = turnId; FV.busy = false;
+    try {
+      const saved = JSON.parse(localStorage.getItem(fvKey()) || "{}");
+      FV.decisions = saved.decisions || {};
+      // 旧格式 {block: text} 只属于这一张卡片
+      const rw = saved.rewrites || {};
+      FV.rewrites = Object.values(rw).some(v => typeof v === "string") ? { [turnId]: rw } : rw;
+    } catch (_e) { FV.decisions = {}; FV.rewrites = {}; }
+    $("bbFvTitle").textContent = `第 ${num(turnId)} 轮 · ${(turn(turnId).question || "").split("\n")[0].slice(0, 60)}`;
+    renderFullVersion();
+    $("bbFvDialog").showModal();
+  }
+  function saveFv() {
+    try { localStorage.setItem(fvKey(), JSON.stringify({ decisions: FV.decisions, rewrites: FV.rewrites })); } catch (_e) { /* 忽略 */ }
+  }
+
+  function renderFullVersion() {
+    const t = turn(FV.turnId);
+    if (!t) return;
+    const result = FV.result = core.buildFullVersion(S.tree, FV.turnId, fvOpts());
+    const { stats } = result;
+    const levels = new Set(result.items.map(it => it.depth)).size;
+    $("bbFvStats").textContent = `${stats.total} 个划词分支${levels > 1 ? `（${levels} 层）` : ""} · 修正 ${stats.correct} · 释义 ${stats.explain} · 延伸 ${stats.extend}`
+      + (stats.ignore ? ` · 忽略 ${stats.ignore}` : "") + (stats.rewritten ? ` · 已改写 ${stats.rewritten} 段` : "");
+    // 分支列表：按所在卡片分组、按深度缩进；每项可以改分类
+    let lastNode = null;
+    $("bbFvItems").innerHTML = result.items.map(it => {
+      const child = turn(it.childId);
+      const opts = Object.entries(core.FV_CATEGORIES).map(([v, label]) => `<option value="${v}"${it.category === v ? " selected" : ""}>${label}</option>`).join("");
+      const where = it.source === "question" ? "划在提问上" : it.source === "summary" ? "划在摘要上" : it.anchor ? "" : "原文里没找到这段";
+      const head = it.nodeId !== lastNode ? `<p class="bb-fv-group" style="margin-left:${it.depth * 14}px">划在 #${it.nodeN} 上${it.depth ? `（第 ${it.depth + 1} 层）` : ""}</p>` : "";
+      lastNode = it.nodeId;
+      return `${head}<div class="bb-fv-item cat-${it.category}" style="margin-left:${it.depth * 14}px">
+        <div class="bb-fv-item-head"><button class="bb-link" type="button" data-fv-goto="${it.childId}">#${it.n}</button>
+          <select data-fv-key="${esc(it.key)}"${it.done ? "" : " disabled"} aria-label="分类">${opts}</select>
+          ${where ? `<span class="bb-fv-note">${where}</span>` : ""}${!it.done ? '<span class="bb-fv-note">回答未完成</span>' : ""}</div>
+        <div class="bb-quote" style="--src:${core.sourceColor(S.tree, it.nodeId)}">${esc(it.quote)}</div>
+        <div class="bb-fv-q">${esc(it.question || "（就这段内容展开）")}</div>
+        <div class="bb-fv-gist">${esc(child ? core.branchGist(child, 120) : "")}</div></div>`;
+    }).join("") || '<p class="bb-hint">这条回答上还没有划词分支。</p>';
+    $("bbFvPreview").innerHTML = footnoteHtml(core.markdownToHtml(result.markdown));
+    // 两个模型按钮：写明大约会花多少 token
+    const items = result.items.filter(it => it.done);
+    const answerLen = (id, cap) => Math.min(cap, ((turn(id) || {}).answer || {}).markdown ? turn(id).answer.markdown.length : 0);
+    const classifyChars = 500 + items.reduce((n, it) => n + it.quote.length + it.question.length + answerLen(it.childId, 600) + 40, 0);
+    const allTargets = core.rewriteTargets(S.tree, FV.turnId, fvOpts());
+    const targets = allTargets.filter(g => !rewritten(g));
+    const rewriteChars = targets.reduce((n, g) => n + 400 + g.paragraph.length * 2.5 + g.items.reduce((m, i) => m + Math.min(6000, i.childText.length) + 80, 0), 0);
+    const cb = $("bbFvClassify"), rb = $("bbFvRewrite");
+    cb.textContent = `用模型分类（约 ${estTokens(classifyChars)} token）`;
+    cb.disabled = FV.busy || !items.length;
+    const doneCorrections = Object.values(FV.rewrites).reduce((n, m) => n + Object.keys(m || {}).length, 0);
+    rb.textContent = targets.length ? `用模型改写修正处（${targets.length} 段${new Set(targets.map(g => g.depth)).size > 1 ? "，逐层" : ""}，约 ${estTokens(rewriteChars)} token）`
+      : doneCorrections ? "撤销模型改写" : "用模型改写修正处";
+    rb.disabled = FV.busy || (!targets.length && !doneCorrections);
+    rb.dataset.mode = targets.length ? "rewrite" : "undo";
+    // 合并：把合并版写回这张卡片，并入的卡片收起
+    const mv = core.mergedVersion(S.tree, FV.turnId, fvOpts());
+    const mb = $("bbFvMerge");
+    mb.textContent = t.merged ? `更新合并（收起 ${mv.absorbed.length} 张）` : `合并进第 ${num(FV.turnId)} 轮（收起 ${mv.absorbed.length} 张卡片）`;
+    mb.disabled = FV.busy || !mv.absorbed.length;
+    mb.title = mv.absorbed.length ? "卡片改为显示合并版；并进来的卡片收起，可随时展开或取消合并" : "这张卡片下面没有可以并进来的分支";
+    $("bbFvUnmerge").classList.toggle("hidden", !t.merged);
+  }
+
+  async function fvClassify() {
+    const items = FV.result.items.filter(it => it.done).map(it => ({ key: it.key, nodeId: it.nodeId, childId: it.childId, qi: it.qi }));
+    FV.busy = true; renderFullVersion(); $("bbFvClassify").textContent = "正在分类…";
+    try {
+      const { categories } = await api("POST", `/trees/${S.tree.id}/turns/${FV.turnId}/full-version/classify`, { items });
+      Object.assign(FV.decisions, categories);
+      saveFv();
+      toast(`模型给 ${Object.keys(categories).length} 个分支分了类，可以再手动调整。`);
+    } catch (err) { toast(err.message); }
+    finally { FV.busy = false; renderFullVersion(); }
+  }
+
+  /** 逐层改写：每次只发当前最深一层的段落；改完重新计算，上一层拿到的是已经吸收了下层修正的内容。 */
+  async function fvRewrite() {
+    if ($("bbFvRewrite").dataset.mode === "undo") { FV.rewrites = {}; saveFv(); renderFullVersion(); return; }
+    FV.busy = true;
+    let called = 0, cached = 0;
+    try {
+      for (let round = 0; round < 8; round++) {
+        const pending = core.rewriteTargets(S.tree, FV.turnId, fvOpts()).filter(g => !rewritten(g));
+        if (!pending.length) break;
+        const depth = Math.max(...pending.map(g => g.depth));
+        const level = pending.filter(g => g.depth === depth).slice(0, 12);
+        renderFullVersion();
+        $("bbFvRewrite").textContent = `正在改写 ${level.length} 段（第 ${depth + 1} 层）…`;
+        const groups = level.map(g => ({ nodeId: g.nodeId, block: g.block, paragraph: g.paragraph,
+          items: g.items.map(i => ({ childId: i.childId, qi: i.qi, childText: i.childText })) }));
+        const res = await api("POST", `/trees/${S.tree.id}/turns/${FV.turnId}/full-version/rewrite`, { groups });
+        for (const r of res.rewrites) (FV.rewrites[r.nodeId] = FV.rewrites[r.nodeId] || {})[r.block] = r.text;
+        called += res.called; cached += res.cached;
+        saveFv();
+      }
+      toast(called ? `改写了 ${called} 段${cached ? `，另有 ${cached} 段用了缓存` : ""}。` : "全部用了缓存，没有花 token。");
+    } catch (err) { toast(err.message); }
+    finally { FV.busy = false; renderFullVersion(); }
+  }
+
+  async function fvMerge() {
+    const mv = core.mergedVersion(S.tree, FV.turnId, fvOpts());
+    if (!mv.absorbed.length) return;
+    FV.busy = true; renderFullVersion();
+    try {
+      const { turn: updated } = await api("POST", `/trees/${S.tree.id}/turns/${FV.turnId}/merge`,
+        { markdown: mv.markdown, absorbed: mv.absorbed, stats: mv.stats });
+      delete S.showOriginal[FV.turnId]; delete S.expandedMerge[FV.turnId];
+      upsertTurn(updated);
+      $("bbFvDialog").close();
+      rerenderAll();
+      select(FV.turnId); revealTurn(FV.turnId);
+      toast(`已合并：第 ${num(FV.turnId)} 轮现在显示合并版，收起了 ${mv.absorbed.length} 张卡片。`);
+    } catch (err) { toast(err.message); }
+    finally { FV.busy = false; if ($("bbFvDialog").open) renderFullVersion(); }
+  }
+
+  async function unmerge(turnId) {
+    try {
+      const { turn: updated } = await api("DELETE", `/trees/${S.tree.id}/turns/${turnId}/merge`);
+      upsertTurn(updated);
+      rerenderAll();
+      toast(`已取消合并，第 ${num(turnId)} 轮恢复原样。`);
+    } catch (err) { toast(err.message); }
+  }
+  $("bbFvMerge").addEventListener("click", fvMerge);
+  $("bbFvUnmerge").addEventListener("click", async () => { await unmerge(FV.turnId); $("bbFvDialog").close(); });
+
+  $("bbFvItems").addEventListener("change", e => {
+    const sel = e.target.closest("select[data-fv-key]");
+    if (!sel) return;
+    FV.decisions[sel.dataset.fvKey] = sel.value;
+    saveFv(); renderFullVersion();
+  });
+  $("bbFvItems").addEventListener("click", e => {
+    const btn = e.target.closest("[data-fv-goto]");
+    if (!btn) return;
+    $("bbFvDialog").close(); select(btn.dataset.fvGoto); revealTurn(btn.dataset.fvGoto);
+  });
+  $("bbFvClassify").addEventListener("click", fvClassify);
+  $("bbFvRewrite").addEventListener("click", fvRewrite);
+  $("bbFvClose").addEventListener("click", () => $("bbFvDialog").close());
+  $("bbFvCopy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(FV.result.markdown); toast("已复制完整版 Markdown"); } catch (_e) { toast("复制失败，请改用导出。"); }
+  });
+  $("bbFvExport").addEventListener("click", () => {
+    if (FV.result) download(`${fileStem()}-第${num(FV.turnId)}轮-完整版.md`, FV.result.markdown, "text/markdown;charset=utf-8");
+  });
+  $("bbDrawerFullVersion").addEventListener("click", () => S.drawerId && openFullVersion(S.drawerId));
+
   /* ---------- 新建 / 设置 / 菜单 / 导出 ---------- */
   function openTreeDialog() {
     $("bbTreeTitle").value = ""; $("bbTreeError").classList.add("hidden");
-    const last = S.tree ? S.tree.cwd : "";
-    $("bbTreeCwd").value = last;
+    $("bbTreeCwd").value = S.tree ? S.tree.cwd : "";
     $("bbTreeModel").value = ""; $("bbTreeEffort").value = ""; $("bbTreePermission").value = "default";
     $("bbTreeDialog").showModal();
   }
@@ -610,7 +1099,11 @@
       $("bbTreeError").textContent = err.message; $("bbTreeError").classList.remove("hidden");
     }
   });
-  els.treeSelect.addEventListener("change", () => els.treeSelect.value && openTree(els.treeSelect.value));
+  els.treeSelect.addEventListener("change", () => {
+    if (!els.treeSelect.value) return;
+    if (S.drafts.length && !confirm(`切换对话树会丢掉 ${S.drafts.length} 个未发送的问题小框，继续？`)) { els.treeSelect.value = S.tree.id; return; }
+    openTree(els.treeSelect.value);
+  });
   for (const [id, key] of [["bbModel", "model"], ["bbEffort", "effort"], ["bbPermission", "permissionMode"]]) {
     $(id).addEventListener("change", async () => {
       if (!S.tree) return;
@@ -660,17 +1153,18 @@
     const typing = e.target.closest && e.target.closest("input, textarea, select, [contenteditable]");
     if (e.key === "Escape") {
       if (els.drawer.classList.contains("open")) closeDrawer();
-      else if (S.target && S.target.kind === "highlight") setDefaultTarget();
       else select(null);
     } else if (!typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
       if (e.key === "f") fitAll();
-      else if (e.key === "/" || e.key === "Enter") { e.preventDefault(); els.question.focus(); }
+      else if (e.key === "Enter" && S.drafts.length) { e.preventDefault(); sendDrafts(); }
     }
   });
+  window.addEventListener("beforeunload", e => { if (S.drafts.some(d => d.text.trim())) { e.preventDefault(); e.returnValue = ""; } });
   window.addEventListener("resize", scheduleLayout);
 
   /* ---------- 启动 ---------- */
   applyTransform();
+  setMode(S.mode);
   (async () => {
     try { await loadConfig(); } catch (err) { showStatus(err.message); }
     try { await loadTrees(new URLSearchParams(location.search).get("tree")); } catch (err) { toast(err.message); showNoTree(); }

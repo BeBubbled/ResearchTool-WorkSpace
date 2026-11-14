@@ -8011,10 +8011,12 @@ app.register_blueprint(create_research_gap_blueprint(research_gap_service))
 # A whole-paper translation is one long request; allow up to 40 minutes.
 paper_revision_claude_runner = ClaudeCodeRunner(timeout=2400)
 # 对话树：每轮驱动一个完整的 Claude Code 会话（含工具与权限），摘要走一次轻量无工具调用。
+branchboard_text_runner = ClaudeCodeRunner(timeout=180)
 branchboard_service = BranchboardService(
     RUNTIME_DIR / "branchboard",
-    summarize=claude_summarizer(ClaudeCodeRunner(timeout=180)),
+    summarize=claude_summarizer(branchboard_text_runner),
     claude_status=paper_revision_claude_runner.status,
+    complete=branchboard_text_runner.run,  # 完整版的模型辅助：分类、改写修正段落
 )
 app.register_blueprint(create_branchboard_blueprint(branchboard_service))
 GOOGLE_TRANSLATE_ENV_KEY = "GOOGLE_TRANSLATE_API_KEY"
