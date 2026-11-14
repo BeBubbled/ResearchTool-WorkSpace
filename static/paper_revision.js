@@ -121,14 +121,19 @@
     const running = active();
     $('projectSelect').disabled = busy;
     $('revision').textContent = `v${project.revision}`;
-    const translateOn = project.translate !== false;
+    // A pasted Chinese text is annotate-only: no translation, no revision; comments leave by export / copy.
+    const chineseSource = project.language === 'zh';
+    const translateOn = project.translate !== false && !chineseSource;
     const units = snapshot.blocks.flatMap(b => b.units), missing = units.filter(u => !u.zh).length;
-    const kind = project.comments.length ? 'revise' : translateOn && missing ? 'translate' : null;
+    const kind = chineseSource ? null : project.comments.length ? 'revise' : translateOn && missing ? 'translate' : null;
     submitPlan = {kind, missing, units: units.length, comments: project.comments.length, translateOn};
-    $('submit').textContent = running ? '执行中…' : kind === 'translate' ? (missing === units.length ? '生成中文对照…' : `补译缺失中文（${missing} 句）…`)
+    $('submit').textContent = running ? '执行中…' : chineseSource ? '中文原文 · 仅批注与导出' : kind === 'translate' ? (missing === units.length ? '生成中文对照…' : `补译缺失中文（${missing} 句）…`)
       : `提交本轮 ${project.comments.length} 条批注…`;
     $('submit').disabled = busy || running || !kind;
-    $('translateToggle').checked = translateOn; $('translateToggle').disabled = busy || running;
+    document.querySelector('.reading-area').classList.toggle('source-zh', chineseSource);
+    $('enHeading').firstChild.textContent = chineseSource ? '中 ' : 'EN ';
+    $('enHeading').querySelector('span').textContent = chineseSource ? '中文原文 · 圈选文字添加批注，完成后导出或复制批注' : '英文原文 / 当前修订稿 · 也可圈选批注';
+    $('translateToggle').checked = translateOn; $('translateToggle').disabled = busy || running || chineseSource;
     $('retranslate').hidden = !translateOn || !units.some(u => u.zh); $('retranslate').disabled = busy || running;
     $('reparse').disabled = busy || running;
     $('projectSettings').disabled = busy || running;
@@ -143,6 +148,7 @@
     const job = project.job;
     $('notice').classList.toggle('warning', !!job?.warning);
     $('notice').textContent = job ? `${statusNames[job.status] || job.status} · ${job.progress}${job.warning ? ` · ⚠ ${job.warning}` : ''}${jobEngine(job)}${running && job.kind === 'translate' ? ' · 已出现的中文可直接圈选批注' : ''}`
+      : chineseSource ? '中文原文已保存。圈选文字添加批注，完成后用“导出批注”或“复制批注”带走。'
       : translateOn ? '原稿已保存。生成中文对照后在中文上圈选批注，也可直接在英文上圈选。' : '原稿已保存（未开启翻译）。直接在左侧英文上圈选文字添加批注。';
     if (job?.error) fail(new Error(job.error));
   }
@@ -818,6 +824,23 @@
   });
   window.addEventListener('dragover', e => { if (Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
   window.addEventListener('drop', e => { if (Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
+  // Temporary text from the clipboard (English is translated like a paper; Chinese is annotate-only).
+  $('pasteClipboard').addEventListener('click', async () => {
+    clearError();
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) throw new Error('剪贴板里没有文字。');
+      $('source').value = text; $('source').dispatchEvent(new Event('input'));
+      if (!$('title').value.trim()) $('title').value = `剪贴板 · ${text.trim().split('\n')[0].slice(0, 30)}`;
+    } catch (error) { fail(error.name === 'NotAllowedError' ? new Error('浏览器未允许读取剪贴板，请直接在文本框中按 Ctrl+V 粘贴。') : error); }
+  });
+  $('source').addEventListener('input', () => {
+    const text = $('source').value.replace(/\\[A-Za-z@]+\*?/g, ' ');
+    const cjk = (text.match(/[㐀-鿿豈-﫿]/g) || []).length, latin = (text.match(/[A-Za-z]/g) || []).length;
+    $('sourceLanguage').textContent = !text.trim() ? '英文正文可生成中文对照；中文正文只用于圈选批注和导出批注（不翻译、不修订）。'
+      : cjk * 2 > latin ? '识别为中文：导入后直接在原文上圈选批注，再导出或复制批注（不翻译、不修订）。'
+      : `识别为英文：${$('importTranslate').checked ? '导入后可生成中文对照，' : ''}在中英文上圈选批注、导出批注或提交修订。`;
+  });
   $('importForm').addEventListener('submit', async e => {
     e.preventDefault(); clearError(); const button = e.submitter; button.disabled = true;
     try {
@@ -897,16 +920,72 @@
     } catch (error) { fail(error); }
   }
   $('sendCommentsToPrompts').addEventListener('click', sendCommentsToPrompts);
-  $('importComments').addEventListener('click', () => $('importCommentsFile').click());
+  // ---- Comments as text: a ``` block to copy (readable Markdown or re-importable JSON), no download needed.
+  const fence = (text, lang) => { const ticks = '`'.repeat(Math.max(3, ...(text.match(/`+/g) || []).map(run => run.length + 1))); return `${ticks}${lang}\n${text}\n${ticks}`; };
+  const unfence = text => { const match = text.trim().match(/^(`{3,})[^\n]*\n([\s\S]*?)\n\1\s*$/); return match ? match[2] : text.trim(); };
+  function commentsMarkdown(bundle) {
+    const chineseSource = project.language === 'zh';
+    const lines = [`# 批注 · ${bundle.paper}（v${bundle.revision}，共 ${bundle.comments.length} 条）`];
+    bundle.comments.forEach((comment, index) => {
+      lines.push('', `## ${index + 1}. 范围：${scopes[comment.scope] || comment.scope}`);
+      comment.anchors.forEach(anchor => {
+        lines.push(`- 选中${anchor.side === 'zh' ? '（中文对照）' : chineseSource ? '' : '（英文）'}：「${anchor.quote}」`);
+        if (anchor.english_sentence && anchor.english_sentence.trim() !== anchor.quote.trim()) lines.push(`  - 所在句：${anchor.english_sentence.trim()}`);
+        if (!chineseSource && anchor.chinese_sentence) lines.push(`  - 中文对照：${anchor.chinese_sentence.trim()}`);
+      });
+      lines.push('', ...comment.text.split('\n').map(line => `> ${line}`));
+    });
+    return lines.join('\n');
+  }
+  let copyBundle = null;
+  function renderCopyText() {
+    if (!copyBundle) return;
+    const json = document.querySelector('input[name="copyFormat"]:checked').value === 'json';
+    $('copyCommentsText').value = json ? fence(JSON.stringify(copyBundle, null, 2), 'json') : fence(commentsMarkdown(copyBundle), 'markdown');
+  }
+  $('copyComments').addEventListener('click', async () => {
+    if (!project) return;
+    clearError();
+    try {
+      copyBundle = await api(`${base}/${project.id}/comments/export`);  // also marks this round as exported
+      if (!copyBundle.comments.length) throw new Error('还没有批注可复制。');
+      $('copyCommentsButton').textContent = '复制到剪贴板';
+      renderCopyText(); $('copyCommentsDialog').showModal();
+      $('copyCommentsText').focus(); $('copyCommentsText').select();
+      load(project.id, true).catch(() => {});
+    } catch (error) { fail(error); }
+  });
+  document.querySelectorAll('input[name="copyFormat"]').forEach(input => input.addEventListener('change', renderCopyText));
+  $('copyCommentsButton').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('copyCommentsText').value); }
+    catch { $('copyCommentsText').select(); document.execCommand('copy'); }
+    $('copyCommentsButton').textContent = '已复制';
+    setTimeout(() => { $('copyCommentsButton').textContent = '复制到剪贴板'; }, 1500);
+  });
+  // ---- Import comments: a copied JSON block on the clipboard is offered first, otherwise pick a file.
+  async function importBundle(data) {
+    const result = await post('comments/import', {revision: project.revision, data});
+    project = {...result.project, session_folder: project.session_folder};
+    visitNotes.push({kind: result.unplaced.length ? 'warn' : 'ok', text: `已导入 ${result.imported} 条批注` +
+      (result.unplaced.length ? `；${result.unplaced.length} 条因原文已改动无法定位：${result.unplaced.join('；').slice(0, 300)}` : '。')});
+    renderComments(); renderControls(); markComments(); renderBanners();
+  }
+  $('importComments').addEventListener('click', async () => {
+    let bundle = null;
+    try { bundle = JSON.parse(unfence(await navigator.clipboard.readText())); } catch { bundle = null; }
+    if (bundle?.format === 'paper-revision-comments' && Array.isArray(bundle.comments) &&
+        confirm(`剪贴板里有 ${bundle.comments.length} 条批注（${bundle.paper || '未命名'} · v${bundle.revision ?? '?'}）。\n确定：从剪贴板导入；取消：改为选择 .json 文件。`)) {
+      clearError();
+      try { await importBundle(bundle); } catch (error) { fail(error); }
+      return;
+    }
+    $('importCommentsFile').click();
+  });
   $('importCommentsFile').addEventListener('change', async () => {
     const file = $('importCommentsFile').files[0]; $('importCommentsFile').value = '';
     if (!file) return;
     try {
-      const result = await post('comments/import', {revision: project.revision, data: JSON.parse(await file.text())});
-      project = {...result.project, session_folder: project.session_folder};
-      visitNotes.push({kind: result.unplaced.length ? 'warn' : 'ok', text: `已导入 ${result.imported} 条批注` +
-        (result.unplaced.length ? `；${result.unplaced.length} 条因原文已改动无法定位：${result.unplaced.join('；').slice(0, 300)}` : '。')});
-      renderComments(); renderControls(); markComments(); renderBanners();
+      await importBundle(JSON.parse(unfence(await file.text())));
     } catch (error) { fail(error instanceof SyntaxError ? new Error('批注文件不是有效的 JSON。') : error); }
   });
   $('retranslate').addEventListener('click', async () => {

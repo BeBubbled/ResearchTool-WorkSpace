@@ -15,7 +15,7 @@ import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from flask import Blueprint, jsonify, render_template, request, send_file
 
@@ -37,6 +37,26 @@ ACTIVE = {"queued", "running"}
 MAX_SOURCE = 500_000
 SCOPES = {"auto", "paragraph", "section", "document"}
 TRANSLATORS = {"llm", "google"}
+# A pasted Chinese text becomes an annotate-only project: its sentences sit in the original-text column.
+PROSE = {"en": re.compile(r"[A-Za-z]{2,}"), "zh": re.compile(r"[\u3400-\u9fff]")}
+CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+
+
+def detect_language(text):
+    """"zh" when Chinese characters outnumber half the Latin letters of the prose (LaTeX commands ignored)."""
+    prose = re.sub(r"\\[A-Za-z@]+\*?", " ", text)
+    return "zh" if len(CJK.findall(prose)) * 2 > len(re.findall(r"[A-Za-z]", prose)) else "en"
+
+
+def plain_to_latex(text):
+    """Clipboard text without LaTeX commands: escape the characters that would otherwise start a
+    comment or math (and break compiling), so the text reads exactly as pasted."""
+    text = text.replace("\r\n", "\n")
+    if re.search(r"\\[A-Za-z]+", text):
+        return text
+    # Paired $…$ is most likely inline math in a command-free LaTeX snippet; an odd count is prose ($5).
+    special = "%&#_" + ("$" if len(re.findall(r"(?<!\\)\$", text)) % 2 else "")
+    return re.sub(r"(?<!\\)([" + re.escape(special) + "])", r"\\\1", text)
 
 MODEL_ENGINES = ("claude", "codex", "api")
 # Every model call of the workflow belongs to one of these steps; each step has its own engine.
@@ -326,13 +346,17 @@ def validate_text(before, after, display_only=False, allowed_numbers=()):
         raise ValueError("模型改变了段落边界，未应用修改。")
 
 
-def units_for(block, tokens):
+def units_for(block, tokens, language="en"):
     # Conservative sentence boundaries. Abbreviations remain with the following sentence.
     text = block["masked"]
+    prose = PROSE[language]
+    ends = r"[.!?](?:[ \t\r\n]+|$)"
+    if language == "zh":
+        ends = r"[。！？；]+[”’」』）)]*[ \t\r\n]*|" + ends
     parts, start = [], 0
-    for match in re.finditer(r"[.!?](?:[ \t\r\n]+|$)", text):
+    for match in re.finditer(ends, text):
         prefix = text[:match.start() + 1]
-        if re.search(r"(?:\b(?:e\.g|i\.e|et al|Fig|Eq|Sec|Dr|Mr|Prof|vs)|\b[A-Z])\.$", prefix):
+        if language == "en" and re.search(r"(?:\b(?:e\.g|i\.e|et al|Fig|Eq|Sec|Dr|Mr|Prof|vs)|\b[A-Z])\.$", prefix):
             continue
         parts.append(text[start:match.end()])
         start = match.end()
@@ -342,9 +366,9 @@ def units_for(block, tokens):
     # its neighbour, so no unit ever asks for a translation of a comment.
     merged = []
     for part in parts:
-        if merged and not re.search(r"[A-Za-z]{2,}", TOKEN.sub("", part)):
+        if merged and not prose.search(TOKEN.sub("", part)):
             merged[-1] += part
-        elif merged and not re.search(r"[A-Za-z]{2,}", TOKEN.sub("", merged[-1])):
+        elif merged and not prose.search(TOKEN.sub("", merged[-1])):
             merged[-1] += part
         else:
             merged.append(part)
@@ -461,8 +485,8 @@ def split_headings(part, tokens):
     return [part[a:b] for a, b in zip(edges, edges[1:]) if a < b]
 
 
-def parse_files(files):
-    snapshot = {"files": [], "blocks": [], "tokens": {}, "translated": False, "section_titles": {}}
+def parse_files(files, language="en"):
+    snapshot = {"files": [], "blocks": [], "tokens": {}, "translated": False, "section_titles": {}, "language": language}
     for file_index, item in enumerate(files):
         masked, local = protect_latex(item["text"])
         # Token namespace spans the entire project.
@@ -492,12 +516,12 @@ def parse_files(files):
                     title = re.sub(r"\\[A-Za-z]+\*?|[{}$~]", " ", title)
                 snapshot["section_titles"][section] = {"title": re.sub(r"\s+", " ", title).strip()[:80],
                                                        "level": level}
-            if not re.search(r"[A-Za-z]{2,}", TOKEN.sub("", part)):
+            if not PROSE[language].search(TOKEN.sub("", part)):
                 parts.append({"literal": raw})
                 continue
             bid = f"p{len(snapshot['blocks']) + 1:04d}"
             block = {"id": bid, "file": item["name"], "section": section, "masked": part}
-            block["units"] = units_for(block, snapshot["tokens"])
+            block["units"] = units_for(block, snapshot["tokens"], language)
             snapshot["blocks"].append(block)
             parts.append({"block": bid})
         snapshot["files"].append({"name": item["name"], "bom": item.get("bom", False), "parts": parts})
@@ -506,7 +530,7 @@ def parse_files(files):
     for info in snapshot["section_titles"].values():
         info["level"] = min(info["level"] - top, 2)
     if not snapshot["blocks"]:
-        raise ValueError("未找到可改写的英文正文。请上传包含正文的 .tex 文件。")
+        raise ValueError("未找到可批注的中文正文。" if language == "zh" else "未找到可改写的英文正文。请上传包含正文的 .tex 文件。")
     return snapshot
 
 
@@ -759,7 +783,7 @@ class PaperRevision:
                 del self.macro_cache[key]
             return {"removed": pid, "title": project["title"]}
 
-    def create(self, title, files, origin=None, translate=True):
+    def create(self, title, files, origin=None, translate=True, language="en"):
         if not files or len(files) > 100 or sum(len(f["text"].encode("utf-8")) + (3 if f.get("bom") else 0) for f in files) > MAX_IMPORT_BYTES:
             raise ValueError("请选择 1–100 份 .tex / .bib 文件，总大小不超过 2 MB。")
         names = set()
@@ -776,14 +800,15 @@ class PaperRevision:
         bib = [f for f in files if f["name"].lower().endswith(".bib")]
         if not tex or len(tex) > 80 or sum(len(f["text"]) for f in tex) > MAX_SOURCE:
             raise ValueError("请选择 1–80 份 .tex 正文文件，正文不超过 500,000 字符。")
-        snapshot = parse_files(tex)
+        snapshot = parse_files(tex, language)
         entries, warnings = bibliography_index(bib)
         snapshot.update(bibliography=bib, references=entries,
                         import_warnings=dependency_warnings(files) + warnings)
         pid = uuid.uuid4().hex
         project = {"id": pid, "title": str(title or files[0]["name"])[:200], "revision": 0,
                    "origin": origin or {"kind": "upload", "read_only": True},
-                   "translate": bool(translate), "claude_session_mode": True,
+                   "translate": bool(translate) and language == "en", "language": language,
+                   "claude_session_mode": True,
                    "claude_project": find_claude_project(origin["path"]) if (origin or {}).get("path") else None,
                    "comments": [], "job": None, "history": [{"revision": 0, "kind": "import", "time": time.time()}]}
         if project["origin"].get("path"):
@@ -793,7 +818,7 @@ class PaperRevision:
         self.save(project)
         return project
 
-    def build_snapshot(self, files):
+    def build_snapshot(self, files, language="en"):
         """Validate an import set and parse it (shared by import and re-sync from disk)."""
         if not files or len(files) > 100 or sum(len(f["text"].encode("utf-8")) + (3 if f.get("bom") else 0) for f in files) > MAX_IMPORT_BYTES:
             raise ValueError("请选择 1–100 份 .tex / .bib 文件，总大小不超过 2 MB。")
@@ -801,7 +826,7 @@ class PaperRevision:
         bib = [f for f in files if f["name"].lower().endswith(".bib")]
         if not tex or len(tex) > 80 or sum(len(f["text"]) for f in tex) > MAX_SOURCE:
             raise ValueError("请选择 1–80 份 .tex 正文文件，正文不超过 500,000 字符。")
-        snapshot = parse_files(tex)
+        snapshot = parse_files(tex, language)
         entries, warnings = bibliography_index(bib)
         snapshot.update(bibliography=bib, references=entries, import_warnings=dependency_warnings(files) + warnings)
         return snapshot
@@ -1028,7 +1053,7 @@ class PaperRevision:
         with self.lock:
             project = self.editable(pid, data.get("revision"))
             current = self.snapshot(pid)
-            fresh = self.build_snapshot(snapshot_files(current))
+            fresh = self.build_snapshot(snapshot_files(current), current.get("language", "en"))
             layout = lambda s: ([(b["section"], [u["masked"] for u in b["units"]]) for b in s["blocks"]],
                                 s.get("section_titles") or {})
             if layout(fresh) == layout(current):
@@ -1269,6 +1294,8 @@ class PaperRevision:
             raise ValueError("请选择是否翻译。")
         with self.lock:
             project = self.editable(pid, data.get("revision"))
+            if data["translate"] and project.get("language") == "zh":
+                raise ValueError("中文原文项目不需要翻译：直接圈选批注，再导出批注。")
             project["translate"] = data["translate"]
             self.save(project)
             return project
@@ -1329,6 +1356,8 @@ class PaperRevision:
 
     def job_kind(self, pid):
         project, snap = self.read(pid), self.snapshot(pid)
+        if project.get("language") == "zh":
+            raise ValueError("中文原文项目只用于批注：请导出批注（文件或复制文本），修订不在本工具中进行。")
         translate = project.get("translate", True)
         missing = any(not u["zh"] for b in snap["blocks"] for u in b["units"])
         if project["comments"]:
@@ -2101,9 +2130,15 @@ def create_paper_revision_blueprint(service):
                 raise ValueError("所选文件里有多个主 .tex 文件：" + "、".join(candidates[:8]) + "。请选择要导入的主文件。")
             if candidates:
                 files = select_main(files, candidates[0])
+        language = "en"
         if not files and request.form.get("source"):
-            files = [{"name": "paper.tex", "text": request.form["source"]}]
-        return jsonify(service.create(request.form.get("title"), files, translate=translate)), 201
+            # Pasted or clipboard text: plain text is escaped so % and $ read as written; Chinese text
+            # becomes an annotate-only project, English text may be translated like any paper.
+            source = request.form["source"]
+            language = detect_language(source)
+            files = [{"name": "paper.tex", "text": plain_to_latex(source)}]
+            translate = translate and language == "en"
+        return jsonify(service.create(request.form.get("title"), files, translate=translate, language=language)), 201
 
     @bp.get("/api/paper-revision/projects/<pid>")
     def detail(pid):
@@ -2135,9 +2170,11 @@ def create_paper_revision_blueprint(service):
     @bp.get("/api/paper-revision/projects/<pid>/comments/export")
     def export_comments(pid):
         bundle = service.export_comments(pid)
-        name = re.sub(r"[^\w.-]+", "_", bundle["paper"])[:60] or "paper"
+        name = f'{re.sub(r"[^\w.-]+", "_", bundle["paper"])[:60] or "paper"}-comments-v{bundle["revision"]}.json'
+        fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "comments.json"
         response = jsonify(bundle)
-        response.headers["Content-Disposition"] = f'attachment; filename="{name}-comments-v{bundle["revision"]}.json"'
+        # Headers are Latin-1: a Chinese title goes in the RFC 5987 filename*, with an ASCII fallback.
+        response.headers["Content-Disposition"] = f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name)}"
         return response
 
     @bp.post("/api/paper-revision/projects/<pid>/comments/import")

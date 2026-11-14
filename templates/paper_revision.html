@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>双语改稿 · 科研工具箱</title>
   {% include "_theme_head.html" %}
-  <link rel="stylesheet" href="/static/paper_revision.css?v=20261109-uiink2">
+  <link rel="stylesheet" href="/static/paper_revision.css?v=20261113-paste2">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=20261109-uiink">
   <link rel="stylesheet" href="/static/ribbon.css?v=4">
 </head>
@@ -124,7 +124,7 @@
       </nav>
       <div class="revision-center">
     <section class="reading-area" aria-label="双语逐段对照">
-      <div class="column-heads"><h2>EN <span>英文原文 / 当前修订稿 · 也可圈选批注</span></h2><h2>中 <span id="zhHeading">中文对照 · 圈选后添加批注</span></h2></div>
+      <div class="column-heads"><h2 id="enHeading">EN <span>英文原文 / 当前修订稿 · 也可圈选批注</span></h2><h2>中 <span id="zhHeading">中文对照 · 圈选后添加批注</span></h2></div>
       <div id="paper"><div class="empty"><span class="empty-number">01 → 02 → 03</span><h2>阅读、批注、修订，周而复始。</h2><p>圈选中文或英文、积累批注，提交后统一修订英文；开启翻译时再增量更新中文对照。</p><p>左右段落始终对应；点击句子会同时标亮英文与中文。</p><p>默认只做必要的局部修改。章节与全文修改可在批注中明确选择。</p><button type="button" class="primary" data-open-import>＋ 导入论文</button></div></div>
     </section>
       </div>
@@ -137,7 +137,7 @@
         </div><button type="button" class="quiet pane-hide" data-hide-pane="inspector" title="隐藏批注栏（可用「视图 › 批注栏」恢复）" aria-label="隐藏批注栏">›</button></div>
         <section id="revPanel-comments" class="inspector-section" data-inspector-panel="comments" role="tabpanel" aria-labelledby="revTab-comments">
           <p class="hint">保存批注不会调用模型。全部标注完成后，再提交本轮。批注只属于这次打开：下次打开会移入备份，请在关闭前导出。</p>
-      <div class="comment-io"><a id="exportComments" class="button secondary" download>导出批注</a><button id="importComments" type="button" class="secondary">导入批注…</button><input id="importCommentsFile" type="file" accept=".json,application/json" hidden><button id="sendCommentsToPrompts" type="button" class="secondary" title="把本轮批注和当前英文原稿（ZIP）带到 Prompt 工作台，再提交到 ChatGPT 征求第二意见">送到 ChatGPT ↗</button></div>
+      <div class="comment-io"><a id="exportComments" class="button secondary" download>导出批注</a><button id="copyComments" type="button" class="secondary" title="以 ``` 代码块显示全部批注，可一键复制，不必下载文件">复制批注</button><button id="importComments" type="button" class="secondary">导入批注…</button><input id="importCommentsFile" type="file" accept=".json,application/json" hidden><button id="sendCommentsToPrompts" type="button" class="secondary" title="把本轮批注和当前英文原稿（ZIP）带到 Prompt 工作台，再提交到 ChatGPT 征求第二意见">送到 ChatGPT ↗</button></div>
           <div id="comments"></div>
         </section>
         <section id="revPanel-context" class="inspector-section" data-inspector-panel="context" role="tabpanel" aria-labelledby="revTab-context" hidden>
@@ -162,7 +162,8 @@
           <p id="importFiles" class="hint" aria-live="polite">尚未选择文件。</p><button id="clearFiles" class="quiet" type="button">清除所选文件</button>
           <p class="hint">最多 100 份源文件、2 MB，其中 .tex 最多 80 份、50 万字符；UTF-8 编码。</p></div>
         <div><label for="localPath">或粘贴本地绝对路径（目录或主 .tex 文件）</label><span class="path-picker"><input id="localPath" placeholder="C:\Research\paper\main.tex" spellcheck="false"><button id="browseLocalFile" class="quiet" type="button">选择主文件…</button><button id="browseLocalFolder" class="quiet" type="button">选择目录…</button></span><p class="hint">主文件会跟随显式的 \input / \include / 参考文献依赖。路径由本机后端只读导入，不覆盖源文件。也可点击右侧按钮用系统窗口选择。</p>
-          <label for="source">或直接粘贴 LaTeX</label><textarea id="source" rows="5" placeholder="\section{Introduction}&#10;&#10;Our method…"></textarea></div>
+          <span class="source-head"><label for="source">或直接粘贴正文（LaTeX，或英文 / 中文纯文本）</label><button id="pasteClipboard" class="quiet" type="button">从剪贴板粘贴</button></span><textarea id="source" rows="5" placeholder="\section{Introduction}&#10;&#10;Our method…&#10;&#10;也可以是一段临时的英文或中文文字"></textarea>
+          <p id="sourceLanguage" class="hint">英文正文可生成中文对照；中文正文只用于圈选批注和导出批注（不翻译、不修订）。</p></div>
       </div><p class="hint">三种输入方式选择一种。保留公式、引用、标签、命令及源文件结构。表格、图片和未知环境整体保护，其内部正文暂不改写。导出源文件后放回原项目编译；不包含未导入的图片和模板。</p>
       <div id="mainTexField" class="main-tex-field" hidden><label for="mainTex">主 .tex 文件</label><select id="mainTex"></select>
         <p id="mainTexHint" class="hint"></p></div>
@@ -199,6 +200,13 @@
     <p id="projectError" role="alert"></p>
     <div class="session-actions"><button type="submit">保存</button><button id="cancelProjectDialog" type="button" class="secondary">取消</button><button id="removeProject" type="button" class="quiet" title="只从本面板移除；论文的 .tex 文件不会被删除">从面板移除此项目…</button></div></form></dialog>
   <dialog id="commentDialog"><form id="commentForm"><div class="drawer-heading"><h2>添加修改意见</h2><button id="closeDialog" class="quiet" type="button" aria-label="关闭">×</button></div><blockquote id="selectedQuote"></blockquote><p id="selectedLocation" class="hint"></p><label for="commentText">Comment</label><textarea id="commentText" rows="5" maxlength="4000" required placeholder="例如：这里因果说得太强，请改为更审慎的表述，并与上一句衔接。"></textarea><label for="scope">允许修改的最大范围</label><select id="scope"><option value="auto">自动判断 · 选中段落及同节相邻段落</option><option value="paragraph">仅选中段落</option><option value="section">选中内容所在章节 / 小节</option><option value="document">全文 · 术语或论证需要全局统一时</option></select><p class="hint">始终优先修改对应句子；需要扩大范围时，修订记录会说明原因。跨段选区可一次添加批注。</p><p id="commentError" role="alert"></p><button type="submit">保存批注</button></form></dialog>
+  <dialog id="copyCommentsDialog" class="sheet wide-sheet" aria-labelledby="copyCommentsTitle"><form method="dialog">
+    <div class="drawer-heading"><h2 id="copyCommentsTitle">复制全部批注</h2><button class="quiet" value="close" aria-label="关闭">×</button></div>
+    <div class="copy-format" role="radiogroup" aria-label="格式"><label><input type="radio" name="copyFormat" value="text" checked>可读文本（Markdown）</label><label><input type="radio" name="copyFormat" value="json">JSON（可再导入）</label></div>
+    <textarea id="copyCommentsText" class="copy-block" rows="16" readonly spellcheck="false"></textarea>
+    <p class="hint">内容已包在 ``` 代码块里，可直接粘贴到聊天或笔记。JSON 格式可通过“导入批注…”粘贴回来。</p>
+    <div class="session-actions sheet-actions"><button value="close" class="secondary">关闭</button><button id="copyCommentsButton" type="button" class="primary">复制到剪贴板</button></div>
+  </form></dialog>
   <button id="selectionButton" data-command="为选中文字添加批注" data-shortcut="c" class="selection-button" hidden>＋ 添加批注</button>
   <script src="/static/local_paths.js?v=1"></script>
   <script src="/static/paper_revision_import.js?v=2"></script>
@@ -207,7 +215,7 @@
   <script src="/static/prompt_handoff.js?v=1"></script>
   <script src="/static/inspector.js?v=1"></script>
   <script src="/static/ribbon.js?v=1"></script>
-  <script src="/static/paper_revision.js?v=21"></script>
+  <script src="/static/paper_revision.js?v=22"></script>
   <script>
     // 视图 › 英文正文: serif (default) or the interface font. Remembered per browser.
     (() => {

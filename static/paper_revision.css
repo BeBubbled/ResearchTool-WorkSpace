@@ -606,3 +606,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 .sheet-actions { justify-content:flex-end; margin-top:16px; }
 @media (max-width:1180px) { .revision-layout { --revision-chapters-width:160px; gap:12px; } }
 @media (max-width:860px) { .revision-layout, .revision-layout.chapters-hidden, .revision-layout.inspector-hidden { grid-template-columns:minmax(0,1fr); } .chapter-nav { position:static; max-height:40vh; } .revision-inspector { position:static; max-height:none; } .inspector-resize { display:none; } }
+
+/* Pasted Chinese text: annotate-only, the original fills the reading area (no Chinese column). */
+.reading-area.source-zh .column-heads, .reading-area.source-zh .pair { grid-template-columns:1fr }
+.reading-area.source-zh .column-heads h2+h2, .reading-area.source-zh .pair > .side.zh { display:none }
+.source-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px }
+.copy-format { display:flex; gap:16px; margin:4px 0 8px }
+.copy-format label { display:inline-flex; align-items:center; gap:6px; margin:0; font-weight:400; white-space:nowrap }
+.copy-format input { width:auto; margin:0 }
+.copy-block { width:100%; box-sizing:border-box; font-family:var(--mono, ui-monospace, Consolas, monospace); font-size:12.5px; line-height:1.5; white-space:pre; resize:vertical }

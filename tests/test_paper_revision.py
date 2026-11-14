@@ -1173,6 +1173,50 @@ class RevisionTests(unittest.TestCase):
         listing = self.client.get("/api/paper-revision/projects", headers=HEADERS).get_json()
         self.assertTrue(listing["claude"]["plan"])
 
+    def test_clipboard_chinese_text_is_annotate_only_and_exports_comments(self):
+        text = "我们提出了一种新方法（PCM），效果提升 5%！\n\n第二段说明“限制。”还有待验证吗？"
+        response = self.client.post("/api/paper-revision/projects", headers=HEADERS,
+                                    data={"title": "剪贴板", "source": text, "translate": "1"})
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.pid = response.get_json()["id"]
+        project = self.service.read(self.pid)
+        self.assertEqual(project["language"], "zh")
+        self.assertFalse(project["translate"])
+        snap = self.service.snapshot(self.pid)
+        self.assertEqual([u["display_en"] for b in snap["blocks"] for u in b["units"]],
+                         ["我们提出了一种新方法（PCM），效果提升 5%！", "第二段说明“限制。”", "还有待验证吗？"])
+        self.assertEqual(source_files(snap)["paper.tex"], text.replace("5%", "5\\%"))
+        unit = snap["blocks"][0]["units"][0]
+        start = unit["display_en"].index("新方法")
+        self.service.add_comment(self.pid, {"revision": 0, "text": "说明新在哪里", "scope": "paragraph", "anchors": [
+            {"side": "en", "unit_id": unit["id"], "block_id": snap["blocks"][0]["id"], "start": start, "end": start + 3, "quote": "新方法"}]})
+        with self.assertRaisesRegex(ValueError, "中文原文"):
+            self.service.submit(self.pid, {"revision": 0, "confirm_usage": True, "comment_ids": []})
+        with self.assertRaisesRegex(ValueError, "不需要翻译"):
+            self.service.set_translate(self.pid, {"revision": 0, "translate": True})
+        exported = self.client.get(f"/api/paper-revision/projects/{self.pid}/comments/export", headers=HEADERS)
+        disposition = exported.headers["Content-Disposition"]
+        disposition.encode("latin-1")  # a real server writes headers as Latin-1; a Chinese title must not break it
+        self.assertIn("filename*=UTF-8''%E5%89%AA%E8%B4%B4%E6%9D%BF-comments-v0.json", disposition)
+        bundle = exported.get_json()
+        self.assertEqual(bundle["comments"][0]["anchors"][0]["english_sentence"], unit["display_en"])
+        # Re-parsing keeps the Chinese sentence split.
+        self.assertFalse(self.service.reparse(self.pid, {"revision": 0})["changed"])
+
+    def test_clipboard_plain_english_escapes_specials_but_keeps_latex(self):
+        self.assertEqual(paper_revision.plain_to_latex("Costs $5 at 10% for A_b & C#."),
+                         r"Costs \$5 at 10\% for A\_b \& C\#.")
+        self.assertEqual(paper_revision.plain_to_latex(r"Gain 10% by \cite{x}."), r"Gain 10% by \cite{x}.")
+        self.assertEqual(paper_revision.plain_to_latex("Inline $x$ math."), "Inline $x$ math.")
+        self.assertEqual(paper_revision.detect_language(SOURCE), "en")
+        response = self.client.post("/api/paper-revision/projects", headers=HEADERS,
+                                    data={"source": "We gain 10% on this task. It costs $5."})
+        project = self.service.read(response.get_json()["id"])
+        self.assertEqual((project["language"], project["translate"]), ("en", True))
+        snap = self.service.snapshot(project["id"])
+        self.assertEqual([u["display_en"] for b in snap["blocks"] for u in b["units"]],
+                         ["We gain 10% on this task. ", "It costs $5."])
+
     def test_untranslated_project_comments_on_english_and_translates_gaps_later(self):
         response = self.client.post("/api/paper-revision/projects", headers=HEADERS,
                                     data={"title": "No zh", "source": SOURCE, "translate": "0"})

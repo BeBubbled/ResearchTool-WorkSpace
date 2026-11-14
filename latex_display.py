@@ -230,6 +230,7 @@ def prettify(text: str, macros: dict[str, str]) -> str:
     text = re.sub(r"(?<!\\)~", "\u00a0", text)
     text = text.replace("---", "—").replace("--", "–")
     text = _INLINE_MATH.sub(_simple_math, text)
+    text = text.replace("\\$", "$")  # after math, so an escaped dollar never pairs with a delimiter
     text = re.sub("[ \\t]*\u2009[ \\t]*", "\u2009", text)
     # numeric ranges: "31.2 -- 33.5" / "31.2-- 33.5" → "31.2–33.5"
     return re.sub(r"(?<=\d)[ \t\u00a0]*–[ \t\u00a0]*(?=[\d+\-−])", "–", text)
