@@ -223,8 +223,13 @@ def question_texts(tree: dict[str, Any], limit: int) -> list[str]:
 
 
 def new_answer() -> dict[str, Any]:
+    # steps：按时间顺序的过程记录（像 Claude 客户端那样显示），每项是
+    #   {"kind": "thinking", "text", "start", "end"} 或 {"kind": "tool", "id", "name", "hint", "start", "end", "isError"}
     return {"status": "pending", "markdown": "", "summary": None, "toolEvents": [], "filesChanged": [],
-            "ranCommands": False, "error": "", "statusLine": ""}
+            "ranCommands": False, "error": "", "statusLine": "", "steps": [], "startedAt": None, "endedAt": None}
+
+
+THINKING_KEEP = 40000  # 每段思考最多保留的字数（保留开头和最新的结尾）
 
 
 def public_turn(turn: dict[str, Any]) -> dict[str, Any]:
@@ -358,6 +363,7 @@ class TurnRun:
         self.pending: dict[str, dict[str, Any]] = {}
         self.interrupted = False
         self.tool_index: dict[str, dict[str, Any]] = {}
+        self.open_blocks: dict[Any, dict[str, Any]] = {}  # 流里正在输出的内容块（按 index）→ 对应的 step
         self.last_publish = 0.0
 
     # ---- 进程 I/O ----
@@ -422,6 +428,9 @@ class TurnRun:
         stderr_thread.start()
         answer["status"] = "streaming"
         answer["statusLine"] = "正在启动 Claude Code…"
+        answer["startedAt"], answer["endedAt"] = now_iso(), None
+        answer["steps"] = []
+        self.open_blocks = {}
         self.publish(force=True)
         self.send({"type": "control_request", "request_id": "init", "request": {"subtype": "initialize", "hooks": None}})
         with self.service._lock:
@@ -470,20 +479,41 @@ class TurnRun:
                 return  # 子代理内部的流不进入主回答
             if inner.get("type") == "content_block_start":
                 block = inner.get("content_block") or {}
-                if block.get("type") == "text":
+                btype = str(block.get("type") or "")
+                if btype == "text":
                     if answer["markdown"] and not answer["markdown"].endswith("\n\n"):
                         answer["markdown"] = answer["markdown"].rstrip("\n") + "\n\n"
                     answer["statusLine"] = "正在回答…"
-                elif block.get("type") == "thinking":
+                elif btype in ("thinking", "redacted_thinking"):
+                    step = {"kind": "thinking", "text": str(block.get("thinking") or ""), "start": now_iso(), "end": None}
+                    answer["steps"].append(step)
+                    self.open_blocks[inner.get("index")] = step
                     answer["statusLine"] = "思考中…"
-                elif block.get("type") in ("tool_use", "server_tool_use"):
+                elif btype in ("tool_use", "server_tool_use"):
+                    self.tool_step(block.get("id"), str(block.get("name") or ""))
                     answer["statusLine"] = f"调用工具：{block.get('name', '')}"
-                self.publish()
+                elif btype.endswith("_tool_result"):  # 服务端工具（如网页搜索）的结果直接跟在流里
+                    self.end_tool_step(block.get("tool_use_id"), False)
+                self.publish(force=btype != "text")
             elif inner.get("type") == "content_block_delta":
                 delta = inner.get("delta") or {}
                 if delta.get("type") == "text_delta":
                     answer["markdown"] += delta.get("text", "")
                     self.publish()
+                elif delta.get("type") == "thinking_delta":
+                    step = self.open_blocks.get(inner.get("index"))
+                    if step and step["kind"] == "thinking":
+                        text = step["text"] + str(delta.get("thinking") or "")
+                        if len(text) > THINKING_KEEP:
+                            text = text[: THINKING_KEEP // 4] + "\n\n…\n\n" + text[-(THINKING_KEEP * 3 // 4):]
+                        step["text"] = text
+                        self.publish()
+            elif inner.get("type") == "content_block_stop":
+                step = self.open_blocks.pop(inner.get("index"), None)
+                if step and step["kind"] == "thinking" and not step["end"]:
+                    step["end"] = now_iso()
+                    answer["statusLine"] = "思考完毕…"
+                    self.publish(force=True)
         elif kind == "assistant" and not event.get("parent_tool_use_id"):
             for block in (event.get("message") or {}).get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
@@ -496,12 +526,28 @@ class TurnRun:
         elif kind == "control_request":
             self.permission_request(event)
 
+    def tool_step(self, tool_id: Any, name: str) -> dict[str, Any]:
+        """过程记录里的一次工具调用；流里先到的 content_block_start 和随后完整的 assistant 消息共用一项。"""
+        steps = self.turn["answer"]["steps"]
+        step = next((s for s in steps if s["kind"] == "tool" and tool_id and s.get("id") == tool_id), None)
+        if step is None:
+            step = {"kind": "tool", "id": tool_id, "name": name, "hint": "", "start": now_iso(), "end": None, "isError": False}
+            steps.append(step)
+        return step
+
+    def end_tool_step(self, tool_id: Any, is_error: bool) -> None:
+        for step in self.turn["answer"]["steps"]:
+            if step["kind"] == "tool" and tool_id and step.get("id") == tool_id and not step["end"]:
+                step["end"], step["isError"] = now_iso(), bool(is_error)
+
     def add_tool(self, block: dict[str, Any]) -> None:
         name, data = str(block.get("name") or ""), block.get("input") or {}
         tool = {"id": block.get("id"), "name": name, "input": data, "outputPreview": "", "ts": now_iso()}
         self.turn["answer"]["toolEvents"].append(tool)
         if tool["id"]:
             self.tool_index[tool["id"]] = tool
+        step = self.tool_step(tool["id"], name)
+        step["name"], step["hint"] = name, describe_tool_input(name, data)
         self.turn["answer"]["statusLine"] = f"调用工具：{name} {describe_tool_input(name, data)}".strip()
         if name in COMMAND_TOOLS:
             self.turn["answer"]["ranCommands"] = True
@@ -516,6 +562,7 @@ class TurnRun:
             content = "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
         tool["outputPreview"] = str(content or "")[:1200]
         tool["isError"] = bool(block.get("is_error"))
+        self.end_tool_step(tool["id"], tool["isError"])
         key = EDIT_TOOLS.get(tool["name"])
         if key and not tool["isError"] and isinstance(tool["input"], dict) and tool["input"].get(key):
             path = relative_path(str(tool["input"][key]), self.tree["cwd"])
@@ -584,6 +631,7 @@ class TurnRun:
         answer = self.turn["answer"]
         with self.service._lock:
             answer.update(status="error", error=message, statusLine="")
+            close_steps(answer)
             self.turn["permissions"] = []
         self.service.turn_finished(self.tree, self.turn)
 
@@ -595,6 +643,7 @@ class TurnRun:
     def _finish(self, result: dict[str, Any] | None, stderr: str) -> None:
         answer = self.turn["answer"]
         answer["statusLine"] = ""
+        close_steps(answer)
         if result and result.get("session_id"):
             self.turn["sessionId"] = result["session_id"]
         if self.interrupted:
@@ -608,6 +657,15 @@ class TurnRun:
             answer["status"] = "done"
             if not answer["markdown"].strip() and isinstance(result.get("result"), str):
                 answer["markdown"] = result["result"]
+
+
+def close_steps(answer: dict[str, Any]) -> None:
+    """一轮结束：还开着的思考 / 工具步骤一律收尾，并记下结束时间。"""
+    end = now_iso()
+    for step in answer.get("steps") or []:
+        if not step.get("end"):
+            step["end"] = end
+    answer["endedAt"] = end
 
 
 def describe_tool_input(name: str, data: Any) -> str:

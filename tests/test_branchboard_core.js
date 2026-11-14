@@ -73,6 +73,14 @@ for (let seed = 1; seed <= 200; seed++) {
       if (hOverlap(a, b)) assert.ok(a.y + a.h + VGAP <= b.y + 1e-6 || b.y + b.h + VGAP <= a.y + 1e-6, `seed ${seed}: ${a.id} 与 ${b.id} 挨得太近`);
     }
   }
+  // 行：行首 + 一路普通追问，整行一起放；placedBefore[id] = 这一行放之前已经放好的卡片
+  const rowOf = {}, placedBefore = {};
+  const done = [];
+  for (const row of layout.rows) {
+    for (const id of row) { rowOf[id] = row; placedBefore[id] = done.slice(); }
+    done.push(...row.map(id => layout.cards[id]));
+  }
+  assert.equal(done.length, tree.order.length, `seed ${seed}: 有卡片没进任何一行`);
   for (const id of tree.order) {
     const t = tree.turns[id];
     const g = layout.cards[id];
@@ -83,23 +91,27 @@ for (let seed = 1; seed <= 200; seed++) {
     // 新卡片在所有来源卡片右侧一列（箭头一律从左往右指）
     assert.equal(g.x, Math.max(...srcs.map(s => s.x + s.w)) + GAP, `seed ${seed}: ${id} 没有放在来源卡片右侧一列`);
     const p = layout.cards[g.primary];
-    const before = tree.order.slice(0, tree.order.indexOf(id)).map(cid => layout.cards[cid]);
-    // 就近：要么正好在理想位置，要么紧贴着把它挤开的那张卡片（中间不留多余的空）
+    // 普通追问（父卡片的第一个）不管卡片多高，都和父卡片顶边对齐
     if (g.inline) {
       assert.equal(t.kind, "follow", `seed ${seed}: 只有普通追问能和父卡片顶边对齐`);
-      assert.equal(g.y, p.y);
-      ideal++;
-    } else if (g.dir < 0) {
+      assert.equal(g.y, p.y, `seed ${seed}: 普通追问 ${id} 没有和前一张水平对齐`);
+      continue;
+    }
+    if (t.kind === "follow" && !(t.layout && t.layout.dir)) assert.fail(`seed ${seed}: 第一个普通追问 ${id} 没有排进同一行`);
+    // 行首就近：要么正好在理想位置，要么行里某张卡片紧贴着把它挤开的那张（中间不留多余的空）
+    const row = rowOf[id].map(r => layout.cards[r]);
+    const before = placedBefore[id];
+    if (g.dir < 0) {
       assert.ok(g.y + g.h <= p.y - VGAP + 1e-6, `seed ${seed}: 向上分支 ${id} 不在主父卡片上方`);
       const atIdeal = Math.abs(g.y + g.h - (p.y - VGAP)) < 1e-6;
-      const touching = before.some(c => hOverlap(c, g) && Math.abs(c.y - VGAP - (g.y + g.h)) < 1e-6);
+      const touching = row.some(m => before.some(c => hOverlap(c, m) && Math.abs(c.y - VGAP - (m.y + m.h)) < 1e-6));
       assert.ok(atIdeal || touching, `seed ${seed}: 向上分支 ${id} 离来源太远`);
       atIdeal ? ideal++ : pushed++;
     } else {
-      const start = g.dir > 0 ? p.y + p.h + VGAP : p.y;  // 向下分支，或被挤开的普通追问
+      const start = p.y + p.h + VGAP;
       assert.ok(g.y >= start - 1e-6, `seed ${seed}: ${id} 不在主父卡片下方`);
       const atIdeal = Math.abs(g.y - start) < 1e-6;
-      const touching = before.some(c => hOverlap(c, g) && Math.abs(c.y + c.h + VGAP - g.y) < 1e-6);
+      const touching = row.some(m => before.some(c => hOverlap(c, m) && Math.abs(c.y + c.h + VGAP - m.y) < 1e-6));
       assert.ok(atIdeal || touching, `seed ${seed}: 分支 ${id} 离来源太远`);
       atIdeal ? ideal++ : pushed++;
     }
@@ -163,6 +175,22 @@ assert.ok(ideal > pushed, `大多数卡片应当正好落在理想位置（理�
   const r = L.cards.r, late = L.cards.late;
   assert.equal(late.y, r.y + r.h + VGAP, "对根卡片划词的新卡片应当紧贴在根卡片下方");
   assert.ok(late.y < L.cards.h5.y, "不应排到整棵树的最底下");
+}
+
+// 卡片变高（部分回答 / 完全展开）时结构不变：先对 a 划词，再普通追问 a；追问很高也仍和 a 水平对齐，划词卡片让到下面
+{
+  const tree = { rootId: "r", order: ["r"], turns: { r: { id: "r", parentId: null, kind: "root" } } };
+  const add = (id, parentId, kind, dir) => { tree.turns[id] = { id, parentId, kind, layout: dir ? { dir } : undefined, questions: [{ sourceId: parentId, text: id, quote: kind === "highlight" ? { text: "x" } : undefined }] }; tree.order.push(id); };
+  add("a", "r", "follow"); add("h", "a", "highlight", 1); add("b", "a", "follow"); add("hf", "h", "follow");
+  for (const tall of [80, 900]) {
+    const sizes = Object.fromEntries(tree.order.map(id => [id, { w: 380, h: id === "b" ? tall : 100, qms: [30] }]));
+    const L = core.layoutTree(tree, sizes);
+    const c = L.cards;
+    assert.equal(c.a.y, c.r.y); assert.equal(c.b.y, c.a.y, "普通追问应当和前一张水平对齐");
+    assert.equal(c.hf.y, c.h.y, "划词卡片上的普通追问也应当水平对齐");
+    assert.ok(c.h.y >= c.a.y + c.a.h + VGAP, "划词卡片在来源下方");
+    if (tall > 100) assert.equal(c.h.y, c.b.y + c.b.h + VGAP, "被很高的追问挤开时紧贴在它下方");
+  }
 }
 
 // 同一回答多次划词：下、上、下、上

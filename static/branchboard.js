@@ -5,7 +5,7 @@
 
    交互模型：
    - 大框 = 一轮的回答卡片，顶部是一个或多个问题小框。
-   - 双击大框（或点「继续提问」）→ 在那里出现一个可输入的问题小框（普通追问）。
+   - 点「继续提问」→ 在那里出现一个可输入的问题小框（普通追问）；双击大框 → 视图定位到这张卡片（问题在顶部）。
    - 在大框的回答或问题里划词 →「就此提问」→ 出现一个带引用的问题小框。
    - 小框可以在多张卡片里攒多个，任意一个小框里按 Enter 一次问出：
      生成一张新卡片，里面每个问题小框各自被来源卡片的有向箭头指着。 */
@@ -35,6 +35,8 @@
     drafts: [], draftSeq: 0, sending: false,
     // 子树合并：expandedMerge[id] 展开 id 收起的卡片；showOriginal[id] 让合并过的卡片暂时显示原版
     expandedMerge: {}, showOriginal: {}, view: null,
+    // 思考块 / 过程汇总的展开状态（用户点过才有）；详情抽屉里展开的工具调用
+    thinkOpen: {}, drawerOpen: new Set(),
     // 新聊天要用的工作目录；空串 = 后端的默认目录
     newCwd: stored(CWD_KEY) || "", filter: "", menuTree: null,
   };
@@ -58,7 +60,7 @@
   function rerenderAll() { if (!S.tree) return; for (const id of S.tree.order) renderTurn(S.tree.turns[id]); renderDrafts(); layoutNow(); }
 
   const els = {
-    viewport: $("bbViewport"), stage: $("bbStage"), wires: $("bbWires"), drafts: $("bbDrafts"), list: $("bbTreeList"),
+    viewport: $("bbViewport"), stage: $("bbStage"), wires: $("bbWires"), edge: $("bbEdge"), drafts: $("bbDrafts"), list: $("bbTreeList"),
     composer: $("bbComposer"), question: $("bbQuestion"), send: $("bbSend"), ask: $("bbAskSelection"),
     draftBar: $("bbDraftBar"), hint: $("bbHint"),
     drawer: $("bbDrawer"), drawerBody: $("bbDrawerBody"), empty: $("bbEmpty"), status: $("bbStatus"),
@@ -199,11 +201,11 @@
     openStream(data.tree.seq || 0);
   }
 
-  /** 空树：底部输入框问起点；有起点之后：画布上双击 / 划词出小框。 */
+  /** 空树：底部输入框问起点；有起点之后：「继续提问」/ 划词出小框。 */
   function updateEmpty() {
     const blank = !S.tree || !S.tree.rootId;
     $("bbEmptyTitle").textContent = "从一个问题开始";
-    $("bbEmptyText").textContent = "问出第一个问题，就开始了一棵对话树。之后双击卡片继续提问，选中文字划词提问；多个小框可以攒起来一次问出。";
+    $("bbEmptyText").textContent = "问出第一个问题，就开始了一棵对话树。之后点「继续提问」追问，选中文字划词提问，双击卡片把视图定位到它；多个小框可以攒起来一次问出。";
     showCwdPick();
     els.empty.classList.toggle("hidden", !blank);
     els.composer.classList.toggle("hidden", !blank);
@@ -257,7 +259,8 @@
     S.els = {};
     els.stage.querySelectorAll(".bb-card").forEach(el => el.remove());
     els.wires.innerHTML = "";
-    S.layout = null;
+    els.edge.innerHTML = "";
+    S.layout = null; S.wireList = null; S.lastJump = null; S.navHistory = [];
   }
 
   const KIND_TAG = {
@@ -318,16 +321,87 @@
     }).join("");
   }
 
+  /** 正在输出的回答取最后 n 行做预览；截断处如果落在代码块里，补上开头的 ``` 。 */
+  function tailMarkdown(md, n) {
+    const lines = String(md).replace(/\s+$/, "").split("\n");
+    if (lines.length <= n) return md;
+    const head = lines.slice(0, lines.length - n), tail = lines.slice(-n);
+    const fences = head.filter(l => /^\s*(```|~~~)/.test(l)).length;
+    return (fences % 2 ? "```\n" : "…\n\n") + tail.join("\n");
+  }
+
+  /* ---------- 过程（像 Claude 客户端那样）：思考、工具调用、计时 ---------- */
+  const stepsOf = t => (t.answer && Array.isArray(t.answer.steps)) ? t.answer.steps : [];
+  function fmtSecs(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  }
+  /** 计时器：data-since 起点，data-until 终点（缺省 = 现在，每秒刷新）。 */
+  function elapsedHtml(since, until) {
+    if (!since) return "";
+    const ms = (until ? Date.parse(until) : Date.now()) - Date.parse(since);
+    return `<span class="bb-elapsed" data-since="${esc(since)}"${until ? ` data-until="${esc(until)}"` : ""}>${fmtSecs(ms)}</span>`;
+  }
+  setInterval(() => {
+    document.querySelectorAll(".bb-elapsed[data-since]:not([data-until])").forEach(el => {
+      el.textContent = fmtSecs(Date.now() - Date.parse(el.dataset.since));
+    });
+  }, 1000);
+  /** 思考块默认：正在思考时展开（显示最新的几行），想完了收起；用户点过就按用户的。 */
+  function thinkOpen(key, live) { return key in S.thinkOpen ? S.thinkOpen[key] : live; }
+  function stepHtml(t, s, i, where) {
+    const live = !s.end && running(t);
+    if (s.kind === "thinking") {
+      const key = `${where}:${t.id}:${i}`;
+      const text = String(s.text || "").trim();
+      const open = text && thinkOpen(key, live);
+      const label = live ? "正在思考" : "思考了";
+      return `<div class="bb-step think${live ? " live" : ""}${open ? " open" : ""}">`
+        + `<button class="bb-step-head" type="button"${text ? ` data-think="${esc(key)}" aria-expanded="${open}"` : ""}>`
+        + `<span class="bb-step-icon">${live ? '<span class="bb-spark"></span>' : "✻"}</span>${label} ${elapsedHtml(s.start, s.end)}${text ? '<span class="bb-chev">›</span>' : ""}</button>`
+        + (open ? `<div class="bb-think-body"><div>${esc(text)}</div></div>` : "") + `</div>`;
+    }
+    const icon = live ? '<span class="bb-spinner"></span>' : s.isError ? "✕" : "✓";
+    return `<div class="bb-step tool${live ? " live" : ""}${s.isError ? " err" : ""}"><span class="bb-step-icon">${icon}</span>`
+      + `<b>${esc(s.name || "工具")}</b>${s.hint ? ` <span class="bb-step-hint">${esc(s.hint)}</span>` : ""}`
+      + (s.end ? "" : ` ${elapsedHtml(s.start, null)}`) + `</div>`;
+  }
+  /** 卡片里的过程：运行中实时列出最近几步；完成后只留一行汇总（完全展开时列出全部步骤，思考默认收起）。 */
+  function activityHtml(t, mode) {
+    const a = t.answer, steps = stepsOf(t);
+    if (running(t)) {
+      const limit = mode === "full" ? steps.length : mode === "partial" ? 4 : 2;
+      const shown = steps.slice(-limit), skipped = steps.length - shown.length;
+      const live = `<div class="bb-statusline live"><span class="bb-spinner"></span><span class="bb-status-text">${esc(a.statusLine || "等待 Claude Code…")}</span>${elapsedHtml(a.startedAt, null)}</div>`;
+      return `<div class="bb-activity">${live}${skipped ? `<div class="bb-step more">… 前面还有 ${skipped} 步</div>` : ""}${shown.map((s, k) => stepHtml(t, s, skipped + k, "card")).join("")}</div>`;
+    }
+    if (!steps.length) return "";
+    const thinkMs = steps.filter(s => s.kind === "thinking" && s.end).reduce((sum, s) => sum + (Date.parse(s.end) - Date.parse(s.start)), 0);
+    const tools = steps.filter(s => s.kind === "tool").length;
+    const parts = [];
+    if (thinkMs > 0 || steps.some(s => s.kind === "thinking")) parts.push(`思考 ${fmtSecs(thinkMs)}`);
+    if (tools) parts.push(`${tools} 次工具调用`);
+    if (a.startedAt && a.endedAt) parts.push(`共 ${fmtSecs(Date.parse(a.endedAt) - Date.parse(a.startedAt))}`);
+    const key = `card:${t.id}:all`;
+    const open = mode === "full" && thinkOpen(key, false);
+    const toggle = mode === "full" ? `data-think="${esc(key)}" aria-expanded="${open}"` : `data-details="${t.id}" title="在详情里查看思考和工具调用"`;
+    return `<div class="bb-activity done"><button class="bb-step-head summary" type="button" ${toggle}>`
+      + `<span class="bb-step-icon">✻</span>${parts.join(" · ")}<span class="bb-chev">›</span></button>`
+      + (open ? steps.map((s, i) => stepHtml(t, s, i, "card")).join("") : "") + `</div>`;
+  }
+
   function answerHtml(t, n, mode) {
     const a = t.answer;
     const merged = showingMerged(t);
     const md = merged ? t.merged.markdown : a.markdown;
     let body = "";
+    const streaming = running(t) && !merged ? " streaming" : "";  // 正在输出：末尾显示闪烁的光标
     if (mode === "full") {
-      body = md ? `<div class="bb-answer-full bb-md">${footnoteHtml(core.markdownToHtml(md))}</div>` : "";
+      body = md ? `<div class="bb-answer-full bb-md${streaming}">${footnoteHtml(core.markdownToHtml(md))}</div>` : "";
     } else if (mode === "partial") {
       if (!merged && a.summary && a.summary.length && a.status === "done") body = `<ul class="bb-summary">${a.summary.map(s => `<li>${esc(s)}</li>`).join("")}</ul>`;
-      else if (md) body = `<div class="bb-preview bb-md">${footnoteHtml(core.markdownToHtml(core.previewMarkdown(md, 10)))}</div>`;
+      // 正在输出时预览取最新的几行（跟着往下走），完成后取开头
+      else if (md) body = `<div class="bb-preview bb-md${streaming}">${footnoteHtml(core.markdownToHtml(streaming ? tailMarkdown(md, 10) : core.previewMarkdown(md, 10)))}</div>`;
     }
     let mergeBar = "";
     if (t.merged) {
@@ -337,13 +411,13 @@
         <button class="bb-link" type="button" data-merge-view="${t.id}">${merged ? "看原版" : "看合并版"}</button>
         <button class="bb-link" type="button" data-merge-expand="${t.id}">${expanded ? "收起" : `展开 ${k} 张`}</button></div>`;
     }
-    const status = running(t) ? `<div class="bb-statusline">${esc(a.statusLine || "等待 Claude Code…")}</div>` : "";
+    const status = merged ? "" : activityHtml(t, mode);
     const error = a.status === "error" ? `<div class="bb-error-text">${esc(a.error || "出错了")}</div>` : "";
     const actions = [];
     if (running(t)) actions.push(`<button class="bb-btn small" type="button" data-interrupt="${t.id}">中断</button>`);
     if ((a.status === "error" || a.status === "interrupted") && !hasChildren(t.id)) actions.push(`<button class="bb-btn small" type="button" data-retry="${t.id}">重试</button>`);
-    if (finished(t)) actions.push(`<button class="bb-btn small" type="button" data-follow="${t.id}" title="也可以双击卡片">继续提问</button>`);
-    const hasAnswer = a.markdown || a.toolEvents.length;
+    if (finished(t)) actions.push(`<button class="bb-btn small" type="button" data-follow="${t.id}">继续提问</button>`);
+    const hasAnswer = a.markdown || a.toolEvents.length || stepsOf(t).length;
     const toggle = !hasAnswer ? "" : mode === "full"
       ? `<button class="bb-link" type="button" data-expand="${t.id}" data-to="${S.mode === "full" ? "partial" : S.mode}">收起</button>`
       : `<button class="bb-link" type="button" data-expand="${t.id}" data-to="full">展开全文</button>`;
@@ -393,21 +467,23 @@
     const ctx = new Set(S.selected ? core.contextIds(S.tree, S.selected) : []);
     const dim = w => (S.selected && !(ctx.has(w.id) && ctx.has(w.sourceId)) ? " dim" : "");
     // 箭头：主线一种颜色，划词线按来源卡片各用一种颜色（与目标卡片里引用框的颜色一致）
-    const marker = (id, fill) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto"><path d="M0,0 L10,5 L0,10 z" ${fill}/></marker>`;
+    const marker = (id, fill) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M0,0.5 L10,5 L0,9.5 L2.2,5 z" ${fill}/></marker>`;
     let svg = `<defs>${marker("bbArrowMain", 'class="arrow-main"')}${core.SOURCE_COLORS.map((c, i) => marker(`bbArrow${i}`, `fill="${c}"`)).join("")}</defs>`;
-    for (const w of core.layoutWires(S.view || S.tree, S.layout)) {
+    S.wireList = core.layoutWires(S.view || S.tree, S.layout);
+    S.wireList.forEach((w, i) => {
       const hl = w.type === "highlight";
       const color = hl ? w.color : "";
       const arrow = hl ? `bbArrow${core.SOURCE_COLORS.indexOf(w.color)}` : "bbArrowMain";
       const q = core.questionsOf(turn(w.id))[w.qi] || {};
       const tip = `#${num(w.sourceId)} → #${num(w.id)}${core.questionsOf(turn(w.id)).length > 1 ? ` · 问题 ${w.qi + 1}` : ""}`
         + (q.quote && q.quote.text ? ` · 划词「${q.quote.text.replace(/\s+/g, " ").slice(0, 40)}」` : " · 继续提问");
-      // 每条线一组：透明的粗线负责悬停命中，细线负责显示
-      svg += `<g class="wire ${w.type}${dim(w)}" data-from="${w.sourceId}" data-to="${w.id}"${color ? ` style="--wire:${color}"` : ""}>`
+      // 每条线一组：透明的粗线负责悬停命中；底色描边把线和背景网格、交叉的线隔开；上面一层负责显示
+      svg += `<g class="wire ${w.type}${dim(w)}" data-wire="${i}" data-from="${w.sourceId}" data-to="${w.id}"${color ? ` style="--wire:${color}"` : ""}>`
         + `<path class="wire-hit" d="${w.d}"><title>${esc(tip)}</title></path>`
+        + `<path class="wire-halo" d="${w.d}"/>`
         + `<path class="wire-line" d="${w.d}" marker-end="url(#${arrow})"/>`
-        + `<circle class="wire-dot" cx="${w.x1}" cy="${w.y1}" r="3.2"/></g>`;
-    }
+        + `<circle class="wire-dot" cx="${w.x1}" cy="${w.y1}" r="4"/></g>`;
+    });
     // 草稿小框：从来源卡片拉一条淡淡的虚线过去
     for (const dr of S.drafts) {
       const g = S.layout.cards[dr.sourceId];
@@ -419,7 +495,126 @@
     }
     els.wires.innerHTML = svg;
     applyFocus();
+    updateEdges();
   }
+
+  /* ---------- 边缘箭头：放大后连线的起点 / 终点滚出视口时，把它吸附在卡片可见部分的边缘 ----------
+     出口（来源卡片右边缘）：点一下跳到对应的提问；紧接着再点同一个箭头，回到来源卡片的末尾。
+     入口（目标卡片左边缘）：点一下回到来源卡片的末尾。 */
+  /* 导航规则（每张卡片的左右两侧）：
+     - 右侧 = 往后：平行的问答框（普通追问 / 分叉，水平排在右边）；没有平行的，就是对这张卡片划词提问出来的卡片。
+     - 左侧 = 往回：如果是从别处跳过来的，回到跳过来的那张（跳转历史，多跳也能一步步退回）；
+       否则回到上级（本卡片的来源）。多处提问的卡片有多个来源，左侧按来源等分，各回各的。
+     一侧有几个目标，就把这一侧上下等分成几段，每段一个超粗箭头。 */
+  function navTargets() {
+    const view = S.view || S.tree, cards = S.layout ? S.layout.cards : {};
+    const plain = {}, hl = {}, srcs = {};
+    for (const id of view.order) {
+      const t = view.turns[id];
+      if (!t || !cards[id]) continue;
+      for (const q of core.questionsOf(t)) {
+        const src = q.sourceId;
+        if (!src || !cards[src]) continue;
+        const quoted = !!(q.quote && q.quote.text) || t.kind === "highlight";
+        const bucket = quoted ? hl : plain;
+        (bucket[src] = bucket[src] || []).includes(id) || bucket[src].push(id);
+        (srcs[id] = srcs[id] || []).includes(src) || srcs[id].push(src);
+      }
+    }
+    const right = id => (plain[id] && plain[id].length ? plain[id] : hl[id] || []);
+    const left = id => {
+      const h = lastArrival(id);
+      return h ? [h.from] : (srcs[id] || []);
+    };
+    return { right, left, plain, hl };
+  }
+  /** 跳转历史里最近一次「跳到 id」的记录。 */
+  function lastArrival(id) {
+    const hist = S.navHistory || [];
+    for (let i = hist.length - 1; i >= 0; i--) if (hist[i].to === id) return { ...hist[i], index: i };
+    return null;
+  }
+  /** 往后：从 from 跳到 to 的提问（to 里接 from 的那个问题小框贴近顶部）。 */
+  function navForward(from, to) {
+    S.navHistory = (S.navHistory || []).concat([{ from, to }]).slice(-50);
+    S.lastJump = `${from}>${to}`;
+    const g = S.layout && S.layout.cards[to];
+    const qi = Math.max(0, core.questionsOf(turn(to)).findIndex(q => q.sourceId === from));
+    const dy = g && g.qms ? Math.max(0, g.qms[Math.min(qi, g.qms.length - 1)] - 34) : 0;
+    select(to); focusTurn(to, dy);
+  }
+  /** 往回：从 at 回到 to 的末尾；如果正是从 to 跳过来的，顺带把这一步从历史里退掉。 */
+  function navBack(at, to) {
+    const h = lastArrival(at);
+    if (h && h.from === to) S.navHistory = S.navHistory.slice(0, h.index);
+    S.lastJump = null;
+    select(to); focusTurnEnd(to);
+  }
+  function updateEdges() {
+    const box = els.edge;
+    if (!box) return;
+    const want = new Map();  // 复用按钮：频繁重绘（流式输出时每 100ms 一次）也不会吞掉正在进行的点击
+    if (S.layout && S.tree) {
+      const nav = navTargets();
+      const rect = els.viewport.getBoundingClientRect();
+      const drawerW = els.drawer.classList.contains("open") ? els.drawer.offsetWidth : 0;
+      const W = rect.width - drawerW, H = rect.height - 80;  // 底部留给输入框
+      const z = S.zoom, sx = x => S.panX + x * z, sy = y => S.panY + y * z;
+      const wd = Math.max(56, Math.min(160, LAYOUT.GAP * z - 6));  // 宽度占满卡片之间的那道缝
+      const visible = c => c && sx(c.x + c.w) > 0 && sx(c.x) < W && sy(c.y) < H && sy(c.y + c.h) > 8;
+      for (const card of Object.values(S.layout.cards)) {
+        if (!visible(card)) continue;
+        const top = Math.max(sy(card.y), 8), bot = Math.min(sy(card.y + card.h), H);
+        for (const side of ["out", "in"]) {
+          let targets = side === "out" ? nav.right(card.id) : nav.left(card.id);
+          // 左侧箭头和左边那张卡片的右侧箭头挤在同一道缝里：那张卡片看得见、右侧又正好指向这里时，就不重复放
+          if (side === "in") targets = targets.filter(t => {
+            const c = S.layout.cards[t];
+            const sameGap = Math.abs(c.x + c.w + LAYOUT.GAP - card.x) < 1 && c.y < card.y + card.h && card.y < c.y + c.h;
+            return !(sameGap && visible(c) && nav.right(t).includes(card.id));
+          });
+          const x = side === "out" ? sx(card.x + card.w) : sx(card.x);
+          if (!targets.length || x < 0 || x > W) continue;
+          const h = (bot - top) / targets.length;
+          if (h < 28) continue;
+          targets.forEach((to, k) => {
+            const quoted = side === "out" ? !(nav.plain[card.id] || []).includes(to) : core.questionsOf(turn(card.id)).some(q => q.sourceId === to && q.quote && q.quote.text);
+            const back = side === "in" || S.lastJump === `${card.id}>${to}`;
+            const colorOf = side === "out" ? card.id : to;  // 划词：用来源卡片的颜色
+            want.set(`${card.id}|${side}|${to}`, {
+              side, back, from: card.id, to, x: Math.round(x), y: Math.round(top + h * (k + 0.5)), h: Math.round(h), wd: Math.round(wd),
+              color: quoted ? core.sourceColor(S.tree, colorOf) : "",
+              tip: side === "in" ? `回到 #${num(to)} 的末尾` : back ? `回到 #${num(card.id)} 的末尾` : `跳到 #${num(to)} 的提问`,
+            });
+          });
+        }
+      }
+    }
+    for (const el of [...box.children]) if (!want.has(el.dataset.key)) el.remove();
+    for (const [key, it] of want) {
+      let el = box.querySelector(`[data-key="${CSS.escape(key)}"]`);
+      if (!el) {
+        el = document.createElement("button");
+        el.type = "button"; el.dataset.key = key;
+        el.innerHTML = '<svg viewBox="0 0 26 22" aria-hidden="true"><path d="M1,6.5 H13 V1 L25,11 L13,21 V15.5 H1 z"/></svg>';
+        box.appendChild(el);
+      }
+      el.className = `bb-edge-arrow ${it.side}${it.back ? " back" : ""}`;
+      el.style.left = it.x + "px"; el.style.top = it.y + "px";
+      el.style.height = it.h + "px"; el.style.width = it.wd + "px";
+      if (it.color) el.style.setProperty("--wire", it.color); else el.style.removeProperty("--wire");
+      el.title = it.tip; el.setAttribute("aria-label", it.tip);
+    }
+  }
+  els.edge.addEventListener("click", e => {
+    const btn = e.target.closest(".bb-edge-arrow");
+    if (!btn) return;
+    e.stopPropagation();
+    const [from, side, to] = btn.dataset.key.split("|");
+    if (side === "in") navBack(from, to);
+    else if (S.lastJump === `${from}>${to}`) navBack(to, from);  // 紧接着再点同一个箭头：回到原来那张的末尾
+    else navForward(from, to);
+  });
 
   /* ---------- 悬停聚焦：线多了以后，只突出和当前卡片 / 当前连线相关的那几条 ---------- */
   const focus = { card: null, wire: null };
@@ -448,9 +643,10 @@
   });
   els.stage.addEventListener("mouseleave", () => { focus.card = null; focus.wire = null; applyFocus(); });
   els.wires.addEventListener("click", e => {
-    // 点一条线：跳到它指向的那张卡片并高亮上下文
+    // 点一条线：跳到它指向的提问并高亮上下文；紧接着再点同一条线，回到来源卡片的末尾
     const wire = e.target.closest("g.wire");
-    if (wire) { e.stopPropagation(); select(wire.dataset.to); revealTurn(wire.dataset.to); }
+    const w = wire && S.wireList && S.wireList[+wire.dataset.wire];
+    if (w) { e.stopPropagation(); if (S.lastJump === `${w.sourceId}>${w.id}`) navBack(w.id, w.sourceId); else navForward(w.sourceId, w.id); }
   });
 
   function setMode(mode) {
@@ -460,7 +656,47 @@
     document.querySelectorAll(".bb-modes [data-mode]").forEach(b => {
       b.classList.toggle("on", b.dataset.mode === mode); b.setAttribute("aria-checked", String(b.dataset.mode === mode));
     });
-    if (S.tree) { for (const id of S.tree.order) renderTurn(S.tree.turns[id]); layoutNow(); }
+    if (!S.tree) return;
+    const anchor = viewAnchor();
+    for (const id of S.tree.order) renderTurn(S.tree.turns[id]);
+    layoutNow();
+    restoreAnchor(anchor);
+  }
+  /**
+   * 切换显示模式前记下视口左上角的参考卡片，切换后照此重新定位，视野不乱跳。
+   * 1. 左上角有被视口上边或左边切掉一部分的卡片（取可见部分离左上角最近的一张）：
+   *    被切的方向记显示比例，切换后保持这个比例；没被切的方向记卡片边缘离视口边缘的屏幕像素。
+   * 2. 没有这样的卡片：取左上角离视口左上角最近的完整卡片，切换后保持它左上角在屏幕上的位置不变。
+   */
+  function viewAnchor() {
+    if (!S.layout) return null;
+    const rect = els.viewport.getBoundingClientRect();
+    const drawerW = els.drawer.classList.contains("open") ? els.drawer.offsetWidth : 0;
+    const vx = -S.panX / S.zoom, vy = -S.panY / S.zoom;  // 视口左上角的画布坐标
+    const vw = (rect.width - drawerW) / S.zoom, vh = rect.height / S.zoom;
+    let partial = null, whole = null;
+    for (const g of Object.values(S.layout.cards)) {
+      const x1 = Math.max(g.x, vx), y1 = Math.max(g.y, vy);
+      const x2 = Math.min(g.x + g.w, vx + vw), y2 = Math.min(g.y + g.h, vy + vh);
+      if (x2 <= x1 || y2 <= y1) continue;  // 不在视口里
+      const d = Math.hypot(x1 - vx, y1 - vy);  // 可见部分的左上角离视口左上角多远
+      if (g.x < vx || g.y < vy) { if (!partial || d < partial.d) partial = { d, g }; }  // 被上边或左边切掉一部分
+      else if (!whole || d < whole.d) whole = { d, g };  // 左上角完整可见，d 就是卡片左上角的距离
+    }
+    const g = (partial || whole || {}).g;
+    if (!g) return null;
+    const axis = (v, start, size) => v > start
+      ? { cut: (v - start) / size }          // 被切掉的比例（显示比例 = 1 - cut）
+      : { gap: (start - v) * S.zoom };       // 卡片边缘离视口边缘的屏幕像素
+    return { id: g.id, x: axis(vx, g.x, g.w), y: axis(vy, g.y, g.h) };
+  }
+  function restoreAnchor(anchor) {
+    const g = anchor && S.layout && S.layout.cards[anchor.id];
+    if (!g) return;  // 那张卡片在新模式下被隐藏了：视图不动
+    const vx = anchor.x.cut != null ? g.x + anchor.x.cut * g.w : g.x - anchor.x.gap / S.zoom;
+    const vy = anchor.y.cut != null ? g.y + anchor.y.cut * g.h : g.y - anchor.y.gap / S.zoom;
+    S.panX = -vx * S.zoom; S.panY = -vy * S.zoom;
+    applyTransform();
   }
   document.querySelectorAll(".bb-modes [data-mode]").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
 
@@ -470,6 +706,7 @@
     els.viewport.style.backgroundPosition = `${S.panX}px ${S.panY}px`;
     els.viewport.style.backgroundSize = `${22 * S.zoom}px ${22 * S.zoom}px`;
     $("bbZoomReset").textContent = Math.round(S.zoom * 100) + "%";
+    updateEdges();
   }
   function zoomAt(factor, cx, cy) {
     const rect = els.viewport.getBoundingClientRect();
@@ -504,6 +741,30 @@
     layoutNow();
     const g = S.layout && S.layout.cards[id];
     if (g) revealRect(g.x, g.y, g.w, Math.max(g.h, 120));
+  }
+  /** 把一张卡片定到视口中心：水平居中（避开抽屉），问题贴近顶部，其余往下显示。缩放不变。 */
+  function focusTurn(id, dy = 0) {  // dy：卡片内要贴到顶部的位置（画布坐标，相对卡片顶边）
+    layoutNow();
+    const g = S.layout && S.layout.cards[id];
+    if (!g) return;
+    const rect = els.viewport.getBoundingClientRect();
+    const drawerW = els.drawer.classList.contains("open") ? els.drawer.offsetWidth : 0;
+    const top = 24;
+    S.panX = (rect.width - drawerW) / 2 - (g.x + g.w / 2) * S.zoom;
+    S.panY = top - (g.y + dy) * S.zoom;
+    applyTransform();
+  }
+  /** 回到一张卡片的末尾：水平居中；卡片放得下就整张显示，放不下就让底边贴近视口底部（留出输入框）。 */
+  function focusTurnEnd(id) {
+    layoutNow();
+    const g = S.layout && S.layout.cards[id];
+    if (!g) return;
+    const rect = els.viewport.getBoundingClientRect();
+    const drawerW = els.drawer.classList.contains("open") ? els.drawer.offsetWidth : 0;
+    const top = 24, bottom = rect.height - 96;
+    S.panX = (rect.width - drawerW) / 2 - (g.x + g.w / 2) * S.zoom;
+    S.panY = g.h * S.zoom <= bottom - top ? top - g.y * S.zoom : bottom - (g.y + g.h) * S.zoom;
+    applyTransform();
   }
   /** 屏幕坐标 → 画布坐标。 */
   function toStage(clientX, clientY) {
@@ -780,16 +1041,23 @@
   els.stage.addEventListener("dblclick", e => {
     const card = e.target.closest(".bb-card");
     if (!card || e.target.closest("button, .bb-draft, .bb-perm")) return;
+    // 双击卡片：把整个视图定位到这张卡片，问题在顶部，其余往下显示（追问走「继续提问」按钮）
     window.getSelection().removeAllRanges();
     els.ask.classList.add("hidden");
-    addDraft(card.dataset.id, null, toStage(e.clientX, e.clientY));
+    select(card.dataset.id);
+    focusTurn(card.dataset.id);
   });
 
   async function handleAction(btn, e) {
     const card = btn.closest(".bb-card");
     const tid = (card && card.dataset.id) || S.drawerId;
     try {
-      if (btn.dataset.follow) {
+      if (btn.dataset.think) {
+        const key = btn.dataset.think, [where, id] = key.split(":");
+        S.thinkOpen[key] = btn.getAttribute("aria-expanded") !== "true";
+        if (where === "drawer") renderDrawer(false);
+        else if (turn(id)) { renderTurn(turn(id)); layoutNow(); }
+      } else if (btn.dataset.follow) {
         const r = btn.getBoundingClientRect();
         addDraft(btn.dataset.follow, null, toStage(r.left, r.bottom));
       } else if (btn.dataset.details) { select(btn.dataset.details); openDrawer(btn.dataset.details); }
@@ -881,7 +1149,7 @@
   $("bbDrawerInterrupt").addEventListener("click", () => S.drawerId && handleAction({ dataset: { interrupt: S.drawerId }, closest: () => null }));
   $("bbDrawerRetry").addEventListener("click", () => S.drawerId && handleAction({ dataset: { retry: S.drawerId }, closest: () => null }));
   els.drawer.addEventListener("click", async e => {
-    const btn = e.target.closest("button[data-perm-allow], button[data-perm-deny]");
+    const btn = e.target.closest("button[data-perm-allow], button[data-perm-deny], button[data-think]");
     if (btn) { await handleAction(btn); return; }
     const quote = e.target.closest(".bb-qbox .bb-quote[data-quote-of]");
     if (quote && turn(quote.dataset.quoteOf)) { openDrawer(quote.dataset.quoteOf, S.drawerId); return; }
@@ -912,17 +1180,39 @@
       return `<div class="bb-qbox">${quote}<b>${qs.length > 1 ? `问题 ${i + 1}` : "提问"}${!quote && q.sourceId && qs.length > 1 ? `（接 #${num(q.sourceId)}）` : ""}：</b>${esc(q.text || "（就这段内容展开）")}</div>`;
     }).join("");
     const files = a.filesChanged.length ? `<p class="bb-section-title">修改的文件（分支不隔离文件，主线也能看到这些改动）</p><ul class="bb-files">${a.filesChanged.map(f => `<li><code>${esc(f)}</code></li>`).join("")}</ul>` : "";
-    const tools = a.toolEvents.length ? `<p class="bb-section-title">工具调用（${a.toolEvents.length}）</p><div class="bb-tools">${a.toolEvents.map(ev => {
+    const toolDetails = (ev, label) => {
       const input = typeof ev.input === "string" ? ev.input : JSON.stringify(ev.input, null, 2);
       const flag = ev.approved === true ? ' <span class="ok">已批准</span>' : ev.approved === false ? ' <span class="no">已拒绝</span>' : "";
       const err = ev.isError ? ' <span class="no">失败</span>' : "";
       const hint = (ev.input && (ev.input.file_path || ev.input.command || ev.input.pattern || ev.input.url || ev.input.description)) || "";
-      return `<details><summary><b>${esc(ev.name)}</b> ${esc(String(hint).slice(0, 120))}${flag}${err}</summary><pre>${esc(input.slice(0, 4000))}${ev.outputPreview ? "\n\n── 结果 ──\n" + esc(ev.outputPreview) : ""}</pre></details>`;
-    }).join("")}</div>` : "";
-    const status = running(t) ? `<div class="bb-statusline">${esc(a.statusLine || "等待 Claude Code…")}</div>` : "";
+      const key = `${t.id}:${ev.id || ev.ts}`;
+      return `<details data-key="${esc(key)}"${S.drawerOpen.has(key) ? " open" : ""}><summary>${label || ""}<b>${esc(ev.name)}</b> ${esc(String(hint).slice(0, 120))}${flag}${err}</summary><pre>${esc(input.slice(0, 4000))}${ev.outputPreview ? "\n\n── 结果 ──\n" + esc(ev.outputPreview) : ""}</pre></details>`;
+    };
+    const steps = stepsOf(t);
+    let tools = "";
+    if (steps.length) {
+      // 过程：按时间顺序列出思考和工具调用；工具调用可以展开看输入和结果
+      const byId = Object.fromEntries(a.toolEvents.filter(ev => ev.id).map(ev => [ev.id, ev]));
+      const items = steps.map((s, i) => {
+        if (s.kind === "tool" && byId[s.id]) {
+          const live = !s.end && running(t);
+          const icon = live ? '<span class="bb-spinner"></span>' : s.isError ? "✕" : "✓";
+          return `<div class="bb-step tool rich${live ? " live" : ""}${s.isError ? " err" : ""}">${toolDetails(byId[s.id], `<span class="bb-step-icon">${icon}</span>`)}</div>`;
+        }
+        return stepHtml(t, s, i, "drawer");
+      }).join("");
+      const total = a.startedAt ? ` · ${running(t) ? "已用" : "共"} ${elapsedHtml(a.startedAt, running(t) ? null : a.endedAt)}` : "";
+      tools = `<p class="bb-section-title">过程（${steps.length} 步${total}）</p><div class="bb-activity drawer">${items}</div>`;
+    } else if (a.toolEvents.length) {
+      tools = `<p class="bb-section-title">工具调用（${a.toolEvents.length}）</p><div class="bb-tools">${a.toolEvents.map(ev => toolDetails(ev)).join("")}</div>`;
+    }
+    const status = running(t) ? `<div class="bb-statusline live"><span class="bb-spinner"></span><span class="bb-status-text">${esc(a.statusLine || "等待 Claude Code…")}</span>${elapsedHtml(a.startedAt, null)}</div>` : "";
     const error = a.status === "error" ? `<p class="bb-error-text">${esc(a.error)}</p>` : "";
     body.innerHTML = `${questions}${files}${tools}${status}${permissionsHtml(t)}${error}
-      <div class="bb-answer-full bb-md">${core.markdownToHtml(a.markdown) || (running(t) ? "" : "<p><i>（没有文字回答）</i></p>")}</div>`;
+      <div class="bb-answer-full bb-md${running(t) ? " streaming" : ""}">${core.markdownToHtml(a.markdown) || (running(t) ? "" : "<p><i>（没有文字回答）</i></p>")}</div>`;
+    body.querySelectorAll("details[data-key]").forEach(d => d.addEventListener("toggle", () => {
+      if (d.open) S.drawerOpen.add(d.dataset.key); else S.drawerOpen.delete(d.dataset.key);
+    }));
     const focusMark = markChildQuotes(body.querySelector(".bb-answer-full"), t.id, "full", focusChild);
     if (focusMark) focusMark.scrollIntoView({ block: "center" });
     else if (fresh) body.scrollTop = 0;

@@ -270,17 +270,16 @@ body.bb-body { display:flex; flex-direction:column; overflow:hidden; background:
 .bb-viewport.space-pan, .bb-viewport.space-pan * { cursor:grab !important; }
 .bb-stage.no-select, .bb-stage.no-select * { user-select:none !important; }
 
-/* ---------- 连线可读性：默认淡一些，悬停卡片 / 连线时只突出相关的几条 ---------- */
+/* ---------- 连线可读性：实色、加粗、带底色描边；悬停卡片 / 连线时突出相关的几条 ---------- */
 .bb-wires .wire { transition:opacity .15s; }
-.bb-wires .wire-line { fill:none; stroke:var(--bb-main); stroke-width:1.6; opacity:.62; transition:stroke-width .12s, opacity .12s; }
-.bb-wires .wire.highlight .wire-line { stroke:var(--wire, var(--bb-hl)); stroke-dasharray:6 4; }
-.bb-wires .wire.follow .wire-line { opacity:.8; }
-.bb-wires .wire-dot { fill:var(--wire, var(--bb-main)); opacity:.75; }
-.bb-wires .wire-hit { fill:none; stroke:transparent; stroke-width:12; pointer-events:stroke; cursor:pointer; }
-.bb-wires .wire.dim { opacity:.2; }
-.bb-wires.has-focus .wire:not(.hot) { opacity:.1; }
-.bb-wires .wire.hot .wire-line { stroke-width:2.6; opacity:1; }
-.bb-wires .wire.hot .wire-dot { opacity:1; }
+.bb-wires .wire-halo { fill:none; stroke:var(--t-bg); stroke-width:6; stroke-linecap:round; stroke-linejoin:round; }
+.bb-wires .wire-line { fill:none; stroke:var(--bb-main); stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; transition:stroke-width .12s; }
+.bb-wires .wire.highlight .wire-line { stroke:var(--wire, var(--bb-hl)); stroke-dasharray:9 5; stroke-linecap:butt; }
+.bb-wires .wire-dot { fill:var(--wire, var(--bb-main)); stroke:var(--t-bg); stroke-width:1.5; }
+.bb-wires .wire-hit { fill:none; stroke:transparent; stroke-width:14; pointer-events:stroke; cursor:pointer; }
+.bb-wires .wire.dim { opacity:.3; }
+.bb-wires.has-focus .wire:not(.hot) { opacity:.18; }
+.bb-wires .wire.hot .wire-line { stroke-width:3.2; }
 .bb-stage.has-focus .bb-card.linked { border-color:var(--t-accent-line); box-shadow:0 0 0 2px var(--t-accent-soft-2), 0 6px 18px rgba(0,0,0,.07); }
 /* 引用框用来源卡片的颜色：看到颜色就知道它是从哪条线过来的 */
 .bb-quote[style*="--src"] { border-left-color:var(--src); background:color-mix(in srgb, var(--src) 9%, var(--t-panel)); }
@@ -330,3 +329,66 @@ body.bb-body { display:flex; flex-direction:column; overflow:hidden; background:
 .bb-card .bb-md sup.bb-fn-def { display:inline-block; min-width:1.3em; color:var(--t-accent); font-weight:700; }
 .bb-fv-group { margin:12px 0 6px; color:var(--t-muted); font-size:11.5px; font-weight:650; letter-spacing:.02em; }
 .bb-fv-group:first-child { margin-top:0; }
+
+/* ---------- 过程：像 Claude 客户端那样实时显示思考、工具调用和计时 ---------- */
+.bb-statusline.live::before { content:none; }
+.bb-statusline .bb-status-text { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bb-statusline .bb-elapsed { margin-left:auto; }
+.bb-spinner { flex:none; display:inline-block; width:10px; height:10px; border:2px solid var(--t-accent-line); border-top-color:var(--t-accent); border-radius:50%; animation:bb-spin .8s linear infinite; }
+.bb-elapsed { flex:none; color:var(--t-muted); font-size:11.5px; font-variant-numeric:tabular-nums; }
+.bb-activity { display:flex; flex-direction:column; gap:3px; margin:2px 0 8px; font-size:12.5px; color:var(--t-ink-2); }
+.bb-step { display:flex; align-items:center; gap:7px; min-width:0; }
+.bb-step.more { color:var(--t-muted); font-size:11.5px; padding-left:20px; }
+.bb-step-icon { flex:none; display:inline-flex; align-items:center; justify-content:center; width:14px; color:var(--t-muted); font-size:12px; }
+.bb-step.tool { padding:1px 0; }
+.bb-step.tool b { flex:none; color:var(--t-ink); font-weight:600; }
+.bb-step.tool .bb-step-icon { color:var(--t-ok); }
+.bb-step.tool.live .bb-step-icon { color:inherit; }
+.bb-step.tool.err .bb-step-icon, .bb-step.tool.err b { color:var(--t-danger); }
+.bb-step-hint { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t-muted); font-family:var(--t-font-mono, ui-monospace, Consolas, monospace); font-size:11.5px; }
+.bb-step.tool .bb-elapsed { margin-left:auto; }
+.bb-step.think { flex-direction:column; align-items:stretch; gap:3px; }
+.bb-step-head { display:flex; align-items:center; gap:7px; width:100%; padding:2px 0; border:0; background:none; color:inherit; font:inherit; text-align:left; cursor:default; }
+.bb-step-head[data-think], .bb-step-head[data-details] { cursor:pointer; }
+.bb-step-head[data-think]:hover, .bb-step-head[data-details]:hover { color:var(--t-ink); }
+.bb-step-head.summary { color:var(--t-muted); font-size:12px; }
+.bb-chev { display:inline-block; margin-left:2px; color:var(--t-muted); transition:transform .15s; }
+.bb-step-head[aria-expanded="true"] .bb-chev { transform:rotate(90deg); }
+.bb-step.think.live .bb-step-head { color:var(--t-ink); }
+/* 正在思考：文字像 Claude 客户端那样带一道流光 */
+.bb-step.think.live .bb-step-head { background:linear-gradient(90deg, var(--t-ink-2) 0%, var(--t-ink-2) 40%, var(--t-accent) 50%, var(--t-ink-2) 60%, var(--t-ink-2) 100%);
+  background-size:300% 100%; -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; animation:bb-shimmer 2.2s linear infinite; }
+.bb-step.think.live .bb-step-icon, .bb-step.think.live .bb-elapsed { -webkit-text-fill-color:initial; }
+@keyframes bb-shimmer { from { background-position:100% 0; } to { background-position:0 0; } }
+.bb-spark { width:8px; height:8px; border-radius:50%; background:var(--t-accent); animation:bb-pulse 1.1s ease-in-out infinite; }
+@keyframes bb-pulse { 0%,100% { transform:scale(.6); opacity:.5; } 50% { transform:scale(1); opacity:1; } }
+/* 思考内容：卡片里正在思考时只露出最新的几行（底部对齐），想完了展开可以滚动 */
+.bb-think-body { display:flex; flex-direction:column-reverse; max-height:8.6em; overflow:hidden; margin-left:7px; padding:2px 0 2px 12px; border-left:2px solid var(--t-line); color:var(--t-muted); font-size:12px; line-height:1.43; white-space:pre-wrap; overflow-wrap:anywhere; }
+.bb-step.think.live .bb-think-body { -webkit-mask-image:linear-gradient(to bottom, transparent 0, #000 2.2em); mask-image:linear-gradient(to bottom, transparent 0, #000 2.2em); }
+.bb-step.think:not(.live) .bb-think-body { flex-direction:column; max-height:18em; overflow:auto; }
+.bb-activity.drawer { font-size:13px; }
+.bb-activity.drawer .bb-think-body { max-height:none; }
+.bb-activity.drawer .bb-step.think.live .bb-think-body { max-height:16em; }
+.bb-step.tool.rich { display:block; }
+.bb-step.tool.rich details { border:1px solid var(--t-line-soft); border-radius:7px; background:var(--t-surface); font-size:12.5px; }
+.bb-step.tool.rich summary { display:flex; align-items:center; gap:6px; padding:5px 9px; cursor:pointer; color:var(--t-ink-2); overflow:hidden; white-space:nowrap; }
+.bb-step.tool.rich .ok { color:var(--t-ok); } .bb-step.tool.rich .no { color:var(--t-danger); }
+.bb-step.tool.rich pre { margin:0; padding:6px 9px 8px; max-height:240px; overflow:auto; border-top:1px solid var(--t-line-soft); font-size:11.5px; line-height:1.45; white-space:pre-wrap; }
+/* 正在输出的回答：末尾一个闪烁的光标 */
+.bb-md.streaming > :last-child::after { content:""; display:inline-block; width:.5em; height:1.05em; margin-left:2px; vertical-align:text-bottom; background:var(--t-accent); border-radius:1px; animation:bb-caret 1s steps(1) infinite; }
+@keyframes bb-caret { 50% { opacity:0; } }
+@media (prefers-reduced-motion: reduce) {
+  .bb-spinner, .bb-spark, .bb-md.streaming > :last-child::after, .bb-step.think.live .bb-step-head { animation:none; }
+}
+
+/* ---------- 边缘箭头：出口是一个超粗的块状箭头，锁定在卡片可见部分右侧的正中间 ---------- */
+.bb-edge { position:absolute; inset:0; overflow:hidden; pointer-events:none; z-index:3; }
+.bb-edge-arrow { position:absolute; display:flex; align-items:center; justify-content:center; width:56px; height:48px; padding:0; transform:translateY(-50%);
+  border:0; border-radius:8px; background:transparent; color:var(--wire, var(--bb-main)); cursor:pointer; pointer-events:auto; }
+.bb-edge-arrow svg { width:52px; height:44px; overflow:visible; fill:currentColor; stroke:color-mix(in srgb, currentColor 70%, #000); stroke-width:1; stroke-linejoin:round;
+  filter:drop-shadow(0 2px 4px rgba(0,0,0,.22)); transition:transform .12s; }
+.bb-edge-arrow.out { margin-left:6px; }
+.bb-edge-arrow:hover svg { transform:scale(1.08); }
+.bb-edge-arrow.back svg { transform:scaleX(-1); }  /* 再点一次是返回：箭头掉头 */
+.bb-edge-arrow.back:hover svg { transform:scaleX(-1.08) scaleY(1.08); }
+.bb-edge-arrow.in { margin-left:-6px; transform:translate(-100%, -50%); }

@@ -155,6 +155,52 @@ class BranchboardTest(unittest.TestCase):
         self.assertEqual(reloaded["turns"][root["id"]]["sessionId"], SID[0])
         self.assertEqual(reloaded["title"], "第一个问题")
 
+    def test_steps_record_thinking_and_tools_in_order(self):
+        h = Harness(self)
+        tree = h.service.create_tree("t", str(h.cwd))
+        gate = threading.Event()
+
+        def ev(inner):
+            return {"type": "stream_event", "event": inner}
+
+        def script(proc):
+            yield {"type": "system", "subtype": "init", "session_id": SID[0]}
+            yield ev({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}})
+            yield ev({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "先看看"}})
+            yield ev({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "x"}})
+            yield ev({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "文件。"}})
+            gate.wait(5)  # 停在思考中：这时思考块还开着
+            yield ev({"type": "content_block_stop", "index": 0})
+            yield ev({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tu1", "name": "Read", "input": {}}})
+            yield ev({"type": "content_block_stop", "index": 1})
+            yield {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tu1", "name": "Read",
+                                                                 "input": {"file_path": str(h.cwd / "a.md")}}]}}
+            yield {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "内容", "is_error": True}]}}
+            yield ev({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}})
+            yield ev({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "答案"}})
+            yield {"type": "result", "subtype": "success", "result": "答案", "session_id": SID[0]}
+        h.scripts.append(script)
+        turn = h.service.create_turn(tree["id"], {"question": "q"})
+        deadline = time.monotonic() + 5
+        while True:
+            answer = h.service.snapshot(tree["id"])["turns"][turn["id"]]["answer"]
+            if answer.get("steps") and answer["steps"][0]["text"] == "先看看文件。":
+                break
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.02)
+        self.assertIsNone(answer["steps"][0]["end"])
+        self.assertTrue(answer["startedAt"])
+        gate.set()
+        done = h.wait_status(tree["id"], turn["id"])["answer"]
+        steps = done["steps"]
+        self.assertEqual([s["kind"] for s in steps], ["thinking", "tool"])  # 流里先到的工具块和完整消息合成一项
+        self.assertTrue(steps[0]["end"])
+        self.assertEqual((steps[1]["name"], steps[1]["hint"], steps[1]["isError"]), ("Read", str(h.cwd / "a.md"), True))
+        self.assertTrue(steps[1]["end"] and done["endedAt"])
+        self.assertEqual(done["markdown"], "答案")
+        saved = json.loads((h.cwd / ".branchboard" / f"{tree['id']}.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["turns"][turn["id"]]["answer"]["steps"], steps)
+
     def test_parent_must_be_finished(self):
         h = Harness(self)
         tree = h.service.create_tree("t", str(h.cwd))
@@ -412,7 +458,7 @@ class BranchboardTest(unittest.TestCase):
         self.assertEqual(set(branchboard.context_ids(h.service.tree(tid), follow["id"])),
                          {follow["id"], multi["id"], a["id"], root["id"], b["id"]})
 
-        # 双击同一张卡片两次：两个普通问题 → 一张多问题卡片，单独开一行
+        # 同一张卡片上加两个问题小框：两个普通问题 → 一张多问题卡片，单独开一行
         two = run({"questions": [{"sourceId": root["id"], "text": "问一"}, {"sourceId": root["id"], "text": "问二"}]}, SID[5], "两个回答")
         self.assertEqual(two["kind"], "multi")
         self.assertIn("layout", two)

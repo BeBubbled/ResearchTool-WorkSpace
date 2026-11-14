@@ -73,38 +73,53 @@
   }
 
   /** 第二步：就近放置。sizes[id] = {w, h, qms}（qms[i]：第 i 个问题框中线的 y 偏移）。
-      按创建顺序逐张放：先试理想位置（inline：与父卡片顶边对齐；向下分支：紧贴主父卡片下方；向上分支：紧贴上方），
-      和已放好的卡片挨得太近就沿该方向挪到刚好让开的位置。卡片之间至少隔 VGAP，因此不会重叠，
-      新卡片也总是尽量靠近它的来源。 */
+      一「行」= 一张非 inline 的卡片（行首）加上沿普通追问一路接下去的 inline 卡片，整行顶边对齐。
+      按行首的创建顺序逐行放，整行一起放：先试理想位置（根：排在已放卡片下方；向下分支：紧贴主父卡片下方；
+      向上分支：紧贴上方），行里任何一张和已放好的卡片挨得太近，整行就沿该方向挪到刚好让开的位置。
+      这样不管卡片多高（仅问题 / 部分回答 / 完全展开），普通追问总和前一张水平对齐，划词分支总在来源的上方或下方，
+      结构不随显示模式变化。卡片之间至少隔 VGAP，因此不会重叠。 */
   function layoutTree(tree, sizes, opts = {}) {
     const C = { ...LAYOUT, ...opts };
     const widths = {};
     for (const [id, s] of Object.entries(sizes)) if (s && s.w) widths[id] = s.w;
     const { grid } = layoutGrid(tree, widths, C);
-    const placed = [];
-    const clash = (x, w, y, h) => placed.filter(c =>
-      c.x < x + w + C.HMARGIN && x < c.x + c.w + C.HMARGIN && c.y < y + h + C.VGAP && y < c.y + c.h + C.VGAP);
+    const inlineChild = {};
     for (const id of tree.order) {
       const g = grid[id];
       if (!g) continue;
       const s = sizes[id] || {};
       g.h = s.h || 120;
       g.qms = s.qms && s.qms.length ? s.qms : [s.qm || C.QMID];
+      if (g.inline) inlineChild[g.primary] = id;
+    }
+    const placed = [], rows = [];
+    const clash = (x, w, y, h) => placed.filter(c =>
+      c.x < x + w + C.HMARGIN && x < c.x + c.w + C.HMARGIN && c.y < y + h + C.VGAP && y < c.y + c.h + C.VGAP);
+    for (const id of tree.order) {
+      const head = grid[id];
+      if (!head || head.inline) continue;  // inline 卡片随它的行首一起放
+      const row = [head];
+      for (let c = inlineChild[id]; c; c = inlineChild[c]) row.push(grid[c]);
       let y, down = true;
-      if (!g.primary) {
+      if (!head.primary) {
         y = placed.length ? Math.max(...placed.map(c => c.y + c.h)) + C.VGAP : 0;  // 根（或来源缺失）
       } else {
-        const p = grid[g.primary];
-        if (g.inline) y = p.y;
-        else if (g.dir > 0) y = p.y + p.h + C.VGAP;
-        else { y = p.y - g.h - C.VGAP; down = false; }
+        const p = grid[head.primary];
+        if (head.dir > 0) y = p.y + p.h + C.VGAP;
+        else { y = p.y - head.h - C.VGAP; down = false; }
       }
-      for (let hits = clash(g.x, g.w, y, g.h); hits.length; hits = clash(g.x, g.w, y, g.h)) {
-        y = down ? Math.max(...hits.map(c => c.y + c.h)) + C.VGAP : Math.min(...hits.map(c => c.y)) - g.h - C.VGAP;
+      for (;;) {
+        let next = y;
+        for (const m of row) {
+          const hits = clash(m.x, m.w, y, m.h);
+          if (!hits.length) continue;
+          next = down ? Math.max(next, ...hits.map(c => c.y + c.h + C.VGAP)) : Math.min(next, ...hits.map(c => c.y - m.h - C.VGAP));
+        }
+        if (next === y) break;
+        y = next;
       }
-      g.y = y;
-      if (g.inline && g.y !== grid[g.primary].y) g.inline = false;  // 被挤开了，就不再算同一行
-      placed.push(g);
+      for (const m of row) { m.y = y; placed.push(m); }
+      rows.push(row.map(m => m.id));
     }
     const minY = placed.length ? Math.min(...placed.map(c => c.y)) : 0;
     let width = 0, height = 0;
@@ -112,7 +127,7 @@
       g.x += C.PAD; g.y += C.PAD - minY;
       width = Math.max(width, g.x + g.w); height = Math.max(height, g.y + g.h);
     }
-    return { cards: grid, width: width + C.PAD, height: height + C.PAD, C };
+    return { cards: grid, rows, width: width + C.PAD, height: height + C.PAD, C };
   }
 
   /** 把折线的拐角改成圆角（半径不超过相邻两段的一半）。 */
