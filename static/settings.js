@@ -1,13 +1,13 @@
-/* 全局设置：LLM、Mathpix、Codex、Claude Code、Google 翻译、精读默认行为、双语改稿工作流、Three-Pass、Azure Speech、GitHub。
+/* 全局设置：LLM、Mathpix、Codex、Claude Code、Google 翻译、OpenAlex、精读默认行为、双语改稿工作流、Three-Pass、Azure Speech、GitHub。
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["general", "appearance", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
+const SETTINGS_TABS = ["general", "appearance", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "openalex", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
 // Sidebar groups (macOS System Settings style): accounts & engines, services, then per-module defaults.
 const SETTINGS_GROUPS = [
   { label: "通用", items: [["general", "通用"], ["appearance", "外观与语言"], ["doctor", "环境检查"], ["usage", "用量"]] },
   { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["billing", "费用确认"]] },
-  { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
+  { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["openalex", "OpenAlex 文献"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
   { label: "功能", items: [["reader", "精读"], ["workflow", "双语改稿"], ["three-pass", "Three-Pass"], ["studio", "ResearchStudio"]] },
   { label: "高级", items: [["advanced", "高级"]] },
 ];
@@ -15,7 +15,7 @@ const LAST_PANE_KEY = "research-toolkit.settings.last-pane";
 function storedPane() {
   try { const pane = localStorage.getItem(LAST_PANE_KEY); return SETTINGS_TABS.includes(pane) ? pane : ""; } catch { return ""; }
 }
-const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], studioConfig: null, settingsTab: "llm", settingsQuery: "" };
+const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, openalexConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], studioConfig: null, settingsTab: "llm", settingsQuery: "" };
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 let form = null;
 let hooks = { onTabChange() {}, onChanged() {}, onSaved() {} };
@@ -56,7 +56,7 @@ async function mount(root, options = {}) {
     return Promise.resolve().then(load).catch(() => {}).finally(() => { pending.delete(key); if (rendered) refreshKeepingEdits(); });
   });
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadReaderActions()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalOpenalexConfig(), loadReaderActions()]);
     renderLlmManager();
     rendered = true;
   } catch (error) {
@@ -671,6 +671,13 @@ async function loadGlobalGoogleConfig() {
   state.googleConfig = data.google || { configured: false };
 }
 
+async function loadGlobalOpenalexConfig() {
+  const response = await fetch("/api/openalex-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取 OpenAlex 配置。");
+  state.openalexConfig = data.openalex || { configured: false };
+}
+
 async function loadGlobalClaudeConfig(refresh = false) {
   const response = await fetch(refresh ? "/api/claude-code-config/refresh" : "/api/claude-code-config", refresh ? { method:"POST" } : undefined);
   const data = await response.json();
@@ -797,6 +804,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm", { keep
     imageRoot: "images",
   };
   const google = state.googleConfig || { configured: false };
+  const openalex = state.openalexConfig || { configured: false };
   const claude = state.claudeConfig || { available: false, plan: false, models: [], efforts: [] };
   const codex = state.codexConfig || { available:false, chatgptAuthenticated:false, models:[], rateLimits:null };
   const codexModels = codex.models || [];
@@ -806,7 +814,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm", { keep
   const codexRuntime = codexRuntimeText(codex.runtime);
   const paneStatus = {
     codex: pending.has("codex") ? undefined : codexReady, claude: pending.has("claude") ? undefined : Boolean(claude.plan), llm: state.llmPresets.length > 0,
-    mathpix: Boolean(mathpix.configured), google: Boolean(google.configured), speech: Boolean(speech.configured), github: Boolean(github.configured),
+    mathpix: Boolean(mathpix.configured), google: Boolean(google.configured), openalex: Boolean(openalex.configured), speech: Boolean(speech.configured), github: Boolean(github.configured),
   };
   const cards = state.llmPresets.map(preset => `
     <article class="llm-preset-card">
@@ -927,6 +935,24 @@ ${renderAdvancedSettingsPanel()}
           </div>
         </form>
       </section>
+      <section class="settings-tab-panel openalex-manager" data-settings-panel="openalex" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div>
+            <div class="llm-preset-heading"><h3>OpenAlex 文献检索</h3><span class="preset-id ${openalex.configured ? "" : "speech-unconfigured"}">${openalex.configured ? `已配置${openalex.keyTail ? ` · …${escapeHtml(openalex.keyTail)}` : ""}` : "未配置"}</span></div>
+            <p class="hint">演化树调研的检索、被引列表（正向追踪）和参考文献（向前补漏）使用 <code>${escapeHtml(openalex.endpoint || "https://api.openalex.org/works")}</code>。没有 Key 时与同一 IP 的所有人共用每天 0.10 美元的免费额度，且不能用 cursor 翻页；有 Key 时每天 1 美元。Key 只保存在项目 .env，只加在实际请求上，不写进检索缓存。</p>
+          </div>
+        </div>
+        <p id="openalexManagerStatus" class="manager-message ${messageTarget === "openalex" ? escapeHtml(kind) : ""} ${message && messageTarget === "openalex" ? "" : "hidden"}" role="status">${messageTarget === "openalex" ? escapeHtml(message) : ""}</p>
+        <p class="hint">获取 Key：登录 <a href="https://openalex.org/settings/api" target="_blank" rel="noopener noreferrer">openalex.org/settings/api</a>，免费申请后复制到下面。</p>
+        <form id="openalexConfigForm" class="llm-editor-form mathpix-editor-form">
+          <label>API Key<input name="apiKey" type="password" autocomplete="new-password" required maxlength="200" placeholder="${openalex.configured ? "粘贴新 Key 以替换当前 Key" : "仅保存到本机 .env"}"><span class="hint">保存前会发一次最小的检索请求验证 Key（约 0.0001 美元额度）。</span></label>
+          <div class="speech-editor-actions">
+            <button type="button" class="test-button" data-test-openalex ${openalex.configured ? "" : "disabled"}>测试并查看额度</button>
+            ${openalex.configured ? `<button type="button" class="danger-button" data-delete-openalex>移除配置</button>` : ""}
+            <button type="submit" class="primary">验证并保存</button>
+          </div>
+        </form>
+      </section>
       <section class="settings-tab-panel three-pass-settings" data-settings-panel="three-pass" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div>
@@ -1032,6 +1058,9 @@ ${renderAdvancedSettingsPanel()}
   form.querySelector("#googleConfigForm")?.addEventListener("submit", saveGlobalGoogleConfig);
   form.querySelector("[data-test-google]")?.addEventListener("click", event => testGlobalGoogleConfig(event.currentTarget));
   form.querySelector("[data-delete-google]")?.addEventListener("click", removeGlobalGoogleConfig);
+  form.querySelector("#openalexConfigForm")?.addEventListener("submit", saveGlobalOpenalexConfig);
+  form.querySelector("[data-test-openalex]")?.addEventListener("click", event => testGlobalOpenalexConfig(event.currentTarget));
+  form.querySelector("[data-delete-openalex]")?.addEventListener("click", removeGlobalOpenalexConfig);
   const workflowEditor = form.querySelector("#workflowEditor");
   if (workflowEditor && state.workflowOptions && window.PaperRevisionWorkflow) window.PaperRevisionWorkflow.render(workflowEditor, state.workflowOptions, state.workflowOptions.defaults);
   form.querySelector("[data-save-workflow]")?.addEventListener("click", event => saveGlobalWorkflowConfig(event.currentTarget));
@@ -1490,6 +1519,46 @@ async function removeGlobalGoogleConfig() {
     renderLlmManager("已移除 Google 翻译 API Key。", "ok", "google");
   } catch (error) {
     showSettingsStatus("#googleManagerStatus", error.message, "bad");
+  }
+}
+
+const openalexQuota = test => test?.remainingUsd ? `今天剩余 ${test.remainingUsd} / ${test.limitUsd || "?"} 美元额度。` : "";
+
+async function saveGlobalOpenalexConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  submit.disabled = true;
+  showSettingsStatus("#openalexManagerStatus", "正在用一次最小的检索请求验证 Key…", "");
+  try {
+    const data = await settingsRequest("/api/openalex-config", { method:"PUT", body:JSON.stringify(Object.fromEntries(new FormData(editorForm).entries())) });
+    state.openalexConfig = data.openalex;
+    renderLlmManager(`Key 验证通过并已保存。${openalexQuota(data.test)}`, "ok", "openalex");
+  } catch (error) {
+    showSettingsStatus("#openalexManagerStatus", error.message, "bad");
+    submit.disabled = false;
+  }
+}
+
+async function testGlobalOpenalexConfig(button) {
+  button.disabled = true;
+  try {
+    const data = await settingsRequest("/api/openalex-config/test", { method:"POST" });
+    showSettingsStatus("#openalexManagerStatus", `测试成功。${openalexQuota(data.test)}`, "ok");
+  } catch (error) {
+    showSettingsStatus("#openalexManagerStatus", error.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function removeGlobalOpenalexConfig() {
+  if (!window.confirm("确定移除 OpenAlex API Key 吗？之后检索按 IP 共用免费额度。")) return;
+  try {
+    state.openalexConfig = (await settingsRequest("/api/openalex-config", { method:"DELETE" })).openalex;
+    renderLlmManager("已移除 OpenAlex API Key。", "ok", "openalex");
+  } catch (error) {
+    showSettingsStatus("#openalexManagerStatus", error.message, "bad");
   }
 }
 

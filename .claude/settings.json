@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(python -m researchtool.gapr confirm:*)",
+      "Bash(python3 -m researchtool.gapr confirm:*)",
+      "Bash(py -m researchtool.gapr confirm:*)",
+      "Bash(.venv/Scripts/python.exe -m researchtool.gapr confirm:*)",
+      "PowerShell(python -m researchtool.gapr confirm:*)",
+      "PowerShell(py -m researchtool.gapr confirm:*)",
+      "PowerShell(.venv/Scripts/python.exe -m researchtool.gapr confirm:*)",
+      "PowerShell(.venv\\Scripts\\python.exe -m researchtool.gapr confirm:*)"
+    ]
+  }
+}

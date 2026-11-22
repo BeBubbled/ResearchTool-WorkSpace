@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% include "_theme_head.html" %}
+  <title>演化树调研 · Research Toolkit</title>
+  <meta name="description" content="问题驱动的方法演化树：逐步检查每一步的产出，检索记录、日期防火墙与原句核对由代码把关。">
+  <link rel="stylesheet" href="/static/gap_survey.css?v=4">
+</head>
+<body class="gs-body">
+  {% set client_active = "gapsurvey" %}{% include "_client_nav.html" %}
+  <header class="module-bar">
+    <h1 class="module-bar-title">演化树调研</h1>
+    <label class="sr-only" for="gsProjectSelect">调研项目</label>
+    <select id="gsProjectSelect" class="gs-select" aria-label="选择调研项目"></select>
+    <button id="gsNewProject" class="gs-btn" type="button" data-command="演化树：新建调研项目…">新建项目</button>
+    <div class="module-bar-actions">
+      <button id="gsGuideButton" class="module-bar-link gs-link-button" type="button" data-command="演化树：方法说明">方法说明</button>
+      <a class="module-bar-link" href="/settings#openalex">OpenAlex 设置</a>
+    </div>
+  </header>
+
+  <main class="gs-main">
+    <p id="gsUnavailable" class="gs-banner bad hidden" role="alert"></p>
+
+    <section id="gsEmpty" class="gs-empty hidden">
+      <h2>还没有调研项目</h2>
+      <p>一个项目对应一次正式调研或一次回测。面板负责检索、检查每一步的产出；需要判断力的步骤（列节点、找缺陷、归纳属性、验证空白）由你或模型按「方法说明」去做，写进项目里的 CSV。</p>
+      <button id="gsEmptyCreate" class="gs-btn primary" type="button">新建调研项目</button>
+    </section>
+
+    <section id="gsWorkspace" class="gs-workspace hidden">
+      <aside class="gs-side">
+        <div class="gs-identity">
+          <p class="gs-eyebrow" id="gsMode"></p>
+          <h2 id="gsDomain"></h2>
+          <dl class="gs-meta" id="gsMeta"></dl>
+        </div>
+        <div class="gs-path">
+          <span>项目目录</span>
+          <code id="gsPath"></code>
+          <button id="gsCopyPath" class="gs-btn small" type="button">复制路径</button>
+        </div>
+        <div class="gs-keys" id="gsKeys"></div>
+        <div id="gsSteps" class="gs-step-nav" aria-label="步骤概览"></div>
+      </aside>
+
+      <section class="gs-content">
+        <nav class="gs-tabs" role="tablist" aria-label="项目视图">
+          <button type="button" role="tab" data-tab="checks" class="active" data-command="演化树：逐步检查" data-shortcut="alt+1">逐步检查</button>
+          <button type="button" role="tab" data-tab="files" data-command="演化树：项目文件" data-shortcut="alt+2">项目文件</button>
+          <button type="button" role="tab" data-tab="run" data-command="演化树：检索与命令" data-shortcut="alt+3">检索与命令</button>
+          <button id="gsRefresh" class="gs-btn small gs-tabs-end" type="button" data-command="演化树：重新检查" title="重新读取文件并检查">重新检查</button>
+        </nav>
+
+        <section class="gs-view active" data-view="checks">
+          <div id="gsConfirmations" class="gs-confirmations"></div>
+          <div id="gsCheckList" class="gs-check-list"></div>
+        </section>
+
+        <section class="gs-view" data-view="files">
+          <div class="gs-files">
+            <ul id="gsFileList" class="gs-file-list" aria-label="项目文件"></ul>
+            <div class="gs-file-view">
+              <header><strong id="gsFileTitle">选择左侧文件</strong><span id="gsFileInfo"></span></header>
+              <div id="gsFileBody" class="gs-file-body"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="gs-view" data-view="run">
+          <form id="gsRunForm" class="gs-run-form" autocomplete="off">
+            <label class="gs-field gs-field-command">命令<select id="gsCommand" name="command"></select></label>
+            <div id="gsCommandFields" class="gs-command-fields"></div>
+            <p id="gsCommandHint" class="gs-hint"></p>
+            <div class="gs-run-actions">
+              <button id="gsRunButton" class="gs-btn primary" type="submit">运行</button>
+              <button id="gsCancelButton" class="gs-btn danger hidden" type="button">停止</button>
+              <code id="gsCommandPreview" class="gs-preview"></code>
+            </div>
+          </form>
+          <div class="gs-console-wrap">
+            <header><strong id="gsJobTitle">输出</strong><span id="gsJobState"></span></header>
+            <pre id="gsConsole" class="gs-console" aria-live="polite"></pre>
+          </div>
+          <details class="gs-history">
+            <summary>本次面板运行过的命令</summary>
+            <ul id="gsJobList"></ul>
+          </details>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="gsProjectDialog" class="gs-dialog">
+    <form id="gsProjectForm" method="dialog">
+      <header><h2>新建调研项目</h2><button type="button" class="gs-icon" data-close aria-label="关闭">×</button></header>
+      <label class="gs-field">项目名<input name="id" required maxlength="60" placeholder="例如 interp-2026 或 ltsf-backtest"><span class="gs-hint">只用中文、字母、数字、下划线和连字符；作为文件夹名。</span></label>
+      <label class="gs-field">领域<input name="domain" maxlength="200" placeholder="例如 可解释性与分析"></label>
+      <div class="gs-field-row">
+        <label class="gs-field">模式<select name="mode"><option value="survey">正式调研</option><option value="backtest">回测</option></select></label>
+        <label class="gs-field">规模<select name="scale"><option value="mini">mini · 约 10 个节点</option><option value="quick" selected>quick · 15–20 个</option><option value="full">full · 30–60 个</option></select></label>
+      </div>
+      <div class="gs-field-row">
+        <label class="gs-field">起始时间<input name="start" type="date"></label>
+        <label class="gs-field">截止日<input name="cutoff" type="date"><span class="gs-hint" data-cutoff-hint>正式调研留空 = 今天；回测必填。</span></label>
+      </div>
+      <label class="gs-field">读者<input name="audience" maxlength="60" placeholder="我自己 / 导师 / 组会"></label>
+      <p id="gsProjectError" class="gs-banner bad hidden" role="alert"></p>
+      <footer><button type="button" class="gs-btn" data-close>取消</button><button type="submit" class="gs-btn primary">创建</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="gsGuideDialog" class="gs-dialog gs-dialog-wide">
+    <div class="gs-guide">
+      <header><h2>方法说明 <small>docs/gap-research.md</small></h2><button type="button" class="gs-icon" data-close aria-label="关闭">×</button></header>
+      <div id="gsGuideBody" class="gs-guide-body"></div>
+    </div>
+  </dialog>
+
+  <script src="/static/gap_survey.js?v=4"></script>
+</body>
+</html>

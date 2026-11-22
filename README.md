@@ -23,6 +23,8 @@
 | `AZURE_SPEECH_KEY` / `_REGION` / `_VOICE` | 段落朗读 |
 | `GITHUB_REPOSITORY` / `_BRANCH` / `_IMAGE_ROOT` / `_TOKEN` | Markdown 图片发布 |
 | `SEMANTIC_SCHOLAR_API_KEY` | 可选，独享检索配额 |
+| `OPENALEX_API_KEY` | 可选，演化树调研的 OpenAlex 检索额度；在「设置 → OpenAlex 文献」里填写并验证 |
+| `OPENREVIEW_TOKEN` | 可选，演化树调研取 OpenReview 审稿意见 |
 | `CODEX_BIN` | 可选，改用外部 Codex CLI |
 
 Codex 默认由工具箱自动安装到 `.runtime/codex/` 并复用已有 ChatGPT 登录；也可在面板「设置」里登录和选默认模型。
@@ -36,6 +38,7 @@ Codex 默认由工具箱自动安装到 `.runtime/codex/` 并复用已有 ChatGP
 | 改稿 | `/paper-revision` | LaTeX 中英对照，圈选批注后由模型按范围修改并重译，带版本历史、编译检查 |
 | Prompt | `/prompts` | Prompt 模板库，配合 `browser_extension/prompt_bridge/` 把文字和附件送到 ChatGPT |
 | 研究空白地图 | `/research-gaps` | 按主题导入文献（Semantic Scholar、arXiv、本地 PDF 文件夹），AI 提取证据后人工审核 |
+| 演化树 | `/gap-survey` | 问题驱动的方法演化树调研：逐步检查每一步的产出，检索（S2 / OpenAlex / arXiv / OpenReview）、全文登记与原句核对；确认点只能在自己的终端里确认。见 [docs/gapr.md](docs/gapr.md) |
 | ResearchStudio | `/researchstudio` | 接入 Microsoft ResearchStudio：选题与新颖性检查，海报、博客、PPT、讲解视频 |
 | 对话树 | `/branchboard` | 把 Claude Code 会话做成可分叉的二维对话树 |
 | 工具箱 | `/` | 文档翻译、PDF OCR、Markdown 修复、图片发布、BibTeX、图片 / 视频 / PPT 脚本、Sheet→Anki |
@@ -53,11 +56,12 @@ python scripts/setup_researchstudio.py --install-deps --video
 
 | 路径 | 内容 |
 |---|---|
-| `researchtool/` | 后端 Python 包，入口 `python -m researchtool`（启动脚本已代办） |
+| `researchtool/` | 后端 Python 包，入口 `python -m researchtool`（启动脚本已代办）；`researchtool/gapr/` 是演化树调研的命令行工具 |
 | `templates/`、`static/` | 页面模板和前端脚本 |
 | `Potential_Scripts/` | 工具箱调用的图片 / 视频 / PPT / BibTeX 脚本 |
 | `translation_backend/` | Go 翻译后端 |
 | `browser_extension/` | ChatGPT 桥接扩展 |
+| `docs/` | 演化树调研的方法说明（`gap-research.md`）、命令与检查规则（`gapr.md`）等 |
 | `scripts/` | 环境准备脚本 |
 | `tests/` | 单元测试和浏览器夹具 |
 

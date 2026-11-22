@@ -51,6 +51,7 @@ from researchtool.paper_revision import DEFAULT_WORKFLOW as PAPER_REVISION_DEFAU
 from researchtool.claude_code_cli import ClaudeCodeRunner
 from researchtool.branchboard import BranchboardService, claude_summarizer, claude_titler, create_branchboard_blueprint
 from researchtool.google_translate import GoogleTranslator
+from researchtool.gap_survey import GapSurveyService, create_gap_survey_blueprint
 from researchtool.local_paths import LocalPathService, create_local_paths_blueprint
 from researchtool import pdf_core
 from researchtool.pdf_core import PdfError
@@ -97,6 +98,7 @@ UPLOAD_DIR = RUNTIME_DIR / "uploads"
 JOBS_DIR = RUNTIME_DIR / "jobs"
 READER_CACHE_DIR = RUNTIME_DIR / "reader-cache"
 RESEARCH_GAP_DIR = RUNTIME_DIR / "research-gaps"
+GAP_SURVEY_DIR = RUNTIME_DIR / "gap-survey"
 SCRIPTS_DIR = PROJECT_ROOT / "Potential_Scripts"
 ALLOWED_TABLE_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -8105,6 +8107,74 @@ def test_google_translate_config():
         return json_error(str(exc))
 
 
+OPENALEX_ENV_KEY = "OPENALEX_API_KEY"
+OPENALEX_PROBE_URL = "https://api.openalex.org/works"
+
+
+def openalex_probe(key: str) -> dict[str, Any]:
+    """一次最小的 OpenAlex 请求（每次约 0.0001 美元额度）：验证 key，并读出今天剩余的额度。"""
+    try:
+        response = requests.get(OPENALEX_PROBE_URL, params={"per-page": 1, "select": "id", "api_key": key}, timeout=20)
+    except requests.RequestException as exc:
+        raise ValueError(f"无法连接 OpenAlex：{exc.__class__.__name__}") from None
+    if response.status_code in (401, 403):
+        raise ValueError("OpenAlex API Key 无效。")
+    if response.status_code == 429:
+        raise ValueError("OpenAlex 今天的额度已用完或被限流，稍后再试。")
+    if not response.ok:
+        raise ValueError(f"OpenAlex 返回 HTTP {response.status_code}。")
+    headers = response.headers
+    return {"limitUsd": headers.get("X-RateLimit-Limit-USD", ""), "remainingUsd": headers.get("X-RateLimit-Remaining-USD", "")}
+
+
+def openalex_status() -> dict[str, Any]:
+    key = os.getenv(OPENALEX_ENV_KEY, "").strip()
+    return {"configured": bool(key), "keyTail": key[-4:] if len(key) >= 12 else "", "endpoint": OPENALEX_PROBE_URL}
+
+
+@app.get("/api/openalex-config")
+def get_openalex_config():
+    return jsonify({"openalex": openalex_status()})
+
+
+@app.put("/api/openalex-config")
+def update_openalex_config():
+    data = request.get_json(silent=True) or {}
+    key = str(data.get("apiKey") or "").strip()
+    if not key or len(key) > 200 or not re.fullmatch(r"[\x21-\x7e]+", key):
+        return json_error("请输入有效的 OpenAlex API Key。")
+    try:
+        quota = openalex_probe(key)
+        write_env_values({OPENALEX_ENV_KEY: key})
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc))
+    return jsonify({"openalex": openalex_status(), "test": quota})
+
+
+@app.delete("/api/openalex-config")
+def remove_openalex_config():
+    try:
+        write_env_values({OPENALEX_ENV_KEY: ""})
+    except OSError as exc:
+        return json_error(str(exc))
+    return jsonify({"openalex": openalex_status()})
+
+
+@app.post("/api/openalex-config/test")
+def test_openalex_config():
+    key = os.getenv(OPENALEX_ENV_KEY, "").strip()
+    if not key:
+        return json_error("还没有保存 OpenAlex API Key。")
+    try:
+        return jsonify({"openalex": openalex_status(), "test": openalex_probe(key)})
+    except ValueError as exc:
+        return json_error(str(exc))
+
+
+gap_survey_service = GapSurveyService(GAP_SURVEY_DIR / "projects", workdir=PROJECT_ROOT)
+app.register_blueprint(create_gap_survey_blueprint(gap_survey_service))
+
+
 @app.get("/api/claude-code-config")
 def get_claude_code_config():
     return jsonify({"claude": paper_revision_claude_runner.status()})
@@ -8376,6 +8446,11 @@ def branchboard_page():
 @app.get("/research-gaps")
 def research_gaps():
     return render_template("research_gaps.html")
+
+
+@app.get("/gap-survey")
+def gap_survey_page():
+    return render_template("gap_survey.html")
 
 
 @app.get("/health")

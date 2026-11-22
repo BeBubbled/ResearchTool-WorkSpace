@@ -1,0 +1,9 @@
+method,L,S,V,D,P,H,Z
+DeepAR,✗,✗,✗,✗,✓,✗,△
+TFT,✗,✗,△,✗,✓,✗,✗
+N-BEATS / N-HiTS,△,△,✗,✗,✗,✓,△
+Informer / Pyraformer,✗,✗,△,✗,✗,✓,✗
+Autoformer / FEDformer,✗,△,△,✗,✗,✓,✗
+RevIN,✗,✗,✗,✓,✗,✓,✗
+Non-stationary Transformer,✗,✗,△,✓,✗,✓,✗
+DLinear,✓,✗,✗,△,✗,✓,✗

@@ -195,7 +195,7 @@ body {
 .claude-manager .codex-editor-form { align-items:start; }
 .claude-manager .codex-editor-form label { align-content:start; }
 .claude-manager .codex-editor-form select { align-self:start; }
-.claude-manager code, .google-manager code { overflow-wrap:anywhere; }
+.claude-manager code, .google-manager code, .openalex-manager code { overflow-wrap:anywhere; }
 
 /* 工具箱: one searchable tool list beside the tool page (DevUtils-style source list). */
 .app-shell { max-width:none; min-height:calc(100vh - 48px); margin:0; grid-template-columns:248px minmax(0,1fr); }

@@ -2261,6 +2261,44 @@ class ToolboxApiTest(unittest.TestCase):
             self.assertFalse(removed.get_json()["google"]["configured"])
             self.assertNotIn("GOOGLE_TRANSLATE_API_KEY", env_file.read_text(encoding="utf-8"))
 
+    def test_openalex_key_is_validated_saved_masked_and_removed(self) -> None:
+        env_file = Path(self.temp_dir.name) / ".env"
+        seen = []
+
+        class Reply:
+            def __init__(self, status):
+                self.status_code, self.ok = status, status < 400
+                self.headers = {"X-RateLimit-Limit-USD": "1", "X-RateLimit-Remaining-USD": "0.9999"}
+
+        def fake_get(url, params=None, **kwargs):
+            seen.append({"url": url, **(params or {})})
+            return Reply(401 if params["api_key"] == "bad-key-000000" else 200)
+
+        with patch.object(web_panel, "ENV_FILE", env_file), \
+                patch.dict(web_panel.os.environ, {"OPENALEX_API_KEY": ""}, clear=False), \
+                patch.object(web_panel.requests, "get", fake_get):
+            self.assertFalse(self.client.get("/api/openalex-config").get_json()["openalex"]["configured"])
+            bad = self.client.put("/api/openalex-config", json={"apiKey": "bad-key-000000"})
+            self.assertEqual(bad.status_code, 400)
+            self.assertIn("无效", bad.get_json()["error"])
+            self.assertFalse(env_file.exists() and "OPENALEX_API_KEY" in env_file.read_text(encoding="utf-8"))
+            self.assertEqual(self.client.put("/api/openalex-config", json={"apiKey": "has space"}).status_code, 400)
+            saved = self.client.put("/api/openalex-config", json={"apiKey": " good-key-123456 "})
+            self.assertEqual(saved.status_code, 200, saved.get_json())
+            body = saved.get_json()
+            self.assertEqual((body["openalex"]["configured"], body["openalex"]["keyTail"]), (True, "3456"))
+            self.assertEqual(body["test"]["remainingUsd"], "0.9999")
+            self.assertNotIn("good-key-123456", json.dumps(body))
+            self.assertIn("OPENALEX_API_KEY='good-key-123456'", env_file.read_text(encoding="utf-8"))
+            self.assertEqual(web_panel.os.environ["OPENALEX_API_KEY"], "good-key-123456")
+            self.assertTrue(all(r["url"] == "https://api.openalex.org/works" for r in seen))
+            self.assertEqual(self.client.post("/api/openalex-config/test").status_code, 200)
+            self.assertTrue(self.client.get("/api/gap-survey/status").get_json()["openalexKey"])
+            removed = self.client.delete("/api/openalex-config")
+            self.assertFalse(removed.get_json()["openalex"]["configured"])
+            self.assertNotIn("OPENALEX_API_KEY", env_file.read_text(encoding="utf-8"))
+            self.assertEqual(self.client.post("/api/openalex-config/test").status_code, 400)
+
     def test_claude_code_status_test_and_paper_revision_workflow_defaults_are_global(self) -> None:
         env_file = Path(self.temp_dir.name) / ".env"
         runner = web_panel.paper_revision_claude_runner
