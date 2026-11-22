@@ -44,7 +44,7 @@ def freeze(root: Path, *, force: bool = False, reason: str = "") -> dict:
     if filled and not force:
         raise RubricError(
             f"matrix.csv 已经填了 {filled} 个格子。看到结果之后再改规则违反“先定规则再看结果”。"
-            " 确实必须改时用 --force --reason \"…\"，这条修改会写进报告。")
+            " 确实必须改时由你本人运行 python -m researchtool.gapr confirm <项目> 2 --change-rules --reason \"…\"，这条修改会写进报告。")
     if force and not reason:
         raise RubricError("--force 必须同时给 --reason")
     attrs = root / "rubric" / "attributes.csv"
@@ -81,7 +81,7 @@ def verify(root: Path) -> dict:
         if removed:
             parts.append("删除：" + "、".join(removed))
         raise RubricError("规则文件在冻结后发生变化（" + "；".join(parts) + "）。"
-                          " 恢复原文件，或用 gapr freeze --force --reason 记录这次修改。")
+                          " 恢复原文件，或由你本人运行 python -m researchtool.gapr confirm <项目> 2 --change-rules --reason \"…\" 记录这次修改。")
     return lock
 
 

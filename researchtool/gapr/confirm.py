@@ -64,10 +64,15 @@ def is_interactive() -> bool:
         return False
 
 
-def _ask(prompt: str, interactive: Callable[[], bool], ask: Callable[[str], str]) -> None:
+def _require_terminal(interactive: Callable[[], bool]) -> None:
+    """先于显示清单检查：非交互环境直接拒绝，不让它看起来像是在走确认流程。"""
     if not interactive():
         raise ConfirmError("确认点只能由你本人在自己的终端（PowerShell）里运行；"
                            "检测到当前不是交互式终端，可能是模型在代跑，已拒绝。")
+
+
+def _ask(prompt: str, interactive: Callable[[], bool], ask: Callable[[str], str]) -> None:
+    _require_terminal(interactive)
     ans = ask(prompt + "\n输入 确认 继续，其他任意输入取消：").strip()
     if ans not in ("确认", "yes", "YES"):
         raise ConfirmError("已取消，没有写入任何确认记录。")
@@ -76,6 +81,7 @@ def _ask(prompt: str, interactive: Callable[[], bool], ask: Callable[[str], str]
 def confirm_1(root: Path, *, note: str = "", interactive=is_interactive, ask=input,
               show: Callable[[str], None] = print) -> dict:
     root = Path(root)
+    _require_terminal(interactive)
     nodes = schema.read_rows(root / "nodes.csv")
     terms = schema.read_rows(root / "neighbor_terms.csv")
     lines = ["确认点 1：节点清单与邻近领域术语对照表", "", f"节点（{len(nodes)} 个）："]
@@ -94,6 +100,7 @@ def confirm_2(root: Path, *, note: str = "", change_reason: str = "", interactiv
               ask=input, show: Callable[[str], None] = print) -> dict:
     """确认属性并冻结规则。change_reason 非空表示冻结后要改规则（强制冻结，报告里会列出）。"""
     root = Path(root)
+    _require_terminal(interactive)
     attrs = schema.read_rows(root / "rubric" / "attributes.csv")
     inc = schema.read_rows(root / "rubric" / "incompatible.csv")
     lines = ["确认点 2：属性定义与相容性表（确认后冻结，之后不再增删属性）", "", f"属性（{len(attrs)} 个）："]

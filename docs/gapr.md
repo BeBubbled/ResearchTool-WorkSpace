@@ -4,6 +4,7 @@
 
 把 [gap-research.md](gap-research.md) 这套“问题驱动的方法演化树”方法做成可执行、可检查的流程。
 方法在长期时序预测上的回测见 [backtest-ltsf-2022.md](backtest-ltsf-2022.md)。
+核验代码是否符合这些规则：见 [gapr-verification.md](gapr-verification.md)（追溯表、人工核验步骤、变异核验）。
 
 ## 设计：说明只有一份，每一步由代码把关
 
@@ -89,6 +90,8 @@ python -m researchtool.gapr check DIR            # 看每一步的状态和问�
 
 ```powershell
 python -m unittest discover -s tests -p "test_gap*.py"
+python -m tests.gapr_mutation_check        # 故意改坏关键规则，测试必须失败
+python -m tests.gapr_make_demo <新目录>     # 生成演示项目，用于人工核验
 ```
 
 需要 Python 3.11+（用到 `tomllib`）。面板本身支持 3.10，在 3.10 下打开演化树页面会提示升级。

@@ -342,5 +342,113 @@ class TestSurveyStep6And7(unittest.TestCase):
         self.assertTrue(any("score_total 应为 11" in e for e in self.step(7, g)))
 
 
+class TestCoverageGaps(Base):
+    """写 VERIFICATION.md 时发现没有测试覆盖、补上的检查。"""
+
+    def test_r4_r5_enter_candidates(self):
+        self.to_step4()
+        write(self.root, "open_problems.csv", [
+            {"id": "o1", "rule": "R4", "statement": "DLinear 与 Transformer 的矛盾", "source_tag": "已有知识"},
+            {"id": "o2", "rule": "R5", "statement": "综述：缺少统一基准", "source_tag": "已有知识"}])
+        self.assertEqual(run("gaps", str(self.root))[0], 0)
+        rows = schema.read_rows(self.root / "gaps_mechanical.csv")
+        self.assertEqual([(r["rule"], r["statement"]) for r in rows if r["rule"] in ("R4", "R5")],
+                         [("R4", "DLinear 与 Transformer 的矛盾"), ("R5", "综述：缺少统一基准")])
+
+    def test_fork_needs_two_children(self):
+        self.to_step3()
+        write(self.root, "forks.csv", [{"defect_id": "d_revin", "child_ids": "nst", "difference": "x"}])
+        self.assertTrue(any("至少要有 2 个子方法" in e for e in self.errors(3)))
+
+    def test_matrix_must_cover_every_node(self):
+        self.to_step4()
+        rows = [r for r in schema.read_rows(self.root / "matrix.csv") if r["method"] != "DeepAR"]
+        schema.write_rows(self.root / "matrix.csv", list(rows[0].keys()), rows)
+        self.assertTrue(any("没有出现在矩阵里：deepar" in e for e in self.errors(4)))
+
+    def test_post_cutoff_search_requires_step5(self):
+        self.to_step4()
+        code, _, err = run("search", str(self.root), "patch", "--tool", "arxiv", "--post-cutoff")
+        self.assertEqual(code, 1)
+        self.assertIn("不能查看截止日之后的论文", err)
+        self.assertNotIn("candidates", confirm.load(self.root))
+
+    def test_confirm2_requires_steps_0_to_3(self):
+        build_step1(self.root)
+        shutil.copy(FIX / "attributes.csv", self.root / "rubric" / "attributes.csv")
+        code, _, err = run("confirm", str(self.root), "2")
+        self.assertEqual(code, 1)
+        self.assertIn("不能确认属性", err)
+
+    def test_arxiv_id_without_v1_date_warns(self):
+        build_step1(self.root)
+        rows = schema.read_rows(self.root / "nodes.csv")
+        rows[0]["date_basis"] = "publicationDate"
+        write(self.root, "nodes.csv", rows)
+        warns = [str(i) for i in checks.run(prj.load(self.root), 1)[0].issues if i.level == checks.WARN]
+        self.assertTrue(any("日期不是 arXiv v1" in w for w in warns))
+
+    def test_backtest_hit_needs_paper_and_months(self):
+        self.to_step4()
+        run("gaps", str(self.root))
+        mech = schema.read_rows(self.root / "gaps_mechanical.csv")
+        write(self.root, "gaps.csv", [{"id": "G01", "statement": "s", "merged_from": ";".join(m["cand_id"] for m in mech),
+                                       "verdict": "命中", "closest_work": "x"}])
+        confirm.lock_candidates(self.root)
+        errs = self.errors(6)
+        self.assertTrue(any("filled_by" in e for e in errs))
+        self.assertTrue(any("months_after_cutoff" in e for e in errs))
+
+
+class TestMoreStepChecks(Base):
+    def test_step0_requires_domain_and_start(self):
+        root = self.tmp / "empty"
+        prj.init(root, mode="survey")
+        errs = [str(i) for i in checks.run(prj.load(root), 0)[0].errors]
+        self.assertTrue(any("领域" in e for e in errs))
+        self.assertTrue(any("起点" in e for e in errs))
+
+    def test_neighbor_terms_required(self):
+        build_step1(self.root)
+        write(self.root, "neighbor_terms.csv", [])
+        self.assertTrue(any("术语对照表为空" in e for e in self.errors(1)))
+
+    def test_scale_lower_bound(self):
+        build_step1(self.root)
+        rows = schema.read_rows(self.root / "nodes.csv")[:6]  # mini 至少 8 个
+        write(self.root, "nodes.csv", rows)
+        self.assertTrue(any("至少 8 个节点" in e for e in self.errors(1)))
+
+    def test_node_needs_problem_and_defect(self):
+        self.to_step3()
+        rows = schema.read_rows(self.root / "nodes.csv")
+        rows[0]["problem"] = ""
+        write(self.root, "nodes.csv", rows)
+        write(self.root, "defects.csv", [d for d in schema.read_rows(self.root / "defects.csv")
+                                         if d["node_id"] != "tft"])
+        errs = self.errors(2)
+        self.assertTrue(any("deepar" in e and "要解决的问题" in e for e in errs))
+        self.assertTrue(any("tft" in e and "没有任何遗留缺陷" in e for e in errs))
+
+
+class TestSearchLogging(Base):
+    """全程规则 3：每次检索都自动写进检索记录，失败的也写。"""
+
+    def test_success_and_failure_logged(self):
+        from unittest import mock
+        from researchtool.gapr.net import FetchError
+        from researchtool.gapr.paper import Paper
+        hit = Paper(title="Old paper", source="arxiv", source_id="2101.00001", arxiv_id="2101.00001",
+                    first_public="2021-01-01", date_basis="arXiv v1")
+        with mock.patch("researchtool.gapr.cli.arxiv.search", return_value=([hit], 1, False)):
+            self.assertEqual(run("search", str(self.root), "patch tokens", "--tool", "arxiv")[0], 0)
+        with mock.patch("researchtool.gapr.cli.arxiv.search", side_effect=FetchError("u", 429, "限流")):
+            self.assertEqual(run("search", str(self.root), "patch tokens 2", "--tool", "arxiv")[0], 2)
+        log = schema.read_rows(self.root / "search_log.csv")
+        self.assertEqual([(r["query"], r["result_ids"], r["error"]) for r in log],
+                         [("patch tokens", "arXiv:2101.00001", ""), ("patch tokens 2", "", "限流")])
+        self.assertIn("回测截止 2022-06-30", log[0]["time_filter"])
+
+
 if __name__ == "__main__":
     unittest.main()
