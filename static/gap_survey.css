@@ -144,7 +144,38 @@ button, input, select, textarea { font:inherit; color:inherit; }
 .gs-guide-body th, .gs-guide-body td { padding:4px 8px; border:1px solid var(--t-line); vertical-align:top; }
 .gs-guide-body blockquote { margin:8px 0; padding:4px 12px; border-left:3px solid var(--t-accent-line); color:var(--t-ink-2); }
 
+.gs-badge { display:inline-block; min-width:8px; padding:0 6px; border-radius:999px; background:var(--t-accent-soft); color:var(--t-ui-ink,var(--t-accent-strong)); font-size:11px; line-height:17px; }
+.gs-badge.running { background:var(--t-ok-soft); color:var(--t-ok); }
+.gs-auto-off { max-width:760px; }
+.gs-auto-off h3 { margin:0 0 8px; font-size:16px; }
+.gs-auto-off p { margin:0 0 10px; line-height:1.7; }
+.gs-hint-list { margin:0 0 16px; padding-left:20px; color:var(--t-ink-2); font-size:13px; line-height:1.7; }
+.gs-auto-controls { display:flex; flex-wrap:wrap; align-items:end; gap:12px 16px; padding:14px; border:1px solid var(--t-line); border-radius:8px; background:var(--t-surface); }
+.gs-auto-controls .gs-field { min-width:150px; }
+.gs-auto-buttons { display:flex; gap:8px; margin-left:auto; }
+.gs-auto-on > .gs-banner { margin:0 0 12px; }
+.gs-auto-on #gsAutoMessage { margin-top:12px; }
+.gs-auto-body { display:grid; grid-template-columns:240px minmax(0,1fr); gap:16px; margin-top:14px; }
+.gs-auto-phases { margin:0; padding:0; list-style:none; display:grid; gap:3px; align-content:start; }
+.gs-auto-phases li { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:6px; font-size:12.5px; }
+.gs-auto-phases li.current { background:var(--t-accent-soft); font-weight:600; }
+.gs-auto-phases li.skipped { color:var(--t-faint); text-decoration:line-through; }
+.gs-auto-log-wrap { margin-top:0; }
+.gs-auto-log { max-height:calc(100vh - 330px); min-height:200px; overflow:auto; padding:8px 12px; background:var(--t-bg); font-size:12px; }
+.gs-log-row { display:grid; grid-template-columns:56px minmax(0,1fr); gap:8px; padding:3px 0; border-bottom:1px solid var(--t-line-soft); }
+.gs-log-row time { color:var(--t-faint); font-size:11px; }
+.gs-log-row .body { min-width:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.gs-log-row.tool .body { font-family:ui-monospace,"Cascadia Mono",Consolas,monospace; color:var(--t-ink-2); }
+.gs-log-row.phase .body { font-weight:700; color:var(--t-ui-ink,var(--t-accent-strong)); }
+.gs-log-row.error .body { color:var(--t-danger); }
+.gs-log-row.review .body { color:var(--t-ink); background:var(--t-warn-soft); padding:2px 6px; border-radius:4px; }
+.gs-log-row.check .body { color:var(--t-warn); }
+.gs-log-row.text .body, .gs-log-row.reply .body { color:var(--t-ink); }
+.gs-confirm.auto { border-color:var(--t-warn-line); }
+.gs-confirm .gs-review { padding:6px 8px; border-radius:6px; background:var(--t-warn-soft); color:var(--t-ink-2); }
+
 @media (max-width: 860px) {
+  .gs-auto-body { grid-template-columns:1fr; }
   .gs-workspace { grid-template-columns:1fr; }
   .gs-side { border-right:0; border-bottom:1px solid var(--t-line); }
   .gs-files { grid-template-columns:1fr; }

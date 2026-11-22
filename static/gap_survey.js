@@ -57,7 +57,7 @@ const HINTS = {
   gaps: "第 5 步：按 R1/R2/R2′/R3 机械列出候选空白，写进 gaps_mechanical.csv。要求第 0–4 步通过。",
 };
 
-const state = { status:null, projects:[], projectId:"", project:null, tab:"checks", file:"", job:null, pollTimer:null };
+const state = { status:null, projects:[], projectId:"", project:null, tab:"checks", file:"", job:null, pollTimer:null, auto:null, autoTimer:null };
 
 async function api(url, options = {}) {
   const init = { ...options, headers:{ ...(options.headers || {}) } };
@@ -114,7 +114,7 @@ async function loadProjects(preferred = "") {
 }
 
 async function openProject(id) {
-  if (state.projectId !== id) { state.file = ""; stopPolling(); state.job = null; renderJob(); }
+  if (state.projectId !== id) { state.file = ""; stopPolling(); state.job = null; renderJob(); stopAutoPolling(); state.auto = null; $("#gsAutoLog").innerHTML = ""; }
   state.projectId = id;
   store.set(PROJECT_KEY, id);
   await reloadProject();
@@ -134,6 +134,7 @@ async function reloadProject() {
   renderSide();
   renderChecks();
   renderFiles();
+  renderAutoBadge();
   // 只在换项目时重建命令表单，命令跑完后的刷新不清掉已填的参数
   if ($("#gsCommandFields").dataset.project !== state.projectId) renderCommandFields();
   if (state.file) openFile(state.file, { quiet:true });
@@ -144,7 +145,7 @@ async function reloadProject() {
 function renderSide() {
   const p = state.project;
   const backtest = p.mode === "backtest";
-  $("#gsMode").textContent = backtest ? "回测" : "正式调研";
+  $("#gsMode").textContent = (backtest ? "回测" : "正式调研") + (p.auto?.enabled ? " · 自动模式" : "");
   $("#gsDomain").textContent = p.domain || "（领域未填写）";
   const meta = [["项目", p.id], ["规模", p.scale], ["起始", p.start || "—"], [backtest ? "截止日" : "截至", p.cutoff || "—"], ["读者", p.audience || "—"]];
   if (p.include) meta.push(["包含", p.include]);
@@ -170,10 +171,13 @@ function renderSide() {
 function renderChecks() {
   const p = state.project;
   $("#gsConfirmations").innerHTML = (p.confirmations || []).map(c => `
-    <article class="gs-confirm ${c.confirmedAt ? "done" : ""}">
-      <h3><span class="gs-mark ${c.confirmedAt ? "pass" : ""}">${c.confirmedAt ? "✓" : c.point}</span>确认点 ${c.point}</h3>
+    <article class="gs-confirm ${c.confirmedAt ? "done" : ""} ${c.byClaude ? "auto" : ""}">
+      <h3><span class="gs-mark ${c.confirmedAt ? "pass" : ""}">${c.confirmedAt ? "✓" : c.point}</span>确认点 ${c.point}${c.byClaude ? `<span class="gs-badge">由 Claude 代确认</span>` : ""}</h3>
       <p>${escapeHtml(c.title)}</p>
-      <p>${c.confirmedAt ? `已于 ${escapeHtml(c.confirmedAt.replace("T", " "))} 确认${c.note ? `：${escapeHtml(c.note)}` : ""}` : "还没确认。确认点只能由你本人在自己的终端（PowerShell）里运行，面板和模型都不能代替你确认。"}</p>
+      <p>${c.confirmedAt ? `已于 ${escapeHtml(c.confirmedAt.replace("T", " "))} 确认${c.byClaude ? "（自动模式，未经人工审核；想亲自确认可运行下面的命令覆盖）" : c.note ? `：${escapeHtml(c.note)}` : ""}`
+        : p.auto?.enabled ? "还没确认。自动模式下会由另一个 Claude 审核后代为确认；你也可以运行下面的命令亲自确认。"
+        : "还没确认。确认点只能由你本人在自己的终端（PowerShell）里运行，面板和模型都不能代替你确认。"}</p>
+      ${c.byClaude && c.review ? `<p class="gs-review">${escapeHtml(c.review)}</p>` : ""}
       <div class="gs-cmd"><code>${escapeHtml(c.command)}</code><button class="gs-btn small" type="button" data-copy="${escapeHtml(c.command)}">复制命令</button></div>
     </article>`).join("");
   $("#gsCheckList").innerHTML = (p.steps || []).map(step => {
@@ -344,6 +348,97 @@ async function loadJobs() {
   } catch {}
 }
 
+// ------------------------------------------------------------ 自动运行
+
+const AUTO_STATUS = { idle:"未开始", running:"运行中", done:"已完成", paused:"已暂停", stopped:"已停止", failed:"出错", interrupted:"已中断" };
+const AUTO_PREFS = "research-toolkit.gap-survey.auto";
+
+function stopAutoPolling() {
+  if (state.autoTimer) clearTimeout(state.autoTimer);
+  state.autoTimer = null;
+}
+
+function renderAutoBadge() {
+  const auto = state.project?.auto || {};
+  const badge = $("#gsAutoBadge");
+  badge.classList.toggle("hidden", !auto.enabled);
+  badge.classList.toggle("running", Boolean(auto.running));
+  badge.textContent = auto.running ? "运行中" : "开";
+}
+
+function autoMessage(text, kind) {
+  const msg = $("#gsAutoMessage");
+  msg.textContent = text || "";
+  msg.className = `gs-banner ${kind || ""}`;
+  msg.classList.toggle("hidden", !text);
+}
+
+async function loadAuto() {
+  stopAutoPolling();
+  if (!state.projectId) return;
+  const id = state.projectId;
+  let data;
+  try {
+    data = await api(projectUrl("/auto"));
+  } catch (error) {
+    $("#gsAutoOff").classList.remove("hidden");
+    $("#gsAutoOn").classList.add("hidden");
+    $("#gsAutoOffText").textContent = error.message;
+    $("#gsAutoEnable").classList.add("hidden");
+    return;
+  }
+  if (id !== state.projectId) return;
+  const wasRunning = Boolean(state.auto?.running);
+  state.auto = data.auto;
+  renderAuto();
+  if (state.auto.running && state.tab === "auto") state.autoTimer = setTimeout(loadAuto, 2000);
+  else if (wasRunning) reloadProject();  // 刚跑完：刷新逐步检查和文件
+}
+
+function renderAuto() {
+  const auto = state.auto;
+  $("#gsAutoOff").classList.toggle("hidden", auto.enabled);
+  $("#gsAutoOn").classList.toggle("hidden", !auto.enabled);
+  if (state.project?.auto) { state.project.auto.running = auto.running; state.project.auto.enabled = auto.enabled; renderAutoBadge(); }
+  if (!auto.enabled) return;
+  $("#gsAutoWarn").classList.toggle("hidden", !auto.backtest);
+  let prefs = {};
+  try { prefs = JSON.parse(localStorage.getItem(AUTO_PREFS) || "{}"); } catch {}
+  if (!$("#gsAutoModel").dataset.touched) $("#gsAutoModel").value = auto.model || prefs.model || "opus";
+  if (!$("#gsAutoEffort").dataset.touched) $("#gsAutoEffort").value = auto.effort || prefs.effort || "high";
+  for (const id of ["#gsAutoModel", "#gsAutoEffort", "#gsAutoAck", "#gsAutoDisable"]) $(id).disabled = auto.running;
+  $("#gsAutoStart").classList.toggle("hidden", auto.running);
+  $("#gsAutoStart").textContent = auto.status === "idle" ? "开始" : auto.status === "done" ? "重新检查并补跑" : "继续";
+  $("#gsAutoStop").classList.toggle("hidden", !auto.running);
+  $("#gsAutoState").textContent = AUTO_STATUS[auto.status] || auto.status;
+  autoMessage(auto.message, auto.status === "done" ? "ok" : ["failed", "paused", "interrupted"].includes(auto.status) ? "warn" : "");
+  const current = auto.running || ["paused", "failed", "stopped", "interrupted"].includes(auto.status) ? auto.phase : "";
+  $("#gsAutoPhases").innerHTML = auto.phases.map(ph => {
+    const mark = ph.skipped ? `<span class="gs-mark">–</span>` : ph.done ? `<span class="gs-mark pass">✓</span>` : `<span class="gs-mark ${ph.key === current ? "fail" : ""}">·</span>`;
+    return `<li class="${ph.key === current ? "current" : ""} ${ph.skipped ? "skipped" : ""}">${mark}${escapeHtml(ph.title)}</li>`;
+  }).join("");
+  const box = $("#gsAutoLog");
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  const titles = Object.fromEntries(auto.phases.map(ph => [ph.key, ph.title]));
+  box.innerHTML = auto.log.map(entry => {
+    const time = new Date(entry.t * 1000).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+    const text = entry.kind === "phase" ? `▶ ${entry.text}` : entry.text;
+    return `<div class="gs-log-row ${escapeHtml(entry.kind)}" title="${escapeHtml(titles[entry.phase] || "")}"><time>${time}</time><span class="body">${escapeHtml(text)}</span></div>`;
+  }).join("") || `<p class="gs-hint">还没有运行记录。</p>`;
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function autoAction(path, body = {}) {
+  try {
+    state.auto = (await api(projectUrl(path), { method:"POST", body:JSON.stringify(body) })).auto;
+    renderAuto();
+    await reloadProject();
+    loadAuto();
+  } catch (error) {
+    autoMessage(error.message, "bad");
+  }
+}
+
 // ------------------------------------------------------------ 新建项目 / 方法说明
 
 // 同一个对话框：新建（editing=false）或编辑当前项目的 project.toml（editing=true）。
@@ -366,6 +461,7 @@ function openProjectDialog(edit = false) {
   $("#gsProjectDialogTitle").textContent = editing ? `编辑项目信息 · ${state.project.id}` : "新建调研项目";
   $("#gsProjectSubmit").textContent = editing ? "保存" : "创建";
   form.querySelector("[data-create-only]").classList.toggle("hidden", editing);
+  form.querySelector("[data-create-only-auto]").classList.toggle("hidden", editing);
   form.elements.id.required = !editing;
   form.elements.mode.disabled = editing;
   if (editing) {
@@ -385,6 +481,7 @@ async function createProject(event) {
   try {
     if (editing) {
       delete data.id;
+      delete data.auto;
       state.project = (await api(projectUrl(), { method:"PUT", body:JSON.stringify(data) })).project;
       $("#gsProjectDialog").close();
       await loadProjects(state.projectId);
@@ -471,12 +568,13 @@ async function openGuide() {
 // ------------------------------------------------------------ 事件
 
 function activateTab(tab) {
-  if (!["checks", "files", "run"].includes(tab)) tab = "checks";
+  if (!["checks", "files", "run", "auto"].includes(tab)) tab = "checks";
   state.tab = tab;
   store.set(TAB_KEY, tab);
   document.querySelectorAll(".gs-tabs [data-tab]").forEach(b => { const on = b.dataset.tab === tab; b.classList.toggle("active", on); b.setAttribute("aria-selected", String(on)); });
   document.querySelectorAll(".gs-view").forEach(v => v.classList.toggle("active", v.dataset.view === tab));
   if (tab === "files" && !state.file && state.project?.files?.length) openFile(state.project.files[0].name);
+  if (tab === "auto") loadAuto(); else stopAutoPolling();
 }
 
 async function copyText(text, button) {
@@ -505,6 +603,19 @@ function bindStatic() {
   $("#gsCommandFields").addEventListener("input", updatePreview);
   $("#gsCommandFields").addEventListener("change", updatePreview);
   $("#gsRunForm").addEventListener("submit", runCommand);
+  $("#gsAutoEnable").addEventListener("click", () => {
+    if (window.confirm("开启自动模式后，Claude 会替你做全部选择，并代为确认两个确认点（记录里会标明不是人工确认）。确定开启吗？")) autoAction("/auto/enable", { enabled:true });
+  });
+  $("#gsAutoDisable").addEventListener("click", () => autoAction("/auto/enable", { enabled:false }));
+  $("#gsAutoStop").addEventListener("click", () => autoAction("/auto/stop"));
+  for (const id of ["#gsAutoModel", "#gsAutoEffort"]) $(id).addEventListener("change", event => {
+    event.target.dataset.touched = "1";
+    try { localStorage.setItem(AUTO_PREFS, JSON.stringify({ model:$("#gsAutoModel").value, effort:$("#gsAutoEffort").value })); } catch {}
+  });
+  $("#gsAutoStart").addEventListener("click", () => {
+    if (!$("#gsAutoAck").checked) { autoMessage("先勾选用量确认。", "bad"); return; }
+    autoAction("/auto/start", { model:$("#gsAutoModel").value, effort:$("#gsAutoEffort").value, acknowledged:true });
+  });
   $("#gsCancelButton").addEventListener("click", async () => {
     if (!state.job) return;
     try { state.job = (await api(`/api/gap-survey/jobs/${encodeURIComponent(state.job.id)}/cancel`, { method:"POST" })).job; renderJob(); } catch (error) { $("#gsJobState").textContent = error.message; }

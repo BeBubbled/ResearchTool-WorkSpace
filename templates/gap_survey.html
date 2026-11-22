@@ -6,7 +6,7 @@
   {% include "_theme_head.html" %}
   <title>演化树调研 · Research Toolkit</title>
   <meta name="description" content="问题驱动的方法演化树：逐步检查每一步的产出，检索记录、日期防火墙与原句核对由代码把关。">
-  <link rel="stylesheet" href="/static/gap_survey.css?v=5">
+  <link rel="stylesheet" href="/static/gap_survey.css?v=6">
 </head>
 <body class="gs-body">
   {% set client_active = "gapsurvey" %}{% include "_client_nav.html" %}
@@ -52,6 +52,7 @@
           <button type="button" role="tab" data-tab="checks" class="active" data-command="演化树：逐步检查" data-shortcut="alt+1">逐步检查</button>
           <button type="button" role="tab" data-tab="files" data-command="演化树：项目文件" data-shortcut="alt+2">项目文件</button>
           <button type="button" role="tab" data-tab="run" data-command="演化树：检索与命令" data-shortcut="alt+3">检索与命令</button>
+          <button type="button" role="tab" data-tab="auto" data-command="演化树：自动运行" data-shortcut="alt+4">自动运行 <span id="gsAutoBadge" class="gs-badge hidden"></span></button>
           <button id="gsRefresh" class="gs-btn small gs-tabs-end" type="button" data-command="演化树：重新检查" title="重新读取文件并检查">重新检查</button>
         </nav>
 
@@ -66,6 +67,40 @@
             <div class="gs-file-view">
               <header><strong id="gsFileTitle">选择左侧文件</strong><span id="gsFileInfo"></span></header>
               <div id="gsFileBody" class="gs-file-body"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="gs-view" data-view="auto">
+          <div id="gsAutoOff" class="gs-auto-off hidden">
+            <h3>自动模式</h3>
+            <p id="gsAutoOffText">开启后，由 Claude Code 按「方法说明」完成第 0–7 步并生成报告：原本要你选择、填写的地方由 Claude 决定，理由写进 <code>decisions.md</code>；两个确认点交给另一个没看过推导过程的 Claude 审核，通过后由面板记为“由 Claude 代确认”。每一步结束都由 gapr 检查把关，检查不过会把错误发回去修改。</p>
+            <ul class="gs-hint-list">
+              <li>全程使用 Claude 套餐额度，full 规模可能要跑好几个小时。</li>
+              <li>gapr 的检查只能保证格式、来源和规则，保证不了判断正确；结果要自己翻 <code>decisions.md</code> 和报告核对。</li>
+              <li>回测项目不建议用：Claude 知道截止日之后发生的事，结论会被带偏。</li>
+            </ul>
+            <button id="gsAutoEnable" class="gs-btn primary" type="button">开启自动模式</button>
+          </div>
+          <div id="gsAutoOn" class="gs-auto-on hidden">
+            <p id="gsAutoWarn" class="gs-banner warn hidden">这是回测项目。Claude 训练时就知道截止日之后的论文，自动模式下选节点和属性时可能被这些知识带偏，回测结论要打折扣。</p>
+            <div class="gs-auto-controls">
+              <label class="gs-field">模型<select id="gsAutoModel"><option value="opus">Opus · 质量优先</option><option value="sonnet">Sonnet · 更快、更省额度</option></select></label>
+              <label class="gs-field">推理强度<select id="gsAutoEffort"><option value="medium">medium</option><option value="high" selected>high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
+              <label class="gs-check"><input id="gsAutoAck" type="checkbox">我知道自动运行会消耗 Claude 套餐额度，可能持续数小时</label>
+              <div class="gs-auto-buttons">
+                <button id="gsAutoStart" class="gs-btn primary" type="button" data-command="演化树：开始 / 继续自动运行">开始</button>
+                <button id="gsAutoStop" class="gs-btn danger hidden" type="button" data-command="演化树：停止自动运行">停止</button>
+                <button id="gsAutoDisable" class="gs-btn small" type="button">关闭自动模式</button>
+              </div>
+            </div>
+            <p id="gsAutoMessage" class="gs-banner hidden" role="status"></p>
+            <div class="gs-auto-body">
+              <ol id="gsAutoPhases" class="gs-auto-phases" aria-label="自动运行阶段"></ol>
+              <div class="gs-console-wrap gs-auto-log-wrap">
+                <header><strong>运行日志</strong><span id="gsAutoState"></span></header>
+                <div id="gsAutoLog" class="gs-auto-log" aria-live="polite"></div>
+              </div>
             </div>
           </div>
         </section>
@@ -112,6 +147,7 @@
         <label class="gs-field">排除<input name="exclude" maxlength="500" placeholder="例如 纯应用论文"></label>
       </div>
       <label class="gs-field">读者<input name="audience" maxlength="60" placeholder="我自己 / 导师 / 组会"></label>
+      <label class="gs-check" data-create-only-auto><input type="checkbox" name="auto" value="1">自动模式：由 Claude 完成全部步骤，包括两个确认点（可以之后在「自动运行」页开启）</label>
       <p id="gsProjectError" class="gs-banner bad hidden" role="alert"></p>
       <footer><button type="button" class="gs-btn" data-close>取消</button><button id="gsProjectSubmit" type="submit" class="gs-btn primary">创建</button></footer>
     </form>
@@ -124,6 +160,6 @@
     </div>
   </dialog>
 
-  <script src="/static/gap_survey.js?v=5"></script>
+  <script src="/static/gap_survey.js?v=6"></script>
 </body>
 </html>

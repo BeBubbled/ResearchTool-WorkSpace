@@ -1,4 +1,5 @@
-"""Run single, tool-less text turns through the locally installed, logged-in Claude Code CLI.
+"""Run Claude Code turns (tool-less text turns, read-only sessions, narrowly scoped agent sessions)
+through the locally installed, logged-in Claude Code CLI.
 
 Usage is billed to the signed-in Claude plan (Pro/Max), never to an API key: API-key and
 third-party-provider variables are stripped from the child environment, and callers should only
@@ -53,6 +54,8 @@ STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL
 PLAN_AUTH = {"claude.ai"}
 # Tools a saved revision session may use inside the paper's project folder: read-only.
 SESSION_TOOLS = ("Read", "Grep", "Glob")
+# Tools of an agentic session (run_agent): edits stay inside its working folder, Bash is narrowed by rules.
+AGENT_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep", "Bash")
 
 
 class ClaudeSessionMissing(ValueError):
@@ -266,6 +269,87 @@ class ClaudeCodeRunner:
         if data.get("session_id") and data["session_id"] != session_id:
             raise ValueError("Claude Code 返回了不同的会话 ID，本轮未应用。")
         return data["result"]
+
+    def run_agent(self, system: str, user: str, *, cwd: str, model: str, effort: str, session_id: str,
+                  resume: bool, allowed: list[str], disallowed: list[str], extra_env: dict[str, str] | None = None,
+                  name: str = "", timeout: float | None = None, permission_mode: str = "dontAsk",
+                  on_event: Callable[[dict[str, Any]], None] | None = None) -> str:
+        """One turn of an agentic Claude Code session that may edit files in ``cwd``.
+
+        Tools: Read/Write/Edit/Glob/Grep/Bash. The default ``--permission-mode dontAsk`` denies every tool use
+        that no ``allowed`` rule approves (e.g. ``Bash(gapr:*)``, ``Write(./**)``), and ``disallowed`` wins over
+        them. Verified with the real CLI (2.1.x): reads and writes outside ``cwd``, python, curl and
+        ``gapr confirm`` are refused; reads inside ``cwd`` and plain ``echo … > file`` inside it are allowed.
+        ``on_event`` receives {"kind": "text"|"tool", ...} as the session works; raising from it (e.g. the
+        run was stopped) kills the CLI and propagates."""
+        if model not in MODELS or effort not in EFFORTS:
+            raise ValueError("Claude 模型或推理强度无效。")
+        if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", session_id or ""):
+            raise ValueError("Claude 会话 ID 无效。")
+        if not Path(cwd).is_dir():
+            raise ValueError("Claude Code 工作目录不存在。")
+        if not user.strip():
+            raise ValueError("Claude 请求不能为空。")
+        if permission_mode not in ("acceptEdits", "dontAsk", "default"):
+            raise ValueError("权限模式无效。")
+        exe = self.finder()
+        if not exe:
+            raise ValueError("未找到 Claude Code CLI，请先安装并登录。")
+        env = child_env()
+        env.update(extra_env or {})
+        limit = timeout or self.timeout
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        with tempfile.TemporaryDirectory(prefix="claude-agent-turn-") as folder:
+            system_file = Path(folder) / "system.txt"  # kept outside the working folder
+            system_file.write_text(system, encoding="utf-8")
+            mcp_file = Path(folder) / "mcp.json"
+            mcp_file.write_text('{"mcpServers": {}}', encoding="utf-8")
+            args = [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", model, "--effort", effort,
+                    "--tools", ",".join(AGENT_TOOLS), "--permission-mode", permission_mode,
+                    "--allowedTools", *allowed, "--disallowedTools", *disallowed,
+                    "--strict-mcp-config", "--mcp-config", str(mcp_file),
+                    "--append-system-prompt-file", str(system_file)]
+            args += ["--resume", session_id] if resume else ["--session-id", session_id] + (["--name", name[:80]] if name else [])
+            try:
+                proc = self.popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  encoding="utf-8", errors="replace", cwd=cwd, env=env, creationflags=flags)
+            except OSError:
+                raise ValueError("无法启动 Claude Code CLI。") from None
+            timer = threading.Timer(limit, proc.kill)
+            timer.start()
+            final = None
+            try:
+                proc.stdin.write(user)
+                proc.stdin.close()
+                for line in proc.stdout:
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if event.get("type") == "assistant" and on_event:
+                        for block in (event.get("message") or {}).get("content") or []:
+                            if block.get("type") == "text" and block.get("text", "").strip():
+                                on_event({"kind": "text", "text": block["text"]})
+                            elif block.get("type") == "tool_use":
+                                on_event({"kind": "tool", "name": block.get("name", ""), "input": block.get("input") or {}})
+                    elif event.get("type") == "result":
+                        final = event
+                proc.wait()
+            except BaseException:
+                proc.kill()
+                raise
+            finally:
+                timer.cancel()
+        if final is None:
+            detail = (proc.stderr.read() if proc.stderr else "").strip()
+            if "no conversation found" in detail.lower():
+                raise ClaudeSessionMissing("Claude Code 会话已不存在。")
+            raise ValueError(self._friendly(detail) if detail else
+                             f"Claude Code 超过 {int(limit)} 秒未返回或中途退出。")
+        result = final.get("result")
+        if final.get("is_error") or final.get("subtype") not in {None, "success"} or not isinstance(result, str):
+            raise ValueError(self._friendly(str(result or final.get("subtype") or "")) or "Claude Code 执行失败。")
+        return result
 
     @staticmethod
     def _friendly(detail: str) -> str:

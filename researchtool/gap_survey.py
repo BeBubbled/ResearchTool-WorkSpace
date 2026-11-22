@@ -50,6 +50,8 @@ VIEWABLE_FILES = [
     ("gaps.csv", "第 5–7 步 · 候选空白"),
     ("filtered.csv", "第 5 步 · 过滤掉的"),
     ("search_log.csv", "全程 · 检索记录"),
+    ("decisions.md", "自动模式 · Claude 的决定与理由"),
+    ("report.md", "报告"),
 ]
 VIEWABLE = {name for name, _ in VIEWABLE_FILES}
 
@@ -166,13 +168,17 @@ def _display_arg(value: str) -> str:
 
 class GapSurveyService:
     def __init__(self, root: Path, *, workdir: Path, python: str | None = None,
-                 env: Callable[[], dict[str, str]] | None = None):
+                 env: Callable[[], dict[str, str]] | None = None, claude: Any = None):
         self.root = Path(root)
         self.workdir = Path(workdir)
         self.python = python or sys.executable
         self.env = env or (lambda: dict(os.environ))
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
+        # 自动模式：状态存在项目目录之外（root 的上一级 auto/），Claude 会话改不到
+        from researchtool.gap_survey_auto import AutoRunner
+        self.auto = AutoRunner(self.root.parent / "auto", workdir=self.workdir, runner=claude,
+                               project_dir=self.project_dir, python=self.python) if claude else None
 
     # ------------------------------------------------------------ 项目
 
@@ -230,6 +236,8 @@ class GapSurveyService:
             raise ValueError(f"已经有名为 {project_id} 的项目。")
         self.root.mkdir(parents=True, exist_ok=True)
         prj.init(path, domain=domain, mode=mode, start=start, cutoff=cutoff, scale=scale, audience=audience)
+        if data.get("auto") and self.auto:
+            self.auto.enable(project_id, True)
         extra = {key: data.get(key) for key in ("include", "exclude") if str(data.get(key) or "").strip()}
         if extra:
             return self.update(project_id, extra)
@@ -322,7 +330,8 @@ class GapSurveyService:
         for point, title in (("1", "第 1 步之后：节点清单与术语对照表"), ("2", "第 4 步归纳属性之后：属性与相容性表（确认后冻结）")):
             record = confirmed.get(point) or {}
             points.append({"point": point, "title": title, "confirmedAt": record.get("at", ""),
-                           "note": record.get("note", ""), "command": self.confirm_command(path, point)})
+                           "note": record.get("note", ""), "command": self.confirm_command(path, point),
+                           "byClaude": record.get("by") == "claude-auto", "review": record.get("review", "")})
         candidates = confirmed.get("candidates") or {}
         info.update({
             "steps": steps,
@@ -330,8 +339,16 @@ class GapSurveyService:
             "candidatesLockedAt": candidates.get("at", ""),
             "files": self._files(path),
             "running": self.running_job(project_id),
+            "auto": self.auto_summary(project_id),
         })
         return info
+
+    def auto_summary(self, project_id: str) -> dict[str, Any]:
+        if not self.auto:
+            return {"available": False, "enabled": False, "running": False}
+        state = self.auto.load(project_id)
+        return {"available": True, "enabled": state["enabled"], "running": self.auto.is_running(project_id),
+                "status": state["status"]}
 
     def confirm_command(self, path: Path, point: str) -> str:
         """给用户在自己的 PowerShell 里运行的确认命令（面板不代跑）。"""
@@ -430,6 +447,8 @@ class GapSurveyService:
         self._gapr()
         path = self.project_dir(project_id)
         argv = self.build_argv(path, command, args if isinstance(args, dict) else {})
+        if self.auto and self.auto.is_running(project_id):
+            raise ValueError("自动运行进行中，先停止自动运行再手动运行命令。")
         with self.lock:
             if any(j.project == project_id and j.running for j in self.jobs.values()):
                 raise ValueError("这个项目已有命令在运行，等它结束或先停止它。")
@@ -626,6 +645,49 @@ def create_gap_survey_blueprint(service: GapSurveyService) -> Blueprint:
     def update_project(project_id: str):
         try:
             return jsonify({"project": service.update(project_id, body())})
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            return error(exc)
+
+    def auto_or_error():
+        if not service.auto:
+            raise ValueError("面板没有配置 Claude Code，自动模式不可用。")
+        return service.auto
+
+    @bp.get("/projects/<project_id>/auto")
+    def auto_state(project_id: str):
+        try:
+            service.project_dir(project_id)
+            return jsonify({"auto": auto_or_error().public(project_id)})
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            return error(exc)
+
+    @bp.post("/projects/<project_id>/auto/enable")
+    def auto_enable(project_id: str):
+        try:
+            service.project_dir(project_id)
+            return jsonify({"auto": auto_or_error().enable(project_id, bool(body().get("enabled", True)))})
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            return error(exc)
+
+    @bp.post("/projects/<project_id>/auto/start")
+    def auto_start(project_id: str):
+        data = body()
+        if data.get("acknowledged") is not True:
+            return jsonify({"error": "自动运行会消耗 Claude 套餐额度，请先勾选确认。"}), 400
+        try:
+            service.project_dir(project_id)
+            if service.running_job(project_id):
+                raise ValueError("这个项目有命令正在运行，等它结束再开始自动运行。")
+            return jsonify({"auto": auto_or_error().start(project_id, model=str(data.get("model") or "opus"),
+                                                          effort=str(data.get("effort") or "high"))})
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            return error(exc)
+
+    @bp.post("/projects/<project_id>/auto/stop")
+    def auto_stop(project_id: str):
+        try:
+            service.project_dir(project_id)
+            return jsonify({"auto": auto_or_error().stop(project_id)})
         except (KeyError, ValueError, RuntimeError, OSError) as exc:
             return error(exc)
 

@@ -8171,7 +8171,9 @@ def test_openalex_config():
         return json_error(str(exc))
 
 
-gap_survey_service = GapSurveyService(GAP_SURVEY_DIR / "projects", workdir=PROJECT_ROOT)
+# 演化树自动模式：每个阶段是一个可能跑很久的 Claude Code 会话（单次上限 3 小时）
+gap_survey_claude_runner = ClaudeCodeRunner(timeout=3 * 3600)
+gap_survey_service = GapSurveyService(GAP_SURVEY_DIR / "projects", workdir=PROJECT_ROOT, claude=gap_survey_claude_runner)
 app.register_blueprint(create_gap_survey_blueprint(gap_survey_service))
 
 

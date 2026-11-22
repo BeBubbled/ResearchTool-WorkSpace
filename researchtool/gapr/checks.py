@@ -213,6 +213,8 @@ def step1(c: Ctx, *, include_confirm: bool = True) -> StepResult:
         if not conf:
             add(Issue(ERROR, "确认点 1", "还没有确认（请你本人在终端运行 python -m researchtool.gapr confirm <项目> 1）"))
         else:
+            if conf.get("by") == confirm.AUTO_BY:
+                add(Issue(WARN, "确认点 1", "由 Claude 代为确认（自动模式），未经人工审核"))
             now = confirm.snapshot_1(c.root)
             if now["nodes"] != conf["nodes"]:
                 added = sorted(set(now["nodes"]) - set(conf["nodes"]))
@@ -385,6 +387,8 @@ def step4(c: Ctx, *, before_freeze: bool = False) -> StepResult:
 
     if "2" not in c.confirmations:
         add(Issue(ERROR, "确认点 2", "还没有确认属性（请你本人在终端运行 python -m researchtool.gapr confirm <项目> 2）"))
+    elif c.confirmations["2"].get("by") == confirm.AUTO_BY:
+        add(Issue(WARN, "确认点 2", "由 Claude 代为确认（自动模式），未经人工审核"))
     try:
         rubric.verify(c.root)
     except rubric.RubricError as e:

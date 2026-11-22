@@ -66,7 +66,7 @@ python -m researchtool.gapr check demo-verify
 |---|---|---|---|---|---|
 | C1 | 第 1 步结束时，用户确认节点清单和术语对照表 | `confirm.confirm_1` 记录节点 id 和术语表的快照；`checks.step1` 发现确认后有变化就要求重新确认 | `test_gapr_workflow::TestStep1::test_unconfirmed_is_error`、`::test_node_added_after_confirm`；`::TestConfirm::test_confirm1_requires_valid_step1` | V4a | ✅ |
 | C2 | 第 4 步归纳出属性之后、填格子之前，用户确认属性清单 | `cli.cmd_confirm` 先要求第 0–3 步通过；`confirm.confirm_2` 确认后冻结规则 | `test_gapr_workflow::TestCoverageGaps::test_confirm2_requires_steps_0_to_3`；`::TestGatesAndGaps::test_matrix_and_gaps_refused_before_confirm2` | V2 | ✅ |
-| C3 | 确认只能由用户本人做，模型不能代劳 | `confirm._require_terminal`：不是交互式终端就拒绝（在显示清单之前）；`.claude/settings.json` 的 deny 规则是第二道保险；面板 `/gap-survey` 不提供确认入口，可运行的命令白名单里没有 `confirm` | `test_gapr_workflow::TestConfirm::test_model_cannot_confirm`、`::test_cancel_writes_nothing`；`test_gap_survey::GapSurveyTests::test_argv_whitelist` | V4b；M4 | ◐ 两道保险都只防误操作，防不住刻意绕过：有意伪造终端的程序可以绕开检查，deny 规则也只拦它列出的那几种写法。`tests/gapr_make_demo.py` 为了生成演示数据会代填确认，但它只能新建目录，碰不到已有的项目 |
+| C3 | 确认只能由用户本人做，模型不能代劳 | `confirm._require_terminal`：不是交互式终端就拒绝（在显示清单之前）；`.claude/settings.json` 的 deny 规则是第二道保险；面板 `/gap-survey` 不提供确认入口，可运行的命令白名单里没有 `confirm` | `test_gapr_workflow::TestConfirm::test_model_cannot_confirm`、`::test_cancel_writes_nothing`；`test_gap_survey::GapSurveyTests::test_argv_whitelist` | V4b；M4 | ◐ 两道保险都只防误操作，防不住刻意绕过：有意伪造终端的程序可以绕开检查，deny 规则也只拦它列出的那几种写法。`tests/gapr_make_demo.py` 为了生成演示数据会代填确认，但它只能新建目录，碰不到已有的项目。**例外：自动模式**——用户在面板里为项目开启后，确认由另一个 Claude 审核、面板调用 `confirm.record_auto` 记录（`by=claude-auto`），检查结果会一直给出提醒（`test_gap_survey_auto::AutoModeTests::test_full_run_records_claude_confirmations`），详见 [gapr.md](gapr.md) 的“自动模式” |
 
 ### 2.3 各步骤（模板第 4 节）
 
@@ -174,7 +174,7 @@ python -m researchtool.gapr check demo-verify
   - 公式多的段落，HTML 和 PDF 的公式文本可能不同，会导致核对不通过。
 - **节点日期**：手填的日期不会自动去 arXiv 核对。
 - **跨领域检索**：只检查标了 `kind=cross`，不核对是否真的用了术语对照表。
-- **确认点的防护**：只防误操作，防不住刻意绕过（见 C3）。
+- **确认点的防护**：只防误操作，防不住刻意绕过（见 C3）。开启自动模式的项目，确认点本来就由 Claude 代做。
 
 **未实现**：最终报告生成（O1）、“每个已知缺陷至少保留一个专门解决它的节点”的检查（S1d）。
 

@@ -123,6 +123,29 @@ def confirm_2(root: Path, *, note: str = "", change_reason: str = "", interactiv
     return data["2"]
 
 
+AUTO_BY = "claude-auto"
+
+
+def record_auto(root: Path, point: str, *, review: str) -> dict:
+    """自动模式（面板 /gap-survey 里用户选了「自动模式」的项目）：由面板在 Claude 审核通过后代为记录确认。
+
+    只能在进程内调用，命令行没有入口；记录带 by=claude-auto 和审核意见，检查和报告里会一直标出
+    “不是人工确认”。确认点 2 同样会冻结规则文件。"""
+    root = Path(root)
+    data = load(root)
+    base = {"at": datetime.now().isoformat(timespec="seconds"), "note": "自动模式：由 Claude 审核后代为确认",
+            "by": AUTO_BY, "review": review}
+    if point == "1":
+        data["1"] = {**base, **snapshot_1(root)}
+    elif point == "2":
+        lock = rubric.freeze(root)
+        data["2"] = {**base, "rubric_files": lock["files"], "forced": False}
+    else:
+        raise ConfirmError(f"没有确认点 {point}")
+    _save(root, data)
+    return data[point]
+
+
 def lock_candidates(root: Path) -> dict:
     data = load(root)
     if "candidates" not in data:

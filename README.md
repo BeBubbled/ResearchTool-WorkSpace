@@ -38,7 +38,7 @@ Codex 默认由工具箱自动安装到 `.runtime/codex/` 并复用已有 ChatGP
 | 改稿 | `/paper-revision` | LaTeX 中英对照，圈选批注后由模型按范围修改并重译，带版本历史、编译检查 |
 | Prompt | `/prompts` | Prompt 模板库，配合 `browser_extension/prompt_bridge/` 把文字和附件送到 ChatGPT |
 | 研究空白地图 | `/research-gaps` | 按主题导入文献（Semantic Scholar、arXiv、本地 PDF 文件夹），AI 提取证据后人工审核 |
-| 演化树 | `/gap-survey` | 问题驱动的方法演化树调研：逐步检查每一步的产出，检索（S2 / OpenAlex / arXiv / OpenReview）、全文登记与原句核对；确认点只能在自己的终端里确认。见 [docs/gapr.md](docs/gapr.md) |
+| 演化树 | `/gap-survey` | 问题驱动的方法演化树调研：逐步检查每一步的产出，检索（S2 / OpenAlex / arXiv / OpenReview）、全文登记与原句核对；确认点只能在自己的终端里确认；也可开启自动模式，由 Claude Code 跑完全部步骤（含代确认）并生成报告。见 [docs/gapr.md](docs/gapr.md) |
 | ResearchStudio | `/researchstudio` | 接入 Microsoft ResearchStudio：选题与新颖性检查，海报、博客、PPT、讲解视频 |
 | 对话树 | `/branchboard` | 把 Claude Code 会话做成可分叉的二维对话树 |
 | 工具箱 | `/` | 文档翻译、PDF OCR、Markdown 修复、图片发布、BibTeX、图片 / 视频 / PPT 脚本、Sheet→Anki |
