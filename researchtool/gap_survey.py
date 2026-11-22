@@ -230,6 +230,68 @@ class GapSurveyService:
             raise ValueError(f"已经有名为 {project_id} 的项目。")
         self.root.mkdir(parents=True, exist_ok=True)
         prj.init(path, domain=domain, mode=mode, start=start, cutoff=cutoff, scale=scale, audience=audience)
+        extra = {key: data.get(key) for key in ("include", "exclude") if str(data.get(key) or "").strip()}
+        if extra:
+            return self.update(project_id, extra)
+        return self.overview(project_id)
+
+    def cutoff_lock(self, path: Path, mode: str) -> str:
+        """回测的截止日决定日期防火墙：检索过或确认过节点之后就不能再改，否则之前的检索结果会失真。"""
+        if mode != "backtest":
+            return ""
+        _, confirm, _ = self._gapr()
+        if "1" in confirm.load(path):
+            return "确认点 1 已确认，回测截止日不能再改。"
+        log = path / "search_log.csv"
+        if log.is_file() and _count_rows(log):
+            return "已经按这个截止日检索过（search_log.csv 有记录），回测截止日不能再改。"
+        return ""
+
+    def update(self, project_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        """改 project.toml 里第 0 步的输入，保留文件里的注释和其他设置。模式（正式调研 / 回测）不能改。"""
+        _, _, prj = self._gapr()
+        path = self.project_dir(project_id)
+        target = path / "project.toml"
+        text = target.read_text(encoding="utf-8")
+        current = tomllib_loads(text).get("project", {})
+        mode = current.get("mode", "survey")
+        values: dict[str, str] = {}
+        if "domain" in data:
+            values["domain"] = _plain_text(data.get("domain"), "领域", 200)
+        if "audience" in data:
+            values["audience"] = _plain_text(data.get("audience"), "读者", 60)
+        for key, label in (("include", "包含"), ("exclude", "排除")):
+            if key in data:
+                values[key] = _plain_text(data.get(key), label, 500)
+        if "start" in data:
+            values["start"] = _optional_date(data.get("start"), "起始时间")
+        if "scale" in data:
+            scale = str(data.get("scale") or "")
+            if scale not in ("mini", "quick", "full"):
+                raise ValueError("规模只能是 mini、quick 或 full。")
+            values["scale"] = scale
+        if "mode" in data and str(data.get("mode")) != mode:
+            raise ValueError("项目建好后不能切换正式调研 / 回测，请新建一个项目。")
+        if "cutoff" in data:
+            cutoff = _optional_date(data.get("cutoff"), "截止日")
+            if cutoff != str(current.get("cutoff") or ""):
+                if mode == "backtest" and not cutoff:
+                    raise ValueError("回测项目必须填写截止日。")
+                locked = self.cutoff_lock(path, mode)
+                if locked:
+                    raise ValueError(locked)
+                values["cutoff"] = cutoff or date.today().isoformat()
+        if values:
+            updated = _set_toml_values(text, "project", values)
+            tomllib_loads(updated)  # 写坏了就不落盘
+            temp = target.with_suffix(".toml.tmp")
+            temp.write_text(updated, encoding="utf-8")
+            os.replace(temp, target)
+            try:
+                prj.load(path)
+            except ValueError:
+                target.write_text(text, encoding="utf-8")
+                raise
         return self.overview(project_id)
 
     def overview(self, project_id: str) -> dict[str, Any]:
@@ -240,9 +302,12 @@ class GapSurveyService:
             p = prj.load(path)
         except (ValueError, OSError) as exc:
             return {**info, "error": f"project.toml 读取失败：{exc}", "steps": [], "files": self._files(path)}
+        raw = tomllib_loads((path / "project.toml").read_text(encoding="utf-8")).get("project", {})
         info.update({
             "domain": p.domain, "mode": p.mode, "start": p.start, "cutoff": str(p.cutoff or ""),
             "scale": p.scale, "audience": p.audience,
+            "include": str(raw.get("include") or ""), "exclude": str(raw.get("exclude") or ""),
+            "cutoffLocked": self.cutoff_lock(path, p.mode),
         })
         steps = []
         for res in checks.run(p):
@@ -428,6 +493,46 @@ class GapSurveyService:
         return self.job(job_id)
 
 
+def tomllib_loads(text: str) -> dict[str, Any]:
+    import tomllib  # Python 3.11+；调用前已由 _gapr() 检查过版本
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"project.toml 格式错误：{exc}") from None
+
+
+_TOML_VALUE_RE = r'("(?:[^"\\\n]|\\.)*"|\'[^\'\n]*\')'
+
+
+def _set_toml_values(text: str, section: str, values: dict[str, str]) -> str:
+    """只替换 [section] 里 key = "…" 的值，注释和其他行原样保留；缺的键插在节标题后面。
+    值已由 _plain_text / _optional_date 排除了引号、反斜杠和控制字符，可以直接放进 TOML 基本字符串。"""
+    lines = text.splitlines(keepends=True)
+    current, header_at, done = None, None, set()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and not stripped.startswith("[["):
+            current = stripped.strip("[] \t")
+            if current == section:
+                header_at = i
+            continue
+        if current != section:
+            continue
+        body = line.rstrip("\r\n")
+        for key, value in values.items():
+            m = re.match(rf"^(\s*{re.escape(key)}\s*=\s*){_TOML_VALUE_RE}(.*)$", body)
+            if m and key not in done:
+                lines[i] = f'{m.group(1)}"{value}"{m.group(3)}{line[len(body):]}'
+                done.add(key)
+    missing = [k for k in values if k not in done]
+    if missing:
+        if header_at is None:
+            raise ValueError(f"project.toml 里没有 [{section}] 一节。")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        lines[header_at + 1:header_at + 1] = [f'{key} = "{values[key]}"{newline}' for key in missing]
+    return "".join(lines)
+
+
 def _latest_mtime(path: Path) -> float:
     times = [f.stat().st_mtime for f in path.glob("*") if f.is_file()]
     return max(times, default=path.stat().st_mtime)
@@ -455,7 +560,7 @@ def _plain_text(value: Any, label: str, limit: int) -> str:
         raise ValueError(f"{label} 太长（最多 {limit} 个字符）。")
     if any(ord(c) < 32 and c not in "\t" for c in text):
         raise ValueError(f"{label} 不能包含换行或控制字符。")
-    if label in ("领域", "读者") and ('"' in text or "\\" in text):
+    if label in ("领域", "读者", "包含", "排除") and ('"' in text or "\\" in text):
         raise ValueError(f"{label} 不能包含双引号或反斜杠。")
     return text
 
@@ -514,6 +619,13 @@ def create_gap_survey_blueprint(service: GapSurveyService) -> Blueprint:
     def project(project_id: str):
         try:
             return jsonify({"project": service.overview(project_id)})
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            return error(exc)
+
+    @bp.put("/projects/<project_id>")
+    def update_project(project_id: str):
+        try:
+            return jsonify({"project": service.update(project_id, body())})
         except (KeyError, ValueError, RuntimeError, OSError) as exc:
             return error(exc)
 

@@ -147,6 +147,8 @@ function renderSide() {
   $("#gsMode").textContent = backtest ? "回测" : "正式调研";
   $("#gsDomain").textContent = p.domain || "（领域未填写）";
   const meta = [["项目", p.id], ["规模", p.scale], ["起始", p.start || "—"], [backtest ? "截止日" : "截至", p.cutoff || "—"], ["读者", p.audience || "—"]];
+  if (p.include) meta.push(["包含", p.include]);
+  if (p.exclude) meta.push(["排除", p.exclude]);
   if (p.candidatesLockedAt) meta.push(["候选锁定", p.candidatesLockedAt.replace("T", " ")]);
   $("#gsMeta").innerHTML = meta.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("");
   $("#gsPath").textContent = p.path;
@@ -344,20 +346,50 @@ async function loadJobs() {
 
 // ------------------------------------------------------------ 新建项目 / 方法说明
 
-function openProjectDialog() {
-  const dialog = $("#gsProjectDialog");
-  $("#gsProjectForm").reset();
+// 同一个对话框：新建（editing=false）或编辑当前项目的 project.toml（editing=true）。
+let editing = false;
+
+function updateCutoffHint() {
+  const form = $("#gsProjectForm");
+  const backtest = form.elements.mode.value === "backtest";
+  const locked = editing && state.project?.cutoffLocked;
+  form.elements.cutoff.disabled = Boolean(locked);
+  form.querySelector("[data-cutoff-hint]").textContent = locked ? state.project.cutoffLocked
+    : backtest ? "回测必填：只能看这一天及之前公开的论文。" : "正式调研留空 = 今天；回测必填。";
+}
+
+function openProjectDialog(edit = false) {
+  editing = Boolean(edit && state.project);
+  const form = $("#gsProjectForm");
+  form.reset();
   $("#gsProjectError").classList.add("hidden");
-  dialog.showModal();
+  $("#gsProjectDialogTitle").textContent = editing ? `编辑项目信息 · ${state.project.id}` : "新建调研项目";
+  $("#gsProjectSubmit").textContent = editing ? "保存" : "创建";
+  form.querySelector("[data-create-only]").classList.toggle("hidden", editing);
+  form.elements.id.required = !editing;
+  form.elements.mode.disabled = editing;
+  if (editing) {
+    const p = state.project;
+    for (const key of ["domain", "mode", "scale", "start", "cutoff", "audience", "include", "exclude"]) form.elements[key].value = p[key] || "";
+  }
+  updateCutoffHint();
+  $("#gsProjectDialog").showModal();
 }
 
 async function createProject(event) {
   event.preventDefault();
   const form = event.currentTarget;
-  const data = Object.fromEntries(new FormData(form).entries());
+  const data = Object.fromEntries(new FormData(form).entries());  // 禁用的字段（模式、锁定的截止日）不会提交
   const submit = form.querySelector('[type="submit"]');
   submit.disabled = true;
   try {
+    if (editing) {
+      delete data.id;
+      state.project = (await api(projectUrl(), { method:"PUT", body:JSON.stringify(data) })).project;
+      $("#gsProjectDialog").close();
+      await loadProjects(state.projectId);
+      return;
+    }
     const result = await api("/api/gap-survey/projects", { method:"POST", body:JSON.stringify(data) });
     $("#gsProjectDialog").close();
     await loadProjects(result.project.id);
@@ -460,8 +492,9 @@ async function copyText(text, button) {
 
 function bindStatic() {
   $("#gsProjectSelect").addEventListener("change", event => openProject(event.target.value));
-  $("#gsNewProject").addEventListener("click", openProjectDialog);
-  $("#gsEmptyCreate").addEventListener("click", openProjectDialog);
+  $("#gsNewProject").addEventListener("click", () => openProjectDialog(false));
+  $("#gsEmptyCreate").addEventListener("click", () => openProjectDialog(false));
+  $("#gsEditProject").addEventListener("click", () => openProjectDialog(true));
   $("#gsProjectForm").addEventListener("submit", createProject);
   $("#gsGuideButton").addEventListener("click", openGuide);
   document.querySelectorAll(".gs-dialog [data-close]").forEach(b => b.addEventListener("click", () => b.closest("dialog").close()));
@@ -490,10 +523,7 @@ function bindStatic() {
     const job = event.target.closest("[data-job]");
     if (job) { activateTab("run"); watchJob(job.dataset.job); }
   });
-  const modeSelect = $("#gsProjectForm [name=mode]");
-  modeSelect.addEventListener("change", () => {
-    $("#gsProjectForm [data-cutoff-hint]").textContent = modeSelect.value === "backtest" ? "回测必填：只能看这一天及之前公开的论文。" : "正式调研留空 = 今天；回测必填。";
-  });
+  $("#gsProjectForm [name=mode]").addEventListener("change", updateCutoffHint);
 }
 
 init();

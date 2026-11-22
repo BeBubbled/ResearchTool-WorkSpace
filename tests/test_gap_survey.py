@@ -62,6 +62,35 @@ class GapSurveyTests(unittest.TestCase):
         self.assertEqual(self.create(id="bt2", cutoff="").status_code, 400)  # 回测必须有截止日
         self.assertEqual(self.create(id="bt3", domain='a"b').status_code, 400)  # 会破坏 project.toml
 
+    def test_edit_project_inputs(self) -> None:
+        self.create(start="")
+        url = "/api/gap-survey/projects/ltsf-测试"
+        before = self.client.get(url).get_json()["project"]
+        self.assertFalse(before["steps"][0]["passed"])  # 没填起始时间
+        self.assertEqual(self.client.put(url, json={"start": "2017-01-01"}).status_code, 403)  # 缺请求标识
+        saved = self.client.put(url, headers=self.headers, json={
+            "start": "2017-01-01", "audience": "组会", "include": "只看深度模型", "scale": "quick"})
+        self.assertEqual(saved.status_code, 200, saved.get_json())
+        project = saved.get_json()["project"]
+        self.assertTrue(project["steps"][0]["passed"])
+        self.assertEqual((project["start"], project["audience"], project["include"], project["scale"]),
+                         ("2017-01-01", "组会", "只看深度模型", "quick"))
+        toml = (self.service.project_dir("ltsf-测试") / "project.toml").read_text(encoding="utf-8")
+        self.assertIn('start = "2017-01-01"          # 时间范围起点', toml)  # 注释保留
+        self.assertIn("[citation_filter]", toml)
+        bad = [{"start": "2017/01/01"}, {"domain": 'a"b'}, {"scale": "huge"}, {"mode": "survey"}, {"cutoff": ""}]
+        for body in bad:
+            self.assertEqual(self.client.put(url, headers=self.headers, json=body).status_code, 400, body)
+        # 回测：检索过之后截止日锁定
+        self.assertEqual(self.client.put(url, headers=self.headers, json={"cutoff": "2022-01-31"}).status_code, 200)
+        (self.service.project_dir("ltsf-测试") / "search_log.csv").write_text("ts,query\n1,x\n", encoding="utf-8")
+        project = self.client.get(url).get_json()["project"]
+        self.assertIn("不能再改", project["cutoffLocked"])
+        locked = self.client.put(url, headers=self.headers, json={"cutoff": "2022-06-30"})
+        self.assertEqual(locked.status_code, 400)
+        self.assertEqual(self.client.put(url, headers=self.headers, json={"cutoff": "2022-01-31", "audience": "导师"}).status_code, 200)
+        self.assertEqual(self.client.get(url).get_json()["project"]["cutoff"], "2022-01-31")
+
     def test_file_view_is_whitelisted(self) -> None:
         self.create()
         url = "/api/gap-survey/projects/ltsf-测试/file?name="

@@ -6,7 +6,7 @@
   {% include "_theme_head.html" %}
   <title>演化树调研 · Research Toolkit</title>
   <meta name="description" content="问题驱动的方法演化树：逐步检查每一步的产出，检索记录、日期防火墙与原句核对由代码把关。">
-  <link rel="stylesheet" href="/static/gap_survey.css?v=4">
+  <link rel="stylesheet" href="/static/gap_survey.css?v=5">
 </head>
 <body class="gs-body">
   {% set client_active = "gapsurvey" %}{% include "_client_nav.html" %}
@@ -36,6 +36,7 @@
           <p class="gs-eyebrow" id="gsMode"></p>
           <h2 id="gsDomain"></h2>
           <dl class="gs-meta" id="gsMeta"></dl>
+          <button id="gsEditProject" class="gs-btn small gs-edit" type="button" data-command="演化树：编辑项目信息…">编辑项目信息</button>
         </div>
         <div class="gs-path">
           <span>项目目录</span>
@@ -95,20 +96,24 @@
 
   <dialog id="gsProjectDialog" class="gs-dialog">
     <form id="gsProjectForm" method="dialog">
-      <header><h2>新建调研项目</h2><button type="button" class="gs-icon" data-close aria-label="关闭">×</button></header>
-      <label class="gs-field">项目名<input name="id" required maxlength="60" placeholder="例如 interp-2026 或 ltsf-backtest"><span class="gs-hint">只用中文、字母、数字、下划线和连字符；作为文件夹名。</span></label>
+      <header><h2 id="gsProjectDialogTitle">新建调研项目</h2><button type="button" class="gs-icon" data-close aria-label="关闭">×</button></header>
+      <label class="gs-field" data-create-only>项目名<input name="id" required maxlength="60" placeholder="例如 interp-2026 或 ltsf-backtest"><span class="gs-hint">只用中文、字母、数字、下划线和连字符；作为文件夹名。</span></label>
       <label class="gs-field">领域<input name="domain" maxlength="200" placeholder="例如 可解释性与分析"></label>
       <div class="gs-field-row">
-        <label class="gs-field">模式<select name="mode"><option value="survey">正式调研</option><option value="backtest">回测</option></select></label>
+        <label class="gs-field">模式<select name="mode" data-mode-select><option value="survey">正式调研</option><option value="backtest">回测</option></select></label>
         <label class="gs-field">规模<select name="scale"><option value="mini">mini · 约 10 个节点</option><option value="quick" selected>quick · 15–20 个</option><option value="full">full · 30–60 个</option></select></label>
       </div>
       <div class="gs-field-row">
         <label class="gs-field">起始时间<input name="start" type="date"></label>
         <label class="gs-field">截止日<input name="cutoff" type="date"><span class="gs-hint" data-cutoff-hint>正式调研留空 = 今天；回测必填。</span></label>
       </div>
+      <div class="gs-field-row">
+        <label class="gs-field">包含<input name="include" maxlength="500" placeholder="例如 只看预测"></label>
+        <label class="gs-field">排除<input name="exclude" maxlength="500" placeholder="例如 纯应用论文"></label>
+      </div>
       <label class="gs-field">读者<input name="audience" maxlength="60" placeholder="我自己 / 导师 / 组会"></label>
       <p id="gsProjectError" class="gs-banner bad hidden" role="alert"></p>
-      <footer><button type="button" class="gs-btn" data-close>取消</button><button type="submit" class="gs-btn primary">创建</button></footer>
+      <footer><button type="button" class="gs-btn" data-close>取消</button><button id="gsProjectSubmit" type="submit" class="gs-btn primary">创建</button></footer>
     </form>
   </dialog>
 
@@ -119,6 +124,6 @@
     </div>
   </dialog>
 
-  <script src="/static/gap_survey.js?v=4"></script>
+  <script src="/static/gap_survey.js?v=5"></script>
 </body>
 </html>
