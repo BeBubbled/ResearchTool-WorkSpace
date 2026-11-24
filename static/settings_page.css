@@ -122,3 +122,11 @@
 .appearance-preview { margin:10px 0 0; padding:10px 12px; border:1px dashed var(--t-line); border-radius:8px; color:var(--t-ink); font-size:14px; line-height:1.6; }
 .appearance-preview-content { color:var(--t-content); }
 .appearance-inks[data-ink-key="contentInk"] .appearance-ink[data-ink="default"] i { background:var(--t-ink); }
+
+.storage-path { overflow-wrap:anywhere; }
+.storage-path-row { display:flex; gap:8px; align-items:center; }
+.storage-path-row input { flex:1; min-width:0; }
+.storage-editor-form { grid-template-columns:1fr; }
+.storage-editor-form .reader-switch-row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+.storage-editor-form .reader-switch-row input { width:auto; }
+.storage-editor-form .speech-editor-actions { justify-content:flex-end; }

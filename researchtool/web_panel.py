@@ -87,6 +87,7 @@ except ImportError:  # Dependency checks keep the rest of the panel usable.
     OpenAI = None  # type: ignore[assignment,misc]
 
 
+from researchtool import data_storage
 from researchtool.sheet_to_anki import SheetToAnkiError, clean_cell, read_table, require_columns
 
 
@@ -94,11 +95,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
 load_dotenv(ENV_FILE, override=False)
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
+# 运行成果（OCR、精读缓存、调研项目等）可放到用户指定的目录，例如由 Google Drive 同步的文件夹；
+# Codex、翻译后端、上传临时文件和用量记录始终留在本机的 .runtime。
+DATA_DIR_STATE = data_storage.resolve_data_dir(RUNTIME_DIR)
+if os.environ.pop(data_storage.PENDING_MOVE_ENV_KEY, None) is not None and ENV_FILE.exists():
+    unset_key(str(ENV_FILE), data_storage.PENDING_MOVE_ENV_KEY)  # 迁移只做一次
+DATA_DIR = DATA_DIR_STATE.active
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
-JOBS_DIR = RUNTIME_DIR / "jobs"
-READER_CACHE_DIR = RUNTIME_DIR / "reader-cache"
-RESEARCH_GAP_DIR = RUNTIME_DIR / "research-gaps"
-GAP_SURVEY_DIR = RUNTIME_DIR / "gap-survey"
+JOBS_DIR = DATA_DIR / "jobs"
+READER_CACHE_DIR = DATA_DIR / "reader-cache"
+RESEARCH_GAP_DIR = DATA_DIR / "research-gaps"
+GAP_SURVEY_DIR = DATA_DIR / "gap-survey"
 SCRIPTS_DIR = PROJECT_ROOT / "Potential_Scripts"
 ALLOWED_TABLE_SUFFIXES = {".xlsx", ".xlsm", ".xls", ".csv", ".txt"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -153,7 +160,7 @@ app = Flask(__name__, root_path=str(PROJECT_ROOT))
 # The desktop panel is a long-running local process. Reload templates on each
 # request so an updated reader.html cannot be paired with a newer static script.
 app.config["TEMPLATES_AUTO_RELOAD"] = True
-prompt_workbench = PromptWorkbench(RUNTIME_DIR / "prompt-workbench", PROJECT_ROOT / "browser_extension" / "prompt_bridge")
+prompt_workbench = PromptWorkbench(DATA_DIR / "prompt-workbench", PROJECT_ROOT / "browser_extension" / "prompt_bridge")
 app.register_blueprint(create_prompt_blueprint(prompt_workbench))
 local_path_service = LocalPathService(RUNTIME_DIR / "local-paths.json")
 app.register_blueprint(create_local_paths_blueprint(local_path_service))
@@ -8015,7 +8022,7 @@ paper_revision_claude_runner = ClaudeCodeRunner(timeout=2400)
 # 对话树：每轮驱动一个完整的 Claude Code 会话（含工具与权限），摘要走一次轻量无工具调用。
 branchboard_text_runner = ClaudeCodeRunner(timeout=180)
 branchboard_service = BranchboardService(
-    RUNTIME_DIR / "branchboard",
+    DATA_DIR / "branchboard",
     summarize=claude_summarizer(branchboard_text_runner),
     claude_status=paper_revision_claude_runner.status,
     complete=branchboard_text_runner.run,  # 完整版的模型辅助：分类、改写修正段落
@@ -8057,7 +8064,7 @@ def paper_revision_workflow_defaults() -> dict[str, Any]:
 def save_paper_revision_workflow(workflow: dict[str, Any]) -> None:
     write_env_values({PAPER_REVISION_WORKFLOW_ENV_KEY: json.dumps(workflow, ensure_ascii=False, separators=(",", ":"))})
 paper_revision_service = PaperRevision(
-    RUNTIME_DIR / "paper-revision",
+    DATA_DIR / "paper-revision",
     codex_request=research_gap_codex_runner.run,
     codex_status=codex_status_with_preferences,
     llm_request=research_gap_llm_request,
@@ -8171,6 +8178,44 @@ def test_openalex_config():
         return json_error(str(exc))
 
 
+def storage_config_payload() -> dict[str, Any]:
+    return {"storage": data_storage.status(DATA_DIR_STATE)}
+
+
+@app.get("/api/storage-config")
+def get_storage_config():
+    return jsonify(storage_config_payload())
+
+
+@app.put("/api/storage-config")
+def update_storage_config():
+    data = request.get_json(silent=True) or {}
+    move = bool(data.get("moveExisting"))
+    try:
+        target = data_storage.validate_data_dir(str(data.get("path") or ""), RUNTIME_DIR)
+        is_default = target == RUNTIME_DIR.resolve()
+        write_env_values({
+            data_storage.DATA_DIR_ENV_KEY: "" if is_default else str(target),
+            data_storage.PENDING_MOVE_ENV_KEY: str(DATA_DIR) if move and target != DATA_DIR.resolve() else "",
+        })
+    except (ValueError, OSError) as exc:
+        return json_error(str(exc))
+    return jsonify(storage_config_payload())
+
+
+@app.delete("/api/storage-config")
+def reset_storage_config():
+    move = request.args.get("moveExisting") == "1"
+    try:
+        write_env_values({
+            data_storage.DATA_DIR_ENV_KEY: "",
+            data_storage.PENDING_MOVE_ENV_KEY: str(DATA_DIR) if move and DATA_DIR != RUNTIME_DIR else "",
+        })
+    except OSError as exc:
+        return json_error(str(exc))
+    return jsonify(storage_config_payload())
+
+
 # 演化树自动模式：每个阶段是一个可能跑很久的 Claude Code 会话（单次上限 3 小时）
 gap_survey_claude_runner = ClaudeCodeRunner(timeout=3 * 3600)
 gap_survey_service = GapSurveyService(GAP_SURVEY_DIR / "projects", workdir=PROJECT_ROOT, claude=gap_survey_claude_runner)
@@ -8196,7 +8241,7 @@ def test_claude_code_config():
     return jsonify({"claude": paper_revision_claude_runner.status(), "test": result})
 app.register_blueprint(create_paper_revision_blueprint(paper_revision_service))
 revision_tools = RevisionTools(
-    RUNTIME_DIR / "revision-compile",
+    DATA_DIR / "revision-compile",
     read=paper_revision_service.read,
     files=lambda pid, revision: paper_revision_snapshot_files(paper_revision_service.snapshot(pid, revision)),
 )
@@ -8404,7 +8449,7 @@ def research_studio_project_source(project_id: str) -> dict[str, Any] | None:
 
 
 research_studio_service = ResearchStudio(
-    RUNTIME_DIR / "researchstudio", StudioRunner(three_pass_manager.runtime), codex_status_with_preferences,
+    DATA_DIR / "researchstudio", StudioRunner(three_pass_manager.runtime), codex_status_with_preferences,
     papers=research_studio_papers, paper_source=research_studio_paper_source,
     projects=research_gap_service.list_projects, project_source=research_studio_project_source,
 )

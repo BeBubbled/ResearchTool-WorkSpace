@@ -50,6 +50,36 @@ EOF
 
 validate_port() { [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 65535 )); }
 
+# Install a missing system dependency on Linux with the distribution's package
+# manager. Needs sudo, so it only runs when a terminal is attached to ask for
+# the password; otherwise it prints the command to run by hand.
+# Usage: linux_install_packages <what> <apt pkgs> <dnf pkgs> <pacman pkgs>
+linux_install_packages() {
+    local what="$1" apt_pkgs="$2" dnf_pkgs="$3" pacman_pkgs="$4"
+    local -a cmd
+    [[ "$(uname -s)" == "Linux" ]] || return 1
+    if command -v apt-get >/dev/null 2>&1; then
+        cmd=(apt-get install -y $apt_pkgs)
+    elif command -v dnf >/dev/null 2>&1; then
+        cmd=(dnf install -y $dnf_pkgs)
+    elif command -v pacman >/dev/null 2>&1; then
+        cmd=(pacman -S --needed --noconfirm $pacman_pkgs)
+    else
+        printf '[%s] %s is missing and no supported package manager (apt, dnf, pacman) was found.\n' "$PREFIX" "$what" >&2
+        return 1
+    fi
+    if [[ "$(id -u)" -ne 0 ]]; then
+        if ! command -v sudo >/dev/null 2>&1 || { ! sudo -n true 2>/dev/null && [[ ! -t 0 ]]; }; then
+            printf '[%s] %s is missing. Install it, then run this launcher again:\n  sudo %s\n' "$PREFIX" "$what" "${cmd[*]}" >&2
+            return 1
+        fi
+        cmd=(sudo "${cmd[@]}")
+    fi
+    write_step "$what is missing. Installing it with: ${cmd[*]}" >&2
+    write_step "Your password may be requested by sudo." >&2
+    "${cmd[@]}" >&2
+}
+
 get_system_python() {
     local candidate
     for candidate in python3.12 python3.11 python3.10 python3 python; do
@@ -77,14 +107,7 @@ EOF
             brew install python@3.12 >&2
             ;;
         Linux)
-            cat >&2 <<'EOF'
-[toolbox] Python 3.10+ was not found. Install Python 3.10 or newer with your
-distribution's package manager, then run this launcher again. Examples:
-  Debian/Ubuntu: sudo apt install python3 python3-venv python3-pip
-  Fedora:        sudo dnf install python3
-  Arch:          sudo pacman -S python
-EOF
-            return 1
+            linux_install_packages "Python 3.10+" "python3 python3-venv" "python3 python3-pip" "python" || return 1
             ;;
         *)
             printf '[%s] Unsupported POSIX platform: %s\n' "$PREFIX" "$(uname -s)" >&2
@@ -120,13 +143,12 @@ ensure_go() {
         command -v go
         return
     fi
-    cat >&2 <<'EOF'
-[toolbox] Go 1.23+ is required to build the document translation backend.
-Install it, then run this launcher again. Examples:
-  Debian/Ubuntu: sudo apt install golang-go
-  Fedora:        sudo dnf install golang
-  Arch:          sudo pacman -S go
-EOF
+    if linux_install_packages "Go (builds the document translation backend)" "golang-go" "golang" "go" \
+        && command -v go >/dev/null 2>&1; then
+        command -v go
+        return
+    fi
+    printf '[%s] Go 1.23+ is required to build the document translation backend.\n' "$PREFIX" >&2
     return 1
 }
 
@@ -159,6 +181,10 @@ ensure_translation_backend() {
 ensure_pip() {
     if "$VENV_PYTHON" -c 'import pip' >/dev/null 2>&1; then return; fi
     write_step "Project .venv is missing pip. Repairing it with ensurepip."
+    if ! "$VENV_PYTHON" -c 'import ensurepip' >/dev/null 2>&1; then
+        # Debian/Ubuntu ship ensurepip separately in python3-venv.
+        linux_install_packages "Python venv support (ensurepip)" "python3-venv" "python3-pip" "python" || return 1
+    fi
     "$VENV_PYTHON" -m ensurepip --upgrade
     "$VENV_PYTHON" -c 'import pip' >/dev/null 2>&1 || {
         printf '[%s] Could not repair pip. Delete .venv and run this launcher again.\n' "$PREFIX" >&2
@@ -201,7 +227,10 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
     system_python="$(get_system_python || install_python)"
     write_step "Using system Python only to create an isolated project environment."
     write_step "Creating project Python environment at $VENV_DIR"
-    "$system_python" -m venv "$VENV_DIR"
+    if ! "$system_python" -m venv "$VENV_DIR"; then
+        linux_install_packages "Python venv support" "python3-venv" "python3-pip" "python"
+        "$system_python" -m venv --clear "$VENV_DIR"
+    fi
 else
     write_step "Using existing project Python environment."
 fi

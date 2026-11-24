@@ -12,7 +12,9 @@
 ./run_web_panel.sh         # macOS / Linux；macOS 也可双击 run_web_panel.command
 ```
 
-首次运行会建项目内 `.venv`、装 `requirements.txt`、编译 Go 翻译后端（需 Python 3.10+、Go 1.23+；FFmpeg 可选）。默认端口 8765，被占用时自动换端口并打印地址。可选参数：`--no-browser`、`--no-pause`、`--port <端口>`。
+Linux 桌面可运行 `./scripts/install_linux_launcher.sh` 把「科研工具箱」加进应用菜单，并在 KDE Plasma 下固定到任务栏（`--uninstall` 移除）。
+
+首次运行会建项目内 `.venv`、装 `requirements.txt`、编译 Go 翻译后端（需 Python 3.10+、Go 1.23+；FFmpeg 可选）。Linux 上缺少 Python venv 支持或 Go 时，启动脚本会用系统包管理器（apt / dnf / pacman）自动安装，期间 sudo 会要求输入密码。默认端口 8765，被占用时自动换端口并打印地址。可选参数：`--no-browser`、`--no-pause`、`--port <端口>`。
 
 凭据：复制 `.env.example` 为 `.env` 后填写，改完重启面板。`.env` 不进 Git，密钥不会返回浏览器。
 

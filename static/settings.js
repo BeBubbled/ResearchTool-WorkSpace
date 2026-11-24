@@ -2,10 +2,10 @@
    Standalone at /settings, and embedded by the client shell's settings drawer (/settings?embed=1). */
 (() => {
 "use strict";
-const SETTINGS_TABS = ["general", "appearance", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "openalex", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
+const SETTINGS_TABS = ["general", "storage", "appearance", "doctor", "usage", "llm", "mathpix", "codex", "claude", "billing", "google", "openalex", "reader", "workflow", "three-pass", "studio", "speech", "github", "advanced"];
 // Sidebar groups (macOS System Settings style): accounts & engines, services, then per-module defaults.
 const SETTINGS_GROUPS = [
-  { label: "通用", items: [["general", "通用"], ["appearance", "外观与语言"], ["doctor", "环境检查"], ["usage", "用量"]] },
+  { label: "通用", items: [["general", "通用"], ["storage", "数据存储"], ["appearance", "外观与语言"], ["doctor", "环境检查"], ["usage", "用量"]] },
   { label: "账号与引擎", items: [["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["billing", "费用确认"]] },
   { label: "服务", items: [["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["openalex", "OpenAlex 文献"], ["speech", "Azure 语音"], ["github", "GitHub 图片"]] },
   { label: "功能", items: [["reader", "精读"], ["workflow", "双语改稿"], ["three-pass", "Three-Pass"], ["studio", "ResearchStudio"]] },
@@ -15,7 +15,7 @@ const LAST_PANE_KEY = "research-toolkit.settings.last-pane";
 function storedPane() {
   try { const pane = localStorage.getItem(LAST_PANE_KEY); return SETTINGS_TABS.includes(pane) ? pane : ""; } catch { return ""; }
 }
-const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, openalexConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], studioConfig: null, settingsTab: "llm", settingsQuery: "" };
+const state = { llmPresets: [], editingLlmId: null, mathpixConfig: null, codexConfig: null, threePassConfig: null, speechConfig: null, githubConfig: null, googleConfig: null, openalexConfig: null, storageConfig: null, claudeConfig: null, workflowOptions: null, readerActions: [], studioConfig: null, settingsTab: "llm", settingsQuery: "" };
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 let form = null;
 let hooks = { onTabChange() {}, onChanged() {}, onSaved() {} };
@@ -56,7 +56,7 @@ async function mount(root, options = {}) {
     return Promise.resolve().then(load).catch(() => {}).finally(() => { pending.delete(key); if (rendered) refreshKeepingEdits(); });
   });
   try {
-    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalOpenalexConfig(), loadReaderActions()]);
+    await Promise.all([loadGlobalLlmPresets(), loadGlobalMathpixConfig(), loadGlobalThreePassConfig(), loadGlobalSpeechConfig(), loadGlobalGithubConfig(), loadGlobalGoogleConfig(), loadGlobalOpenalexConfig(), loadStorageConfig(), loadReaderActions()]);
     renderLlmManager();
     rendered = true;
   } catch (error) {
@@ -399,6 +399,50 @@ function renderBillingSettingsPanel() {
       </section>`;
 }
 
+function storageMigrationText(migration) {
+  if (!migration || !migration.from) return "";
+  const parts = [];
+  if (migration.moved?.length) parts.push(`已迁移：${migration.moved.join("、")}`);
+  if (migration.skipped?.length) parts.push(`目标已存在而跳过：${migration.skipped.join("、")}（旧数据仍在 ${migration.from}，需要时手动合并）`);
+  if (migration.failed?.length) parts.push(`失败：${migration.failed.join("；")}`);
+  return parts.length ? `上次启动时从 ${migration.from} 迁移数据。${parts.join("；")}。` : "";
+}
+
+function renderStorageSettingsPanel(message, kind, messageTarget) {
+  const storage = state.storageConfig;
+  if (!storage) return `<section class="settings-tab-panel storage-settings" data-settings-panel="storage" role="tabpanel"><p class="manager-message bad">无法读取数据存储设置。</p></section>`;
+  const custom = !storage.usingDefault || Boolean(storage.configured);
+  const notices = [];
+  if (storage.warning) notices.push(["bad", storage.warning]);
+  if (storage.restartRequired) notices.push(["warn", `设置已保存，重启面板后改用 ${storage.configured || storage.default}${storage.pendingMove ? "，并在启动时把现有数据从当前目录移过去" : ""}。`]);
+  const migration = storageMigrationText(storage.migration);
+  if (migration) notices.push([storage.migration.failed?.length ? "bad" : "ok", migration]);
+  const show = messageTarget === "storage" && message;
+  return `
+      <section class="settings-tab-panel storage-settings" data-settings-panel="storage" role="tabpanel">
+        <div class="section-heading llm-manager-heading">
+          <div><div class="llm-preset-heading"><h3>数据存储</h3><span class="preset-id ${custom ? "" : "speech-unconfigured"}">${custom ? "自定义目录" : "默认目录"}</span></div>
+          <p class="hint">OCR 与翻译结果、精读缓存、研究空白与演化树调研、双语改稿、对话树、ResearchStudio 等运行成果保存在这里。体积大时可以换到别的磁盘，或放进 Google Drive 等同步盘管理的文件夹，由同步客户端负责多端同步。Codex、翻译后端、上传临时文件和用量记录始终留在项目的 <code>.runtime</code>。</p></div>
+        </div>
+        <p id="storageManagerStatus" class="manager-message ${show ? escapeHtml(kind) : ""} ${show ? "" : "hidden"}" role="status">${show ? escapeHtml(message) : ""}</p>
+        ${notices.map(([level, text]) => `<p class="manager-message ${level}" role="status">${escapeHtml(text)}</p>`).join("")}
+        <div class="reader-settings-group">
+          <h4>当前使用</h4>
+          <p class="hint"><code class="storage-path">${escapeHtml(storage.active)}</code></p>
+          <p class="hint">包含子目录：${storage.subdirs.map(name => `<code>${escapeHtml(name)}</code>`).join(" ")}</p>
+        </div>
+        <form id="storageConfigForm" class="llm-editor-form storage-editor-form">
+          <label>数据存储目录<span class="storage-path-row"><input name="path" type="text" required maxlength="1000" spellcheck="false" value="${escapeHtml(storage.configured || storage.active)}" placeholder="/path/to/Google Drive/ResearchTool"><button type="button" data-pick-storage>选择文件夹…</button></span><span class="hint">填已存在的文件夹的绝对路径。保存后需重启面板才生效（各模块在启动时绑定目录）。</span></label>
+          <label class="reader-switch-row"><span><strong>迁移现有数据</strong><small>下次启动时，先把当前目录里的上述子目录移动到新目录；新目录里已有同名子目录的会跳过，不覆盖。</small></span><input type="checkbox" role="switch" name="moveExisting" checked></label>
+          <p class="hint">同步盘提示：不要在两台电脑上同时运行面板写同一个目录，否则同步客户端可能产生冲突副本。云盘未挂载时，面板会暂时退回默认目录并在这里提示。</p>
+          <div class="speech-editor-actions">
+            ${custom ? `<button type="button" class="danger-button" data-reset-storage>恢复默认目录</button>` : ""}
+            <button type="submit" class="primary">检查并保存</button>
+          </div>
+        </form>
+      </section>`;
+}
+
 function renderAdvancedSettingsPanel() {
   return `
       <section class="settings-tab-panel advanced-settings" data-settings-panel="advanced" role="tabpanel">
@@ -678,6 +722,13 @@ async function loadGlobalOpenalexConfig() {
   state.openalexConfig = data.openalex || { configured: false };
 }
 
+async function loadStorageConfig() {
+  const response = await fetch("/api/storage-config");
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "无法读取数据存储设置。");
+  state.storageConfig = data.storage || null;
+}
+
 async function loadGlobalClaudeConfig(refresh = false) {
   const response = await fetch(refresh ? "/api/claude-code-config/refresh" : "/api/claude-code-config", refresh ? { method:"POST" } : undefined);
   const data = await response.json();
@@ -900,6 +951,7 @@ function renderLlmManager(message = "", kind = "", messageTarget = "llm", { keep
 ${renderReaderSettingsPanel()}
 ${renderStudioSettingsPanel()}
 ${renderGeneralSettingsPanel()}
+${renderStorageSettingsPanel(message, kind, messageTarget)}
 ${renderAppearanceSettingsPanel()}
 ${renderDoctorSettingsPanel()}
 ${renderUsageSettingsPanel()}
@@ -1059,6 +1111,9 @@ ${renderAdvancedSettingsPanel()}
   form.querySelector("[data-test-google]")?.addEventListener("click", event => testGlobalGoogleConfig(event.currentTarget));
   form.querySelector("[data-delete-google]")?.addEventListener("click", removeGlobalGoogleConfig);
   form.querySelector("#openalexConfigForm")?.addEventListener("submit", saveGlobalOpenalexConfig);
+  form.querySelector("#storageConfigForm")?.addEventListener("submit", saveStorageConfig);
+  form.querySelector("[data-pick-storage]")?.addEventListener("click", event => pickStorageFolder(event.currentTarget));
+  form.querySelector("[data-reset-storage]")?.addEventListener("click", resetStorageConfig);
   form.querySelector("[data-test-openalex]")?.addEventListener("click", event => testGlobalOpenalexConfig(event.currentTarget));
   form.querySelector("[data-delete-openalex]")?.addEventListener("click", removeGlobalOpenalexConfig);
   const workflowEditor = form.querySelector("#workflowEditor");
@@ -1559,6 +1614,48 @@ async function removeGlobalOpenalexConfig() {
     renderLlmManager("已移除 OpenAlex API Key。", "ok", "openalex");
   } catch (error) {
     showSettingsStatus("#openalexManagerStatus", error.message, "bad");
+  }
+}
+
+const storageSavedText = storage => storage.restartRequired ? "已保存。重启面板后生效。" : "已保存，与当前使用的目录相同，无需重启。";
+
+async function saveStorageConfig(event) {
+  event.preventDefault();
+  const editorForm = event.currentTarget;
+  const submit = editorForm.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const body = { path: editorForm.elements.path.value, moveExisting: editorForm.elements.moveExisting.checked };
+    const data = await settingsRequest("/api/storage-config", { method:"PUT", body:JSON.stringify(body) });
+    state.storageConfig = data.storage;
+    renderLlmManager(storageSavedText(data.storage), "ok", "storage");
+  } catch (error) {
+    showSettingsStatus("#storageManagerStatus", error.message, "bad");
+    submit.disabled = false;
+  }
+}
+
+async function pickStorageFolder(button) {
+  button.disabled = true;
+  try {
+    const data = await settingsRequest("/api/local-paths/pick", { method:"POST", body:JSON.stringify({ kind:"folder", title:"选择数据存储目录" }) });
+    if (data.path) form.querySelector("#storageConfigForm").elements.path.value = data.path;
+  } catch (error) {
+    showSettingsStatus("#storageManagerStatus", error.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function resetStorageConfig() {
+  const move = form.querySelector("#storageConfigForm")?.elements.moveExisting.checked;
+  if (!window.confirm(`恢复为默认目录（项目 .runtime）吗？${move ? "下次启动时会把当前目录里的数据移回去。" : "当前目录里的数据不会移动。"}`)) return;
+  try {
+    const data = await settingsRequest(`/api/storage-config${move ? "?moveExisting=1" : ""}`, { method:"DELETE" });
+    state.storageConfig = data.storage;
+    renderLlmManager(storageSavedText(data.storage), "ok", "storage");
+  } catch (error) {
+    showSettingsStatus("#storageManagerStatus", error.message, "bad");
   }
 }
 

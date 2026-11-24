@@ -11,7 +11,7 @@
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]));
   const SETTINGS_PANES = [
-    ["general", "通用与快捷键"], ["billing", "费用确认"], ["advanced", "高级：导出 / 导入浏览器设置"], ["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["openalex", "OpenAlex 文献检索"],
+    ["general", "通用与快捷键"], ["storage", "数据存储目录"], ["billing", "费用确认"], ["advanced", "高级：导出 / 导入浏览器设置"], ["codex", "Codex"], ["claude", "Claude Code"], ["llm", "API 预设"], ["mathpix", "Mathpix OCR"], ["google", "Google 翻译"], ["openalex", "OpenAlex 文献检索"],
     ["speech", "Azure 语音"], ["github", "GitHub 图片"], ["reader", "精读默认行为"], ["workflow", "双语改稿工作流"], ["three-pass", "Three-Pass 篇幅"], ["studio", "ResearchStudio 环境"],
   ];
   const CODE_KEYS = { Backslash: "\\", Comma: ",", Period: ".", Slash: "/", Enter: "enter", Escape: "escape", BracketLeft: "[", BracketRight: "]", Space: "space" };
