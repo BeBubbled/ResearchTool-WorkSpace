@@ -2170,7 +2170,9 @@ def create_paper_revision_blueprint(service):
     @bp.get("/api/paper-revision/projects/<pid>/comments/export")
     def export_comments(pid):
         bundle = service.export_comments(pid)
-        name = f'{re.sub(r"[^\w.-]+", "_", bundle["paper"])[:60] or "paper"}-comments-v{bundle["revision"]}.json'
+        # 反斜杠不能出现在 f-string 表达式里（Python 3.12 以前会报 SyntaxError），先算好再拼
+        stem = re.sub(r"[^\w.-]+", "_", bundle["paper"])[:60] or "paper"
+        name = f'{stem}-comments-v{bundle["revision"]}.json'
         fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_") or "comments.json"
         response = jsonify(bundle)
         # Headers are Latin-1: a Chinese title goes in the RFC 5987 filename*, with an ASCII fallback.
