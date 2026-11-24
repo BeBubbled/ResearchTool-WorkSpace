@@ -39,7 +39,7 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsp
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Comment, Declaration, Doctype, NavigableString, ProcessingInstruction, Tag
-from dotenv import load_dotenv, set_key, unset_key
+from dotenv import load_dotenv, set_key as _dotenv_set_key, unset_key as _dotenv_unset_key
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, stream_with_context
 from werkzeug.serving import make_server
 from werkzeug.utils import secure_filename
@@ -93,14 +93,53 @@ from researchtool.sheet_to_anki import SheetToAnkiError, clean_cell, read_table,
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
-load_dotenv(ENV_FILE, override=False)
+PROJECT_ENV_FILE = ENV_FILE  # 测试会把 ENV_FILE 换成临时文件；只有真实的项目 .env 才分流到共享配置
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
-# 运行成果（OCR、精读缓存、调研项目等）可放到用户指定的目录，例如由 Google Drive 同步的文件夹；
-# Codex、翻译后端、上传临时文件和用量记录始终留在本机的 .runtime。
-DATA_DIR_STATE = data_storage.resolve_data_dir(RUNTIME_DIR)
-if os.environ.pop(data_storage.PENDING_MOVE_ENV_KEY, None) is not None and ENV_FILE.exists():
-    unset_key(str(ENV_FILE), data_storage.PENDING_MOVE_ENV_KEY)  # 迁移只做一次
+# 运行成果和共享配置（API Key 等）可放到用户指定的目录，例如由 Google Drive 同步的文件夹，多台电脑共用；
+# 这台电脑上的目录路径记在本机配置里，不随同步走。Codex、翻译后端、上传临时文件和用量记录始终留在本机 .runtime。
+STORAGE_STORE = data_storage.LocalStore.default(PROJECT_ROOT)
+data_storage.adopt_legacy_env(STORAGE_STORE, ENV_FILE, _dotenv_unset_key)
+DATA_DIR_STATE = data_storage.resolve_data_dir(RUNTIME_DIR, STORAGE_STORE)
 DATA_DIR = DATA_DIR_STATE.active
+SHARED_ENV_FILE: Path | None = data_storage.shared_env_path(DATA_DIR) if DATA_DIR != RUNTIME_DIR else None
+if SHARED_ENV_FILE is not None and STORAGE_STORE.read()["seededLibrary"] != STORAGE_STORE.read()["libraryId"]:
+    # 第一次在这台电脑上用这个库：本机 .env 里可同步的配置并入共享配置（库里已有的以库为准），
+    # 并从本机 .env 移除，原文件备份为 .env.before-sync。
+    data_storage.move_env_keys(ENV_FILE, SHARED_ENV_FILE, overwrite=False, backup=True)
+    STORAGE_STORE.write(seededLibrary=STORAGE_STORE.read()["libraryId"])
+if SHARED_ENV_FILE is not None:
+    data_storage.load_shared_env(SHARED_ENV_FILE)  # 先加载：共享配置优先于本机 .env
+load_dotenv(ENV_FILE, override=False)
+# 本机大文件区：演化树调研的 HTTP 缓存、批量下载的 PDF 等可重新获取的东西。数据目录在云盘里时不放进去。
+LOCAL_DATA_DIR = RUNTIME_DIR / "local-data"
+if DATA_DIR != RUNTIME_DIR:
+    os.environ.setdefault("GAPR_LOCAL_ROOT", str(LOCAL_DATA_DIR / "gap-survey"))
+
+
+def env_file_for(path: Any, key: str) -> str:
+    """项目 .env 的写入按键分流：本机专属项留在 .env，其余写进数据目录里的共享配置。"""
+    if SHARED_ENV_FILE is None or Path(path) != PROJECT_ENV_FILE or ENV_FILE != PROJECT_ENV_FILE or data_storage.is_machine_local(key):
+        return str(path)
+    if not SHARED_ENV_FILE.exists():
+        SHARED_ENV_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SHARED_ENV_FILE.touch(mode=0o600)
+    return str(SHARED_ENV_FILE)
+
+
+def set_key(path: Any, key: str, value: str, **kwargs: Any) -> Any:
+    target = env_file_for(path, key)
+    if target != str(path) and Path(path).is_file():
+        _dotenv_unset_key(str(path), key)  # 避免本机 .env 留着过期的旧值
+    return _dotenv_set_key(target, key, value, **kwargs)
+
+
+def unset_key(path: Any, key: str, **kwargs: Any) -> Any:
+    target = env_file_for(path, key)
+    if target != str(path) and Path(path).is_file():
+        _dotenv_unset_key(str(path), key)
+    return _dotenv_unset_key(target, key, **kwargs)
+
+
 UPLOAD_DIR = RUNTIME_DIR / "uploads"
 JOBS_DIR = DATA_DIR / "jobs"
 READER_CACHE_DIR = DATA_DIR / "reader-cache"
@@ -8178,13 +8217,19 @@ def test_openalex_config():
         return json_error(str(exc))
 
 
-def storage_config_payload() -> dict[str, Any]:
-    return {"storage": data_storage.status(DATA_DIR_STATE)}
+def storage_config_payload(**extra: Any) -> dict[str, Any]:
+    return {"storage": {**data_storage.status(DATA_DIR_STATE, STORAGE_STORE, SHARED_ENV_FILE), **extra}}
 
 
 @app.get("/api/storage-config")
 def get_storage_config():
     return jsonify(storage_config_payload())
+
+
+@app.post("/api/storage-config/scan")
+def scan_storage_config():
+    """列出数据目录里体积大的子目录和单个大文件，提醒哪些不该放进同步盘。"""
+    return jsonify({"scan": data_storage.scan_large(DATA_DIR), "localDir": str(LOCAL_DATA_DIR)})
 
 
 @app.put("/api/storage-config")
@@ -8193,24 +8238,29 @@ def update_storage_config():
     move = bool(data.get("moveExisting"))
     try:
         target = data_storage.validate_data_dir(str(data.get("path") or ""), RUNTIME_DIR)
-        is_default = target == RUNTIME_DIR.resolve()
-        write_env_values({
-            data_storage.DATA_DIR_ENV_KEY: "" if is_default else str(target),
-            data_storage.PENDING_MOVE_ENV_KEY: str(DATA_DIR) if move and target != DATA_DIR.resolve() else "",
-        })
+        if target.resolve() == RUNTIME_DIR.resolve():
+            return reset_storage_config()
+        library = data_storage.read_library(target)
+        joined = library is not None
+        library = library or data_storage.create_library(target, STORAGE_STORE.machine)
+        STORAGE_STORE.write(
+            dataDir=str(target), libraryId=library["id"],
+            moveFrom=str(DATA_DIR) if move and target.resolve() != DATA_DIR.resolve() else "",
+        )
     except (ValueError, OSError) as exc:
         return json_error(str(exc))
-    return jsonify(storage_config_payload())
+    return jsonify(storage_config_payload(saved={"joined": joined, "library": library}))
 
 
 @app.delete("/api/storage-config")
 def reset_storage_config():
-    move = request.args.get("moveExisting") == "1"
     try:
-        write_env_values({
-            data_storage.DATA_DIR_ENV_KEY: "",
-            data_storage.PENDING_MOVE_ENV_KEY: str(DATA_DIR) if move and DATA_DIR != RUNTIME_DIR else "",
-        })
+        with llm_config_lock:
+            if SHARED_ENV_FILE is not None and ENV_FILE == PROJECT_ENV_FILE:
+                # 回到本机目录：把共享配置复制一份回本机 .env，API Key 等不会丢（共享文件本身保留，供其他电脑继续用）。
+                data_storage.move_env_keys(SHARED_ENV_FILE, ENV_FILE, overwrite=True, remove_source=False)
+            # 同步目录是多台电脑共用的：恢复默认时不搬走里面的数据。
+            STORAGE_STORE.write(dataDir="", libraryId="", seededLibrary="", moveFrom="")
     except OSError as exc:
         return json_error(str(exc))
     return jsonify(storage_config_payload())
@@ -8449,7 +8499,8 @@ def research_studio_project_source(project_id: str) -> dict[str, Any] | None:
 
 
 research_studio_service = ResearchStudio(
-    DATA_DIR / "researchstudio", StudioRunner(three_pass_manager.runtime), codex_status_with_preferences,
+    RUNTIME_DIR / "researchstudio", StudioRunner(three_pass_manager.runtime), codex_status_with_preferences,
+    jobs_root=DATA_DIR / "researchstudio" / "jobs",  # Python / LibreOffice 环境留本机，只有任务随数据目录同步
     papers=research_studio_papers, paper_source=research_studio_paper_source,
     projects=research_gap_service.list_projects, project_source=research_studio_project_source,
 )
@@ -10357,6 +10408,8 @@ def main() -> None:
     server = make_server(host, port, app, threaded=True)
     url = f"http://{host}:{server.server_port}/"
     print(f"[toolbox] Ready: {url}", flush=True)
+    if DATA_DIR != RUNTIME_DIR:
+        data_storage.start_heartbeat(DATA_DIR, STORAGE_STORE)
     open_browser_when_ready(url)
     try:
         server.serve_forever()

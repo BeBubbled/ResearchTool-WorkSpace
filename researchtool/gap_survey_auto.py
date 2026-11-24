@@ -190,6 +190,12 @@ decisions.md 里的主要取舍）；演化图（Mermaid，边上标缺陷）；
 }
 
 
+def raw_dir(root: Path) -> Path:
+    """批量原始文件的本机目录（见 gapr Project.raw_dir）。"""
+    base = os.environ.get("GAPR_LOCAL_ROOT", "").strip()
+    return (Path(base) / root.resolve().name if base else root) / "raw"
+
+
 def system_prompt(root: Path, doc: str) -> str:
     rules = _doc_section(doc, "## 2. 全程规则", ("\n## ", "\n---"))
     toml = (root / "project.toml").read_text(encoding="utf-8")
@@ -204,6 +210,8 @@ def system_prompt(root: Path, doc: str) -> str:
 - 读写文件用 Read / Write / Edit / Glob / Grep，只能改当前目录里的文件；Bash 只能运行 gapr。
 - CSV 用 UTF-8，第一行是列名，严格按下面的列定义写，不要增删列。改完用 `gapr check . --step <N> -v` 自查，把错误改到没有为止。
 - 不编造论文、日期或原句。查不到的标「已有知识」，并在 decisions.md 里说明。
+- 项目目录可能由云盘同步，只放调研产物（CSV、decisions.md、gapr 登记的全文文本）。不要往里存 PDF、整批下载的论文或数据集；
+  需要时放到环境变量 GAPR_RAW_DIR 指向的本机目录（不同步，其他电脑可以重新下载）。
 
 全程规则（摘自方法说明）：
 {rules}
@@ -528,7 +536,8 @@ class AutoRunner:
         try:
             reply = self.runner.run_agent(system, user, cwd=str(root), model=state["model"], effort=state["effort"],
                                           session_id=state["sessions"][key], resume=resume, allowed=ALLOWED_BASH,
-                                          disallowed=DENIED_BASH, extra_env=self._env(), permission_mode="dontAsk",
+                                          disallowed=DENIED_BASH, extra_env={**self._env(), "GAPR_RAW_DIR": str(raw_dir(root))},
+                                          permission_mode="dontAsk",
                                           name=f"演化树自动 · {project_id} · {phase.title}", timeout=AGENT_TIMEOUT,
                                           on_event=on_event)
         except Stopped:

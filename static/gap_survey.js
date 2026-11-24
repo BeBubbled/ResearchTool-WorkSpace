@@ -151,6 +151,7 @@ function renderSide() {
   if (p.include) meta.push(["包含", p.include]);
   if (p.exclude) meta.push(["排除", p.exclude]);
   if (p.candidatesLockedAt) meta.push(["候选锁定", p.candidatesLockedAt.replace("T", " ")]);
+  if (p.localDir) meta.push(["本机大文件", p.localDir]);  // 数据目录在云盘时：PDF、批量下载放这里，不同步
   $("#gsMeta").innerHTML = meta.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("");
   $("#gsPath").textContent = p.path;
   const s = state.status;

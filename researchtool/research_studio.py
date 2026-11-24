@@ -178,8 +178,9 @@ class StudioRunner:
 
 class ResearchStudio:
     def __init__(self, root, runner, codex_status, *, papers=lambda: [], paper_source=lambda key: None,
-                 projects=lambda: [], project_source=lambda key: None):
+                 projects=lambda: [], project_source=lambda key: None, jobs_root=None):
         self.root = Path(root).resolve()
+        self.jobs_dir = Path(jobs_root).resolve() if jobs_root else self.root / "jobs"
         self.runner, self.codex_status = runner, codex_status
         self.papers, self.paper_source = papers, paper_source
         self.projects, self.project_source = projects, project_source
@@ -188,7 +189,7 @@ class ResearchStudio:
         self.cancellations = {}
         self._doctor_cache = None
         # Never replay a quota-consuming task after a process restart.
-        for path in (self.root / "jobs").glob("*/job.json"):
+        for path in (self.jobs_dir).glob("*/job.json"):
             try:
                 job = json.loads(read_text_with_retry(path))
                 if job.get("status") in ACTIVE:
@@ -286,7 +287,7 @@ class ResearchStudio:
     def job_root(self, job_id):
         if not re.fullmatch(r"[0-9a-f]{32}", str(job_id)):
             raise FileNotFoundError("任务不存在。")
-        return self.root / "jobs" / job_id
+        return self.jobs_dir / job_id
 
     def read(self, job_id):
         with self.lock:
@@ -310,7 +311,7 @@ class ResearchStudio:
 
     def list_jobs(self):
         jobs = []
-        for path in (self.root / "jobs").glob("*/job.json"):
+        for path in (self.jobs_dir).glob("*/job.json"):
             try:
                 jobs.append(self.read(path.parent.name))
             except (OSError, ValueError):
@@ -374,7 +375,7 @@ class ResearchStudio:
             return job
         except Exception:
             # This fresh server-generated directory belongs only to this failed submission.
-            if root.resolve().parent == (self.root / "jobs").resolve():
+            if root.resolve().parent == (self.jobs_dir).resolve():
                 shutil.rmtree(root)
             raise
 

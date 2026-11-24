@@ -130,3 +130,8 @@
 .storage-editor-form .reader-switch-row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
 .storage-editor-form .reader-switch-row input { width:auto; }
 .storage-editor-form .speech-editor-actions { justify-content:flex-end; }
+.storage-machines td, .storage-machines th { text-align:left; vertical-align:top; }
+.storage-settings .shortcut-table { width:100%; table-layout:fixed; }
+.storage-settings .shortcut-table code, .storage-settings ul code { overflow-wrap:anywhere; word-break:break-all; }
+.storage-machines th:nth-child(2), .storage-machines td:nth-child(2) { width:64px; }
+.storage-machines th:nth-child(4), .storage-machines td:nth-child(4) { width:150px; }

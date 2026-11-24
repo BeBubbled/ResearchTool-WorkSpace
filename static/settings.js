@@ -408,6 +408,18 @@ function storageMigrationText(migration) {
   return parts.length ? `上次启动时从 ${migration.from} 迁移数据。${parts.join("；")}。` : "";
 }
 
+function formatStorageTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString();
+}
+
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Number(bytes) || 0, index = 0;
+  while (value >= 1024 && index < units.length - 1) { value /= 1024; index += 1; }
+  return `${value.toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
 function renderStorageSettingsPanel(message, kind, messageTarget) {
   const storage = state.storageConfig;
   if (!storage) return `<section class="settings-tab-panel storage-settings" data-settings-panel="storage" role="tabpanel"><p class="manager-message bad">无法读取数据存储设置。</p></section>`;
@@ -417,24 +429,33 @@ function renderStorageSettingsPanel(message, kind, messageTarget) {
   if (storage.restartRequired) notices.push(["warn", `设置已保存，重启面板后改用 ${storage.configured || storage.default}${storage.pendingMove ? "，并在启动时把现有数据从当前目录移过去" : ""}。`]);
   const migration = storageMigrationText(storage.migration);
   if (migration) notices.push([storage.migration.failed?.length ? "bad" : "ok", migration]);
+  const others = (storage.machines || []).filter(item => item.active);
+  if (others.length) notices.push(["warn", `${others.map(item => item.hostname || item.machine).join("、")} 在 15 分钟内也在使用这个数据目录。两台电脑同时修改同一个项目，同步盘可能产生冲突副本。`]);
   const show = messageTarget === "storage" && message;
+  const library = storage.library;
+  const machines = (storage.machines || []).map(item => `<tr><td>${escapeHtml(item.hostname || item.machine)}${item.current ? "（这台）" : ""}</td><td>${escapeHtml(item.system)}</td><td><code class="storage-path">${escapeHtml(item.path)}</code></td><td>${escapeHtml(formatStorageTime(item.lastSeen))}</td></tr>`).join("");
   return `
       <section class="settings-tab-panel storage-settings" data-settings-panel="storage" role="tabpanel">
         <div class="section-heading llm-manager-heading">
           <div><div class="llm-preset-heading"><h3>数据存储</h3><span class="preset-id ${custom ? "" : "speech-unconfigured"}">${custom ? "自定义目录" : "默认目录"}</span></div>
-          <p class="hint">OCR 与翻译结果、精读缓存、研究空白与演化树调研、双语改稿、对话树、ResearchStudio 等运行成果保存在这里。体积大时可以换到别的磁盘，或放进 Google Drive 等同步盘管理的文件夹，由同步客户端负责多端同步。Codex、翻译后端、上传临时文件和用量记录始终留在项目的 <code>.runtime</code>。</p></div>
+          <p class="hint">把数据目录放进 Google Drive 等同步盘，多台电脑就共用同一份成果和配置。<strong>会同步</strong>：OCR 与翻译结果、精读缓存、研究空白与演化树调研、双语改稿、对话树、ResearchStudio 任务，以及 API Key、模型偏好等配置（<code>config/settings.env</code>）。<strong>不同步</strong>：这个目录在本机的路径（每台电脑的盘符、挂载点可以不同，各自设置一次）；Codex、Claude Code 的登录和 CLI 路径、ResearchStudio 的 Python / LibreOffice 环境、翻译后端程序（各台电脑自己安装）；上传临时文件、用量记录；演化树调研的 HTTP 缓存和批量下载的原始文件（放本机 <code>.runtime/local-data</code>，需要时各自重新下载）。</p></div>
         </div>
         <p id="storageManagerStatus" class="manager-message ${show ? escapeHtml(kind) : ""} ${show ? "" : "hidden"}" role="status">${show ? escapeHtml(message) : ""}</p>
         ${notices.map(([level, text]) => `<p class="manager-message ${level}" role="status">${escapeHtml(text)}</p>`).join("")}
         <div class="reader-settings-group">
           <h4>当前使用</h4>
           <p class="hint"><code class="storage-path">${escapeHtml(storage.active)}</code></p>
-          <p class="hint">包含子目录：${storage.subdirs.map(name => `<code>${escapeHtml(name)}</code>`).join(" ")}</p>
+          <p class="hint">同步的子目录：${storage.subdirs.map(name => `<code>${escapeHtml(name)}</code>`).join(" ")}</p>
+          ${library ? `<p class="hint">数据库 ID <code>${escapeHtml(library.id.slice(0, 8))}</code> · ${escapeHtml(library.createdBy || "")} 创建于 ${escapeHtml(formatStorageTime(library.createdAt))}。每台电脑记住自己用的是哪个库；启动时如果目录里的库对不上（云盘登录了别的账号、还没同步下来、路径指向别处），会退回默认目录并在这里提示，不会把两份数据混在一起。</p>` : ""}
+          ${storage.sharedEnv ? `<p class="hint">共享配置：<code class="storage-path">${escapeHtml(storage.sharedEnv)}</code>。本机专属项（CLI 路径、端口等）仍在项目 <code>.env</code>。其他电脑改了配置，这台重启面板后生效。</p>` : ""}
+          <p class="hint">本机路径记在 <code class="storage-path">${escapeHtml(storage.configFile)}</code>（机器 ID <code>${escapeHtml(storage.machineId)}</code>），不会被同步。</p>
+          ${machines ? `<table class="shortcut-table storage-machines"><thead><tr><th>使用过的电脑</th><th>系统</th><th>它那里的路径</th><th>最近在线</th></tr></thead><tbody>${machines}</tbody></table>` : ""}
+          ${custom ? `<div class="speech-editor-actions"><button type="button" data-scan-storage>检查同步目录里的大文件</button></div><div data-storage-scan></div>` : ""}
         </div>
         <form id="storageConfigForm" class="llm-editor-form storage-editor-form">
-          <label>数据存储目录<span class="storage-path-row"><input name="path" type="text" required maxlength="1000" spellcheck="false" value="${escapeHtml(storage.configured || storage.active)}" placeholder="/path/to/Google Drive/ResearchTool"><button type="button" data-pick-storage>选择文件夹…</button></span><span class="hint">填已存在的文件夹的绝对路径。保存后需重启面板才生效（各模块在启动时绑定目录）。</span></label>
-          <label class="reader-switch-row"><span><strong>迁移现有数据</strong><small>下次启动时，先把当前目录里的上述子目录移动到新目录；新目录里已有同名子目录的会跳过，不覆盖。</small></span><input type="checkbox" role="switch" name="moveExisting" checked></label>
-          <p class="hint">同步盘提示：不要在两台电脑上同时运行面板写同一个目录，否则同步客户端可能产生冲突副本。云盘未挂载时，面板会暂时退回默认目录并在这里提示。</p>
+          <label>数据存储目录<span class="storage-path-row"><input name="path" type="text" required maxlength="1000" spellcheck="false" value="${escapeHtml(storage.configured || storage.active)}" placeholder="/path/to/Google Drive/ResearchTool"><button type="button" data-pick-storage>选择文件夹…</button></span><span class="hint">填这台电脑上已存在的文件夹的绝对路径，例如 Google Drive 里的 <code>ResearchTool</code> 文件夹。另一台电脑已经在用这个文件夹时会自动加入同一个库。保存后需重启面板才生效。</span></label>
+          <label class="reader-switch-row"><span><strong>迁移现有数据</strong><small>下次启动时，先把当前目录里的上述子目录移动到新目录；新目录里已有同名子目录的会跳过，不覆盖。第一次加入时，本机 .env 里可同步的配置会并入共享配置（库里已有的以库为准，原文件备份为 .env.before-sync）。</small></span><input type="checkbox" role="switch" name="moveExisting" checked></label>
+          <p class="hint">同步盘提示：尽量不要在两台电脑上同时修改同一个项目。云盘未挂载时，面板会暂时退回默认目录并在这里提示。</p>
           <div class="speech-editor-actions">
             ${custom ? `<button type="button" class="danger-button" data-reset-storage>恢复默认目录</button>` : ""}
             <button type="submit" class="primary">检查并保存</button>
@@ -1114,6 +1135,7 @@ ${renderAdvancedSettingsPanel()}
   form.querySelector("#storageConfigForm")?.addEventListener("submit", saveStorageConfig);
   form.querySelector("[data-pick-storage]")?.addEventListener("click", event => pickStorageFolder(event.currentTarget));
   form.querySelector("[data-reset-storage]")?.addEventListener("click", resetStorageConfig);
+  form.querySelector("[data-scan-storage]")?.addEventListener("click", event => scanStorage(event.currentTarget));
   form.querySelector("[data-test-openalex]")?.addEventListener("click", event => testGlobalOpenalexConfig(event.currentTarget));
   form.querySelector("[data-delete-openalex]")?.addEventListener("click", removeGlobalOpenalexConfig);
   const workflowEditor = form.querySelector("#workflowEditor");
@@ -1617,7 +1639,31 @@ async function removeGlobalOpenalexConfig() {
   }
 }
 
-const storageSavedText = storage => storage.restartRequired ? "已保存。重启面板后生效。" : "已保存，与当前使用的目录相同，无需重启。";
+const storageSavedText = storage => {
+  const saved = storage.saved;
+  const library = saved?.library ? `${saved.joined ? "加入了已有的数据库" : "在该目录新建了数据库"}（ID ${saved.library.id.slice(0, 8)}${saved.joined && saved.library.createdBy ? `，由 ${saved.library.createdBy} 创建` : ""}）。` : "";
+  return `已保存。${library}${storage.restartRequired ? "重启面板后生效。" : "与当前使用的目录相同，无需重启。"}`;
+};
+
+async function scanStorage(button) {
+  const target = form.querySelector("[data-storage-scan]");
+  button.disabled = true;
+  target.innerHTML = `<p class="hint">正在统计…</p>`;
+  try {
+    const { scan, localDir } = await settingsRequest("/api/storage-config/scan", { method:"POST" });
+    const rows = scan.dirs.map(item => `<tr><td><code>${escapeHtml(item.name)}</code></td><td>${formatBytes(item.bytes)}</td><td>${item.files}</td><td>${item.pdfs}</td></tr>`).join("");
+    const big = scan.largeFiles.map(item => `<li><code class="storage-path">${escapeHtml(item.path)}</code> · ${formatBytes(item.bytes)}</li>`).join("");
+    target.innerHTML = `
+      <p class="hint">共 ${formatBytes(scan.total)}${scan.timedOut ? "（文件太多，只统计了一部分）" : ""}。</p>
+      <table class="shortcut-table"><thead><tr><th>子目录</th><th>大小</th><th>文件数</th><th>PDF</th></tr></thead><tbody>${rows}</tbody></table>
+      ${big ? `<p class="hint">超过 ${formatBytes(scan.largeFileBytes)} 的文件：</p><ul class="hint">${big}</ul>` : ""}
+      <p class="hint">批量下载的论文、数据集这类能重新获取的原始文件，建议放到本机 <code class="storage-path">${escapeHtml(localDir)}</code>，不要放进同步目录。</p>`;
+  } catch (error) {
+    target.innerHTML = `<p class="manager-message bad">${escapeHtml(error.message)}</p>`;
+  } finally {
+    button.disabled = false;
+  }
+}
 
 async function saveStorageConfig(event) {
   event.preventDefault();
@@ -1648,10 +1694,10 @@ async function pickStorageFolder(button) {
 }
 
 async function resetStorageConfig() {
-  const move = form.querySelector("#storageConfigForm")?.elements.moveExisting.checked;
-  if (!window.confirm(`恢复为默认目录（项目 .runtime）吗？${move ? "下次启动时会把当前目录里的数据移回去。" : "当前目录里的数据不会移动。"}`)) return;
+  // 同步目录是多台电脑共用的，恢复默认时不搬走里面的数据，免得其他电脑看不到。
+  if (!window.confirm("这台电脑恢复为默认目录（项目 .runtime）吗？共享配置会复制一份回本机 .env；同步目录里的数据不移动，其他电脑不受影响。")) return;
   try {
-    const data = await settingsRequest(`/api/storage-config${move ? "?moveExisting=1" : ""}`, { method:"DELETE" });
+    const data = await settingsRequest("/api/storage-config", { method:"DELETE" });
     state.storageConfig = data.storage;
     renderLlmManager(storageSavedText(data.storage), "ok", "storage");
   } catch (error) {

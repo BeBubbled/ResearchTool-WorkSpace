@@ -7,7 +7,7 @@
   {% include "_theme_head.html" %}
   <link rel="stylesheet" href="/static/styles.css?v=20261109-uiink2">
   <link rel="stylesheet" href="/static/paper_revision_workflow.css?v=20261109-uiink">
-  <link rel="stylesheet" href="/static/settings_page.css?v=20261123-storage">
+  <link rel="stylesheet" href="/static/settings_page.css?v=20261124-sync2">
 </head>
 <body class="settings-page{% if embed %} settings-embedded{% endif %}">
   {% if not embed %}{% set client_active = "settings" %}{% include "_client_nav.html" %}{% endif %}
@@ -17,7 +17,7 @@
   </main>
   <script src="/static/engine_picker.js?v=2"></script>
   <script src="/static/paper_revision_workflow.js?v=2"></script>
-  <script src="/static/settings.js?v=13"></script>
+  <script src="/static/settings.js?v=14"></script>
   <script>
     (() => {
       const embedded = {{ "true" if embed else "false" }};

@@ -18,6 +18,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from datetime import date
+import os
 from pathlib import Path
 
 from researchtool.gapr import schema
@@ -93,8 +94,19 @@ class Project:
         return self.root / "rubric"
 
     @property
+    def local_dir(self) -> Path:
+        """本机目录：HTTP 缓存、批量下载的原始文件等可重新获取、体积可能很大的东西。
+        设置了 GAPR_LOCAL_ROOT（面板在数据目录放进云盘时会设置）就放到那里，不随项目目录同步；否则就在项目目录里。"""
+        base = os.environ.get("GAPR_LOCAL_ROOT", "").strip()
+        return Path(base) / self.root.resolve().name if base else self.root
+
+    @property
     def cache_dir(self) -> Path:
-        return self.root / "cache"
+        return self.local_dir / "cache"
+
+    @property
+    def raw_dir(self) -> Path:
+        return self.local_dir / "raw"
 
     @property
     def is_backtest(self) -> bool:

@@ -306,6 +306,9 @@ class GapSurveyService:
         checks, confirm, prj = self._gapr()
         path = self.project_dir(project_id)
         info: dict[str, Any] = {"id": project_id, "path": str(path.resolve())}
+        local_root = os.environ.get("GAPR_LOCAL_ROOT", "").strip()
+        if local_root:  # 数据目录在云盘里时，HTTP 缓存和批量原始文件放本机，这里告诉用户放哪
+            info["localDir"] = str(Path(local_root) / path.resolve().name)
         try:
             p = prj.load(path)
         except (ValueError, OSError) as exc:
