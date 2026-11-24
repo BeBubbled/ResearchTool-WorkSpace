@@ -392,3 +392,4 @@ body.bb-body { display:flex; flex-direction:column; overflow:hidden; background:
 .bb-edge-arrow.back svg { transform:scaleX(-1); }  /* 再点一次是返回：箭头掉头 */
 .bb-edge-arrow.back:hover svg { transform:scaleX(-1.08) scaleY(1.08); }
 .bb-edge-arrow.in { margin-left:-6px; transform:translate(-100%, -50%); }
+.bb-cwd-pick.missing { border-color:var(--t-warn-line, #d9a441); color:var(--t-warn, #a86b00); }

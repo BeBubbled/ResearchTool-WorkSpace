@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterator
 from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from researchtool.claude_code_cli import EFFORTS, MODELS, child_env, find_claude_executable
+from researchtool.claude_project import history_dir
 
 TREE_DIR = ".branchboard"
 PERMISSION_MODES = {"default": "每次询问", "acceptEdits": "自动批准编辑", "plan": "计划模式"}
@@ -92,14 +93,18 @@ def quote_block(quote: str) -> str:
     return "\n".join("> " + line if line.strip() else ">" for line in quote.strip().splitlines())
 
 
-def turn_prompt(tree: dict[str, Any], turn: dict[str, Any]) -> str:
+def turn_prompt(tree: dict[str, Any], turn: dict[str, Any], resumable: bool = True) -> str:
     """本轮发给模型的用户消息。会话从主父节点分叉，所以主父链上的内容已在上下文里；
-    来自其他分支的被划词轮次不在上下文里，把它们的提问和回答作为引用材料拼在前面（§4 的扩展）。"""
+    来自其他分支的被划词轮次不在上下文里，把它们的提问和回答作为引用材料拼在前面（§4 的扩展）。
+    resumable=False：父节点的会话不在这台电脑上（对话树随数据目录同步过来），只能开新会话，
+    主父链上的问答也作为记录拼进来。"""
     items = questions_of(turn)
     primary = turn.get("parentId")
-    visible = set(context_ids(tree, primary)) if primary else set()
+    visible = set(context_ids(tree, primary)) if primary and resumable else set()
     number = {tid: i + 1 for i, tid in enumerate(tree["order"])}
     injected = []
+    if primary and not resumable:
+        injected = sorted(context_ids(tree, primary), key=lambda tid: number.get(tid, 0))
     for item in items:
         sid = item.get("sourceId")
         if sid and sid not in visible and sid not in injected and sid in tree["turns"]:
@@ -114,7 +119,9 @@ def turn_prompt(tree: dict[str, Any], turn: dict[str, Any]) -> str:
             if len(answer) > 12000:
                 answer = answer[:12000] + "\n…（后略）"
             blocks.append(f"### 第 {number.get(sid, '?')} 轮\n提问：{src.get('question', '')}\n\n回答：\n{answer}")
-        parts.append("[以下内容来自其他对话分支，此前的对话里没有它们]\n\n" + "\n\n".join(blocks))
+        header = ("[以下是此前的对话记录（原会话在另一台电脑上，这里接着它继续）]" if primary and not resumable
+                  else "[以下内容来自其他对话分支，此前的对话里没有它们]")
+        parts.append(header + "\n\n" + "\n\n".join(blocks))
     blocks = []
     for item in items:
         sid, text = item.get("sourceId"), str(item.get("text") or "").strip()
@@ -271,13 +278,71 @@ class EventHub:
                 self._lock.wait(remaining)
 
 
-class TreeStore:
-    """整棵树一个 JSON 文件，放在工作目录的 .branchboard/ 下；本机索引记录 treeId → 工作目录。"""
+DEFAULT_CWD_TOKEN = "@default"
+DATA_CWD_PREFIX = "@data/"  # 数据目录里的工作目录：存相对路径，每台电脑按自己的数据目录位置解析
 
-    def __init__(self, runtime_dir: Path):
+
+def same_path(a: str | Path, b: str | Path) -> bool:
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return False
+
+
+class TreeStore:
+    """整棵树一个 JSON 文件，放在工作目录的 .branchboard/ 下；索引记录 treeId → 工作目录。
+
+    索引和默认工作目录可能在同步盘里，被多台电脑共用，所以：
+    * 默认工作目录记成 @default，每台电脑解析成自己的路径（兼容旧数据里别的电脑写下的绝对路径）；
+    * 用户自选的工作目录只在原来那台电脑上有，树文件另存一份镜像到 trees/<id>.json，
+      其他电脑可以照常打开、浏览，换一个本机目录后继续提问。"""
+
+    def __init__(self, runtime_dir: Path, default_cwd: Path | str | None = None):
         self.runtime_dir = Path(runtime_dir)
         self.index_path = self.runtime_dir / "index.json"
+        self.default_cwd = Path(default_cwd) if default_cwd else self.runtime_dir / "chats"
         self._lock = threading.RLock()
+
+    @property
+    def data_root(self) -> Path:
+        """数据目录（对话树的 runtime_dir 是数据目录下的 branchboard/）。"""
+        return self.runtime_dir.parent
+
+    def portable_cwd(self, cwd: str) -> str:
+        if same_path(cwd, self.default_cwd):
+            return DEFAULT_CWD_TOKEN
+        try:
+            relative = Path(cwd).resolve().relative_to(self.data_root.resolve())
+        except (OSError, ValueError):
+            return cwd
+        return DATA_CWD_PREFIX + relative.as_posix()
+
+    def local_cwd(self, raw: str) -> str:
+        if raw == DEFAULT_CWD_TOKEN:
+            return str(self.default_cwd)
+        if raw.startswith(DATA_CWD_PREFIX):
+            parts = [part for part in raw[len(DATA_CWD_PREFIX):].split("/") if part not in ("", ".")]
+            if ".." in parts:
+                return ""
+            return str(self.data_root.joinpath(*parts))
+        normalized = raw.replace("\\", "/").rstrip("/")
+        if normalized.endswith("/branchboard/chats") and not Path(raw).is_dir():
+            return str(self.default_cwd)  # 旧数据：另一台电脑上的默认工作目录
+        return raw
+
+    def mirror_path(self, tree_id: str) -> Path:
+        return self.runtime_dir / "trees" / f"{tree_id}.json"
+
+    def locate(self, tree_id: str, raw_cwd: str) -> tuple[str, Path | None, bool]:
+        """返回（本机工作目录, 树文件, 是否只能用镜像）。"""
+        cwd = self.local_cwd(raw_cwd or "")
+        primary = self.tree_path(cwd, tree_id) if cwd else None
+        if primary is not None and primary.is_file():
+            return cwd, primary, False
+        mirror = self.mirror_path(tree_id)
+        if mirror.is_file():
+            return cwd, mirror, not (cwd and Path(cwd).is_dir())
+        return cwd, primary, False
 
     def _read_index(self) -> dict[str, dict[str, Any]]:
         try:
@@ -299,8 +364,13 @@ class TreeStore:
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             index = self._read_index()
-        items = [{"id": tree_id, **meta, "missing": not self.tree_path(meta.get("cwd", ""), tree_id).is_file()}
-                 for tree_id, meta in index.items() if TREE_ID_RE.match(tree_id)]
+        items = []
+        for tree_id, meta in index.items():
+            if not TREE_ID_RE.match(tree_id):
+                continue
+            cwd, path, from_mirror = self.locate(tree_id, meta.get("cwd", ""))
+            items.append({"id": tree_id, **meta, "cwd": cwd, "missing": not (path and path.is_file()),
+                          "cwdMissing": from_mirror})
         return sorted(items, key=lambda item: item.get("updatedAt", ""), reverse=True)
 
     def load(self, tree_id: str) -> dict[str, Any]:
@@ -310,13 +380,20 @@ class TreeStore:
             meta = self._read_index().get(tree_id)
         if not meta:
             raise KeyError("对话树不存在。")
-        path = self.tree_path(meta["cwd"], tree_id)
+        cwd, path, from_mirror = self.locate(tree_id, meta["cwd"])
+        if path is None:
+            raise KeyError("对话树文件已不存在。")
         try:
             tree = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raise KeyError(f"对话树文件已不存在：{path}") from None
         except ValueError:
             raise ValueError(f"对话树文件已损坏：{path}") from None
+        tree["cwd"] = cwd
+        if from_mirror:
+            tree["cwdMissing"] = True
+        else:
+            tree.pop("cwdMissing", None)
         tree.setdefault("turns", {})
         tree.setdefault("order", [])
         tree.setdefault("settings", {})
@@ -324,18 +401,26 @@ class TreeStore:
 
     def save(self, tree: dict[str, Any]) -> None:
         tree["updatedAt"] = now_iso()
-        data = {**tree, "turns": {tid: public_turn(turn) for tid, turn in tree["turns"].items()}}
+        portable = self.portable_cwd(tree["cwd"])
+        data = {**tree, "cwd": portable, "turns": {tid: public_turn(turn) for tid, turn in tree["turns"].items()}}
+        data.pop("cwdMissing", None)
         for turn in data["turns"].values():
             turn.get("answer", {}).pop("statusLine", None)
             turn.pop("permissions", None)
-        path = self.tree_path(tree["cwd"], tree["id"])
+        text = json.dumps(data, ensure_ascii=False, indent=1)
+        targets = []
+        if Path(tree["cwd"]).is_dir():
+            targets.append(self.tree_path(tree["cwd"], tree["id"]))
+        if not portable.startswith("@"):
+            targets.append(self.mirror_path(tree["id"]))  # 自选目录不随数据目录同步：留一份镜像给其他电脑
         with self._lock:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(tmp, path)
+            for path in targets:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                os.replace(tmp, path)
             index = self._read_index()
-            index[tree["id"]] = {"cwd": tree["cwd"], "title": tree["title"], "updatedAt": tree["updatedAt"],
+            index[tree["id"]] = {"cwd": portable, "title": tree["title"], "updatedAt": tree["updatedAt"],
                                  "turnCount": len(tree["turns"]), "createdAt": tree.get("createdAt", "")}
             self._write_index(index)
 
@@ -347,10 +432,12 @@ class TreeStore:
                 raise KeyError("对话树不存在。")
             self._write_index(index)
         if delete_file:
-            try:
-                self.tree_path(meta["cwd"], tree_id).unlink()
-            except OSError:
-                pass
+            cwd = self.local_cwd(meta.get("cwd", ""))
+            for path in ([self.tree_path(cwd, tree_id)] if cwd else []) + [self.mirror_path(tree_id)]:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
 
 
 class TurnRun:
@@ -398,10 +485,19 @@ class TurnRun:
         if mode in ("acceptEdits", "plan"):
             args += ["--permission-mode", mode]
         parent = self.tree["turns"].get(self.turn.get("parentId") or "")
-        if parent:
+        if parent and self.resumable:
             # 每个子节点都从父节点的会话分叉；父会话从不被续写，兄弟分支互不污染。
             args += ["--resume", parent["sessionId"], "--fork-session"]
         return args
+
+    @property
+    def resumable(self) -> bool:
+        parent = self.tree["turns"].get(self.turn.get("parentId") or "")
+        if not parent:
+            return True
+        if "_resumable" not in self.__dict__:
+            self._resumable = bool(parent.get("sessionId")) and self.service.session_exists(self.tree["cwd"], parent["sessionId"])
+        return self._resumable
 
     def run(self) -> None:
         answer = self.turn["answer"]
@@ -434,7 +530,7 @@ class TurnRun:
         self.publish(force=True)
         self.send({"type": "control_request", "request_id": "init", "request": {"subtype": "initialize", "hooks": None}})
         with self.service._lock:
-            prompt = turn_prompt(self.tree, self.turn)
+            prompt = turn_prompt(self.tree, self.turn, self.resumable)
         self.send({"type": "user", "message": {"role": "user", "content": prompt},
                    "parent_tool_use_id": None, "session_id": "default"})
         result = None
@@ -678,6 +774,16 @@ def describe_tool_input(name: str, data: Any) -> str:
     return ""
 
 
+def claude_session_exists(cwd: str, session_id: str) -> bool:
+    """Claude Code 把会话存在 ~/.claude/projects/<编码后的工作目录>/<session>.jsonl。"""
+    if not session_id or not re.fullmatch(r"[0-9A-Za-z-]{8,64}", session_id):
+        return False
+    if (history_dir(Path(cwd)) / f"{session_id}.jsonl").is_file():
+        return True
+    projects = Path.home() / ".claude" / "projects"
+    return any(projects.glob(f"*/{session_id}.jsonl"))
+
+
 def relative_path(path: str, cwd: str) -> str:
     try:
         return Path(path).resolve().relative_to(Path(cwd).resolve()).as_posix()
@@ -705,10 +811,13 @@ class BranchboardService:
                  claude_status: Callable[[], dict[str, Any]] | None = None,
                  complete: Callable[..., str] | None = None,
                  titler: Callable[[list[str]], str] | None = None,
-                 default_cwd: Path | str | None = None):
-        self.store = TreeStore(Path(runtime_dir))
+                 default_cwd: Path | str | None = None,
+                 session_exists: Callable[[str, str], bool] | None = None):
         # 新聊天不选目录时用的工作目录；第一次用到才创建
         self.default_cwd = Path(default_cwd) if default_cwd else Path(runtime_dir) / "chats"
+        self.store = TreeStore(Path(runtime_dir), self.default_cwd)
+        # 父节点的 Claude Code 会话是否在这台电脑上（对话树可能是从另一台电脑同步来的）
+        self.session_exists = session_exists or claude_session_exists
         # 自动命名：titler(前几个问题) -> 标题；没有时用第一个问题的首行
         self.titler = titler
         self.hub = EventHub()
@@ -771,6 +880,16 @@ class BranchboardService:
                 tree["title"], tree["titleSource"] = title, "manual"
             if isinstance(data.get("settings"), dict):
                 tree["settings"] = clean_settings({**tree.get("settings", {}), **data["settings"]})
+            if data.get("cwd") is not None:  # 原工作目录不在这台电脑上：换一个本机目录继续
+                if any(run.tree["id"] == tree_id for run in self._runs.values()):
+                    raise ValueError("这棵树还有正在运行的轮次，请先中断。")
+                cwd = str(data["cwd"]).strip().strip('"') or str(self.default_cwd)
+                if cwd == str(self.default_cwd):
+                    self.default_cwd.mkdir(parents=True, exist_ok=True)
+                if not Path(cwd).is_dir():
+                    raise ValueError("请选择一个存在的工作目录。")
+                tree["cwd"] = str(Path(cwd).resolve())
+                tree.pop("cwdMissing", None)
             self.store.save(tree)
             self.hub.publish(tree_id, "tree", {"title": tree["title"], "settings": tree["settings"]})
         return self.snapshot(tree_id)
@@ -818,6 +937,8 @@ class BranchboardService:
         questions = self._requested_questions(data)
         with self._lock:
             tree = self.tree(tree_id)
+            if tree.get("cwdMissing") or not Path(tree["cwd"]).is_dir():
+                raise ValueError(f"这棵对话树的工作目录不在这台电脑上：{tree['cwd']}。请点上方的目录按钮换一个本机目录后再提问。")
             asked_before = question_count(tree)
             sources = list(dict.fromkeys(q["sourceId"] for q in questions if q["sourceId"]))
             if not sources:

@@ -4,6 +4,7 @@
     BRANCHBOARD_LIVE=1 python -m unittest tests.test_branchboard
 """
 import json
+import shutil
 import os
 import queue
 import tempfile
@@ -93,7 +94,8 @@ class Harness:
             proc = FakeProc(args, self.scripts.pop(0), kwargs.get("cwd"))
             self.procs.append(proc)
             return proc
-        return BranchboardService(self.root / "runtime", finder=lambda: "claude.exe", popen=popen, summarize=summarize)
+        return BranchboardService(self.root / "runtime", finder=lambda: "claude.exe", popen=popen, summarize=summarize,
+                                  session_exists=lambda cwd, sid: sid not in getattr(self, "foreign_sessions", set()))
 
     def wait_status(self, tree_id, turn_id, statuses=("done", "error", "interrupted"), timeout=5):
         deadline = time.monotonic() + timeout
@@ -668,3 +670,74 @@ class LiveContextIsolationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyncedTreeTest(unittest.TestCase):
+    """对话树随数据目录同步到另一台电脑：路径换了、会话不在本机。"""
+
+    def test_default_cwd_is_portable_and_foreign_default_path_is_remapped(self):
+        h = Harness(self)
+        tree = h.service.create_tree("默认目录", "")
+        index = json.loads((h.root / "runtime" / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index[tree["id"]]["cwd"], "@default")
+        self.assertEqual(tree["cwd"], str((h.root / "runtime" / "chats").resolve()))
+        # 旧数据：另一台电脑（Windows）上的默认目录绝对路径
+        index[tree["id"]]["cwd"] = r"C:\Users\someone\ResearchTool\.runtime\branchboard\chats"
+        (h.root / "runtime" / "index.json").write_text(json.dumps(index), encoding="utf-8")
+        fresh = h.make_service()
+        listed = fresh.list_trees()[0]
+        self.assertFalse(listed["missing"])
+        self.assertFalse(listed["cwdMissing"])
+        self.assertEqual(fresh.snapshot(tree["id"])["cwd"], str(h.root / "runtime" / "chats"))
+
+    def test_foreign_cwd_uses_mirror_then_relocates(self):
+        h = Harness(self)
+        outside = tempfile.TemporaryDirectory()  # 数据目录之外的自选目录
+        self.addCleanup(outside.cleanup)
+        h.cwd = Path(outside.name) / "work"
+        h.cwd.mkdir()
+        tree = h.service.create_tree("自选目录", str(h.cwd))
+        h.scripts.append(text_turn(SID[0], "根回答"))
+        root = h.service.create_turn(tree["id"], {"question": "第一个问题"})
+        h.wait_status(tree["id"], root["id"])
+        self.assertTrue((h.root / "runtime" / "trees" / f"{tree['id']}.json").is_file())
+        # 换到另一台电脑：原工作目录不存在
+        shutil.rmtree(h.cwd)
+        h.foreign_sessions = {SID[0]}
+        fresh = h.make_service()
+        h.service = fresh
+        listed = fresh.list_trees()[0]
+        self.assertFalse(listed["missing"])
+        self.assertTrue(listed["cwdMissing"])
+        snap = fresh.snapshot(tree["id"])
+        self.assertTrue(snap["cwdMissing"])
+        self.assertEqual(snap["turns"][root["id"]]["answer"]["markdown"], "根回答")
+        with self.assertRaisesRegex(ValueError, "不在这台电脑上"):
+            fresh.create_turn(tree["id"], {"parentId": root["id"], "kind": "follow", "question": "然后呢"})
+        # 换一个本机目录后继续：会话不在本机，开新会话并带上此前的对话记录
+        other = h.root / "elsewhere"
+        other.mkdir()
+        fresh.update_tree(tree["id"], {"cwd": str(other)})
+        h.scripts.append(text_turn(SID[1], "继续"))
+        follow = fresh.create_turn(tree["id"], {"parentId": root["id"], "kind": "follow", "question": "然后呢"})
+        h.wait_status(tree["id"], follow["id"])
+        proc = h.procs[-1]
+        self.assertNotIn("--resume", proc.args)
+        self.assertEqual(proc.cwd, str(other.resolve()))
+        prompt = [m for m in proc.sent if m["type"] == "user"][0]["message"]["content"]
+        self.assertIn("原会话在另一台电脑上", prompt)
+        self.assertIn("第一个问题", prompt)
+        self.assertIn("根回答", prompt)
+        self.assertTrue(prompt.endswith("然后呢"))
+        self.assertTrue((other / ".branchboard" / f"{tree['id']}.json").is_file())
+
+    def test_cwd_inside_data_dir_is_stored_relative(self):
+        h = Harness(self)
+        folder = h.root / "对话树"  # runtime_dir 是 h.root/runtime，数据目录就是 h.root
+        folder.mkdir()
+        tree = h.service.create_tree("数据目录里", str(folder))
+        index = json.loads((h.root / "runtime" / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index[tree["id"]]["cwd"], "@data/对话树")
+        self.assertFalse((h.root / "runtime" / "trees" / f"{tree['id']}.json").exists())  # 已在同步目录里，不需要镜像
+        self.assertEqual(h.make_service().snapshot(tree["id"])["cwd"], str(folder))
+        self.assertEqual(h.service.store.local_cwd("@data/../etc"), "")

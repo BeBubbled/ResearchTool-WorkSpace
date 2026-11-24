@@ -125,7 +125,7 @@
       last = group;
       const active = S.tree && S.tree.id === t.id;
       return `${head}<div class="bb-side-item${active ? " active" : ""}${t.missing ? " missing" : ""}" data-id="${t.id}">
-        <button class="bb-side-open" type="button"${active ? ' aria-current="page"' : ""} title="${esc(t.title)}${t.missing ? "（文件缺失）" : ""}\n📁 ${esc(t.cwd || "")}">${esc(t.title || NEW_TITLE)}</button>
+        <button class="bb-side-open" type="button"${active ? ' aria-current="page"' : ""} title="${esc(t.title)}${t.missing ? "（文件缺失）" : t.cwdMissing ? "（原目录在另一台电脑上，可以浏览）" : ""}\n📁 ${esc(t.cwd || "")}">${esc(t.title || NEW_TITLE)}</button>
         <button class="bb-side-more" type="button" aria-haspopup="menu" aria-label="更多" title="更多">⋯</button></div>`;
     }).join("") || `<p class="bb-side-empty">${needle ? "没有匹配的聊天。" : "还没有聊天。直接在右边问第一个问题就开始了。"}</p>`;
   }
@@ -167,18 +167,32 @@
   }
 
   function showCwdPick() {
-    const fixed = !!S.tree;  // 已建好的树，工作目录不能再换
-    const path = fixed ? S.tree.cwd : S.newCwd;
+    // 已建好的树，工作目录不能再换；除非原目录不在这台电脑上（对话树从另一台电脑同步过来）
+    const relocate = !!(S.tree && S.tree.cwdMissing);
+    const fixed = !!S.tree && !relocate;
+    const path = S.tree ? S.tree.cwd : S.newCwd;
     const isDefault = !path || (S.config && path === S.config.defaultCwd);
-    $("bbCwdPickName").textContent = isDefault ? "默认目录" : baseName(path);
+    $("bbCwdPickName").textContent = relocate ? "原目录不在本机" : isDefault ? "默认目录" : baseName(path);
     $("bbCwdPick").disabled = fixed;
-    $("bbCwdPick").title = `工作目录：${path || (S.config && S.config.defaultCwd) || "默认目录"}${fixed ? "" : "\n点击换一个目录"}`;
-    $("bbCwdReset").classList.toggle("hidden", fixed || isDefault);
+    $("bbCwdPick").classList.toggle("missing", relocate);
+    $("bbCwdPick").title = relocate
+      ? `原工作目录在另一台电脑上：${path}\n点击选一个本机目录后才能继续提问（此前的对话会作为记录带上）`
+      : `工作目录：${path || (S.config && S.config.defaultCwd) || "默认目录"}${fixed ? "" : "\n点击换一个目录"}`;
+    $("bbCwdReset").classList.toggle("hidden", fixed || relocate || isDefault);
   }
   $("bbCwdPick").addEventListener("click", async () => {
     try {
-      const result = await window.LocalPaths.pick({ kind: "folder", title: "选择这个聊天的工作目录" });
-      if (result && result.path) { S.newCwd = result.path; store(CWD_KEY, S.newCwd); showCwdPick(); }
+      const relocate = !!(S.tree && S.tree.cwdMissing);
+      const result = await window.LocalPaths.pick({ kind: "folder", title: relocate ? "为这个对话树选一个本机工作目录" : "选择这个聊天的工作目录" });
+      if (!result || !result.path) return;
+      if (relocate) {
+        await api("PATCH", `/trees/${S.tree.id}`, { cwd: result.path });
+        await openTree(S.tree.id);
+        refreshList();
+        toast("已换到本机目录，可以继续提问。");
+        return;
+      }
+      S.newCwd = result.path; store(CWD_KEY, S.newCwd); showCwdPick();
     } catch (err) { toast(err.message); }
   });
   $("bbCwdReset").addEventListener("click", () => { S.newCwd = ""; store(CWD_KEY, null); showCwdPick(); });
