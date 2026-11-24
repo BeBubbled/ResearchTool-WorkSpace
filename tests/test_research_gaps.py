@@ -42,6 +42,29 @@ class FakeDownloadSession:
         return FakeDownloadResponse()
 
 
+class ContentPathTest(unittest.TestCase):
+    """数据目录可能在其他电脑上（同步盘）：全文路径存相对路径，旧的绝对路径按 projects/<id>/… 重新定位。"""
+
+    def test_resolves_relative_and_foreign_absolute_paths(self):
+        from researchtool.research_gaps import ResearchGapService
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = ResearchGapService.__new__(ResearchGapService)
+            service.root = root
+            text = root / "projects" / "proj_ab" / "papers" / "paper_1" / "source.txt"
+            text.parent.mkdir(parents=True)
+            text.write_text("full text", encoding="utf-8")
+            self.assertEqual(service._stored_path(text), "projects/proj_ab/papers/paper_1/source.txt")
+            for raw in (
+                "projects/proj_ab/papers/paper_1/source.txt",
+                "/Users/someone/ResearchTool/.runtime/research-gaps/projects/proj_ab/papers/paper_1/source.txt",
+                r"C:\Users\someone\ResearchTool\.runtime\research-gaps\projects\proj_ab\papers\paper_1\source.txt",
+            ):
+                self.assertEqual(service._content_file(raw), text, raw)
+            for raw in ("/etc/passwd", "../../etc/passwd", "projects/proj_ab/papers/missing/source.txt"):
+                self.assertIsNone(service._content_file(raw), raw)
+
+
 class ResearchGapTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

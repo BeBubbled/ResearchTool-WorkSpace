@@ -11,7 +11,7 @@ import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import socket
@@ -839,7 +839,7 @@ class ResearchGapService:
                 if len(clean_text(text, len(text) + 1)) >= 2_000:
                     text_path = directory / "source.txt"
                     text_path.write_text(text, encoding="utf-8")
-                    return PaperSource(text, "fulltext", "page", str(text_path))
+                    return PaperSource(text, "fulltext", "page", self._stored_path(text_path))
                 warning = "开放 PDF 缺少可用文字层，已降级为摘要证据。"
             except Exception as exc:
                 warning = f"开放 PDF 获取或解析失败，已降级为摘要证据：{clean_text(exc, 300)}"
@@ -876,7 +876,7 @@ class ResearchGapService:
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     paper_id, project_id, "reader", source_key, cache_key, entry.get("title") or source_path.stem,
-                    "[]", evidence_level, str(text_path), locator_mode, "ready",
+                    "[]", evidence_level, self._stored_path(text_path), locator_mode, "ready",
                     warning,
                     json.dumps(entry, ensure_ascii=False), timestamp, timestamp,
                 ),
@@ -1161,7 +1161,7 @@ class ResearchGapService:
                         created_at,updated_at
                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (paper_id, project_id, "local_pdf", f"local-pdf:{digest}", title,
-                         json.dumps(authors, ensure_ascii=False), "fulltext", str(text_path), str(source),
+                         json.dumps(authors, ensure_ascii=False), "fulltext", self._stored_path(text_path), str(source),
                          relative, digest, "page", "ready", None,
                          json.dumps(metadata, ensure_ascii=False), timestamp, timestamp),
                     )
@@ -1406,13 +1406,37 @@ class ResearchGapService:
             self._job_update(job_id, status="failed", stage="failed", error=clean_text(exc, 1_000), finished_at=now())
             self._job_log(job_id, f"分析失败：{clean_text(exc, 500)}")
 
+    def _stored_path(self, path: Path) -> str:
+        """数据目录内的文件存相对路径：数据目录可能在不同电脑上挂载到不同位置（同步盘）。"""
+        try:
+            return Path(path).resolve().relative_to(self.root.resolve()).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _content_file(self, raw: str) -> Path | None:
+        """找到论文全文文件。兼容旧数据里其他电脑写下的绝对路径（macOS、Windows），按 projects/<id>/… 重新定位到本目录。"""
+        text = str(raw)
+        pure = PureWindowsPath(text) if "\\" in text or re.match(r"^[A-Za-z]:", text) else PurePosixPath(text)
+        candidates = [] if pure.is_absolute() else [self.root / Path(*pure.parts)]
+        if pure.is_absolute():
+            candidates.append(Path(text))
+            parts = pure.parts
+            for index in range(len(parts) - 1, -1, -1):
+                if parts[index] == "projects" and index + 1 < len(parts) and parts[index + 1].startswith("proj_"):
+                    candidates.append(self.root / Path(*parts[index:]))
+                    break
+        root = self.root.resolve()
+        for candidate in candidates:
+            if candidate.is_file() and root in candidate.resolve().parents:
+                return candidate
+        return None
+
     def _paper_text(self, paper: dict[str, Any]) -> str:
         with self.store.connect() as db:
             row = db.execute("SELECT content_path,abstract FROM papers WHERE id=?", (paper["id"],)).fetchone()
-        if row and row["content_path"]:
-            path = Path(row["content_path"])
-            if path.is_file() and self.root.resolve() in path.resolve().parents:
-                return path.read_text(encoding="utf-8", errors="replace")[:MAX_ANALYSIS_CHARS]
+        path = self._content_file(row["content_path"]) if row and row["content_path"] else None
+        if path is not None:
+            return path.read_text(encoding="utf-8", errors="replace")[:MAX_ANALYSIS_CHARS]
         return clean_multiline(row["abstract"] if row else paper.get("abstract"), MAX_ANALYSIS_CHARS)
 
     def _model_request(
